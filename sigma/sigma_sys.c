@@ -1,6 +1,6 @@
 /* sigma_sys.c: Sigma system interface
 
-   Copyright (c) 2007-2008, Robert M Supnik
+   Copyright (c) 2007-2017, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -22,6 +22,8 @@
    Except as contained in this notice, the name of Robert M Supnik shall not be
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
+
+   09-Mar-2017  RMS     Added LOAD processor for CCT
 */
 
 #include "sigma_defs.h"
@@ -47,8 +49,10 @@ extern uint32 *M;
 extern UNIT cpu_unit;
 
 t_stat fprint_sym_m (FILE *of, uint32 inst);
-t_stat parse_sym_m (char *cptr, t_value *val);
+t_stat parse_sym_m (CONST char *cptr, t_value *val);
 void fprint_ebcdic (FILE *of, uint32 c);
+
+extern t_stat lp_read_cct (FILE *cfile);
 
 /* SCP data structures and interface routines
 
@@ -164,9 +168,9 @@ uint8 ebcdic_to_ascii[256] = {
 
 /* Binary loader */
 
-t_stat sim_load (FILE *fileref, char *cptr, char *fnam, int flag)
+t_stat sim_load (FILE *fileref, CONST char *cptr, CONST char *fnam, int flag)
 {
-return SCPE_NOFNC;
+return lp_read_cct (fileref);
 }
 
 /* Symbol and format tables */
@@ -337,11 +341,6 @@ static const char *opcode[] = {
         return  =       status code
 */
 
-/* Use scp.c provided fprintf function */
-#define fprintf Fprintf
-#define fputs(_s,f) Fprintf(f,"%s",_s)
-#define fputc(_c,f) Fprintf(f,"%c",_c)
-
 t_stat fprint_sym (FILE *of, t_addr addr, t_value *val,
     UNIT *uptr, int32 sw)
 {
@@ -376,7 +375,7 @@ if (sw & SWMASK ('C')) {                                /* char format? */
 if (sw & SWMASK ('A')) {                                /* ASCII? */
     sc = 24 - ((addr & 0x3) * 8);                       /* shift count */
     c = (inst >> sc) & 0x7F;
-    fprintf (of, "%c", FMTASC (c));
+    fprintf (of, FMTASC (c));
     return 0;
     }
 if (sw & SWMASK ('E')) {                                /* EBCDIC? */
@@ -465,7 +464,7 @@ return;
         status  =       error status
 */
 
-t_stat parse_sym (char *cptr, t_addr addr, UNIT *uptr, t_value *val, int32 sw)
+t_stat parse_sym (CONST char *cptr, t_addr addr, UNIT *uptr, t_value *val, int32 sw)
 {
 t_value num;
 uint32 i, sc, rdx, c;
@@ -540,7 +539,7 @@ if (r != SCPE_OK)
 return 0;
 }
 
-t_stat parse_sym_m (char *cptr, t_value *val)
+t_stat parse_sym_m (CONST char *cptr, t_value *val)
 {
 uint32 i, sgn;
 t_stat r;
@@ -548,7 +547,7 @@ char *sep;
 char gbuf[CBUFSIZE];
 
 cptr = get_glyph (cptr, gbuf, 0);                       /* get opcode+reg*/
-if (sep = strchr (gbuf, ','))                           /* , in middle? */
+if ((sep = strchr (gbuf, ',')))                         /* , in middle? */
     *sep++ = 0;                                         /* split strings */
 for (i = 0; opcode[i] != NULL; i++) {                   /* loop thru ops */
     if (strcmp (opcode[i], gbuf) == 0) {                /* string match? */
@@ -584,7 +583,7 @@ for (i = 0; opcode[i] != NULL; i++) {                   /* loop thru ops */
                 sgn = 1;
             else sgn = 0;                               /* else + */
             cptr = get_glyph (cptr, gbuf, 0);           /* get rest */
-            if (sep = strchr (gbuf, ','))               /* , in middle? */
+            if ((sep = strchr (gbuf, ',')))             /* , in middle? */
                 *sep++ = 0;                             /* split strings */
             ad = get_uint (gbuf, 16, mask, &r);
             if (r != SCPE_OK)

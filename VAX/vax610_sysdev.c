@@ -43,18 +43,11 @@
 /* MicroVAX I boot device definitions */
 
 struct boot_dev {
-    char                *devname;
-    char                *devalias;
+    const char          *devname;
+    const char          *devalias;
     int32               code;
     };
 
-extern int32 R[16];
-extern int32 in_ie;
-extern int32 mchk_va, mchk_ref;
-extern int32 int_req[IPL_HLVL];
-extern jmp_buf save_env;
-extern int32 p1;
-extern int32 trpirq, mem_err;
 extern DEVICE vc_dev, lk_dev, vs_dev;
 
 int32 conisp, conpc, conpsl;                            /* console reg */
@@ -70,13 +63,9 @@ static struct boot_dev boot_tab[] = {
 
 t_stat sysd_reset (DEVICE *dptr);
 const char *sysd_description (DEVICE *dptr);
-t_stat vax610_boot (int32 flag, char *ptr);
-t_stat vax610_boot_parse (int32 flag, char *ptr);
-t_stat cpu_boot (int32 unitno, DEVICE *dptr);
+t_stat vax610_boot (int32 flag, CONST char *ptr);
+t_stat vax610_boot_parse (int32 flag, const char *ptr);
 
-extern int32 intexc (int32 vec, int32 cc, int32 ipl, int ei);
-extern int32 vc_mem_rd (int32 pa);
-extern void vc_mem_wr (int32 pa, int32 val, int32 lnt);
 extern int32 iccs_rd (void);
 extern int32 todr_rd (void);
 extern int32 rxcs_rd (void);
@@ -88,7 +77,6 @@ extern void rxcs_wr (int32 dat);
 extern void txcs_wr (int32 dat);
 extern void txdb_wr (int32 dat);
 extern void ioreset_wr (int32 dat);
-extern int32 eval_int (void);
 
 /* SYSD data structures
 
@@ -166,7 +154,7 @@ switch (rg) {
         break;
 
     case MT_SID:                                        /* SID */
-        val = (VAX610_SID | VAX610_FLOAT | VAX610_MREV | VAX610_HWREV);
+        val = (VAX610_SID | ((cpu_instruction_set & VAX_DFLOAT) ? VAX610_FLOAT: 0) | VAX610_MREV | VAX610_HWREV);
         break;
 
     case MT_NICR:                                       /* NICR */
@@ -194,7 +182,7 @@ switch (rg) {
         break;
 
     default:
-        RSVD_OPND_FAULT;
+        RSVD_OPND_FAULT(ReadIPR);
         }
 
 return val;
@@ -233,7 +221,7 @@ switch (rg) {
     case MT_CONISP:
     case MT_CONPC:
     case MT_CONPSL:                                     /* halt reg */
-        RSVD_OPND_FAULT;
+        RSVD_OPND_FAULT(WriteIPR);
 
     case MT_NICR:                                       /* NICR */
     case MT_ICR:                                        /* ICR */
@@ -259,7 +247,7 @@ switch (rg) {
         break;
 
     default:
-        RSVD_OPND_FAULT;
+        RSVD_OPND_FAULT(WriteIPR);
         }
 
 return;
@@ -275,12 +263,11 @@ return;
 struct reglink {                                        /* register linkage */
     uint32      low;                                    /* low addr */
     uint32      high;                                   /* high addr */
-    int32       (*read)(int32 pa);                      /* read routine */
+    int32       (*read)(int32 pa, int32 lnt);           /* read routine */
     void        (*write)(int32 pa, int32 val, int32 lnt); /* write routine */
     };
 
 struct reglink regtable[] = {
-    { QVMBASE, QVMBASE+QVMSIZE, &vc_mem_rd, &vc_mem_wr },
     { 0, 0, NULL, NULL }
     };
 
@@ -299,7 +286,7 @@ struct reglink *p;
 
 for (p = &regtable[0]; p->low != 0; p++) {
     if ((pa >= p->low) && (pa < p->high) && p->read)
-        return p->read (pa);
+        return p->read (pa, lnt);
     }
 MACH_CHECK (MCHK_READ);
 }
@@ -369,10 +356,12 @@ return;
    Sets up R0-R5, calls SCP boot processor with effective BOOT CPU
 */
 
-t_stat vax610_boot (int32 flag, char *ptr)
+t_stat vax610_boot (int32 flag, CONST char *ptr)
 {
 t_stat r;
 
+if ((ptr = get_sim_sw (ptr)) == NULL)                   /* get switches */
+    return SCPE_INVSW;
 r = vax610_boot_parse (flag, ptr);                      /* parse the boot cmd */
 if (r != SCPE_OK) {                                     /* error? */
     if (r >= SCPE_BASE) {                               /* message available? */
@@ -381,22 +370,25 @@ if (r != SCPE_OK) {                                     /* error? */
         }
     return r;
     }
-strncpy (cpu_boot_cmd, ptr, CBUFSIZE);                  /* save for reboot */
+strncpy (cpu_boot_cmd, ptr, CBUFSIZE-1);                /* save for reboot */
 return run_cmd (flag, "CPU");
 }
 
 /* Parse boot command, set up registers - also used on reset */
 
-t_stat vax610_boot_parse (int32 flag, char *ptr)
+t_stat vax610_boot_parse (int32 flag, const char *ptr)
 {
 char gbuf[CBUFSIZE], dbuf[CBUFSIZE], rbuf[CBUFSIZE];
-char *slptr, *regptr;
+char *slptr;
+const char *regptr;
 int32 i, r5v, unitno;
 DEVICE *dptr;
 UNIT *uptr;
 t_stat r;
 
-if (ptr && (*ptr == '/')) {                             /* handle "BOOT /R5:n DEV" format */
+if (ptr == NULL)
+    return SCPE_ARG;
+if (*ptr == '/') {                                      /* handle "BOOT /R5:n DEV" format */
     ptr = get_glyph (ptr, rbuf, 0);                     /* get glyph */
     regptr = rbuf;
     ptr = get_glyph (ptr, gbuf, 0);                     /* get glyph */
@@ -410,6 +402,7 @@ else {                                                  /* handle "BOOT DEV /R5:
     }
 /* parse R5 parameter value */
 r5v = 0;
+/* coverity[NULL_RETURNS] */ 
 if ((strncmp (regptr, "/R5:", 4) == 0) ||
     (strncmp (regptr, "/R5=", 4) == 0) ||
     (strncmp (regptr, "/r5:", 4) == 0) ||
@@ -518,6 +511,21 @@ AP = 1;
 return SCPE_OK;
 }
 
+t_stat vax610_set_instruction_set (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
+{
+char gbuf[CBUFSIZE];
+
+if (!cptr || !*cptr)
+    return SCPE_ARG;
+
+get_glyph (cptr, gbuf, 0);
+if (MATCH_CMD(gbuf, "G-FLOAT") == 0)
+    return cpu_set_instruction_set (uptr, val, "G-FLOAT;NOD-FLOAT", NULL);
+if (MATCH_CMD(gbuf, "D-FLOAT") == 0)
+    return cpu_set_instruction_set (uptr, val, "D-FLOAT;NOG-FLOAT", NULL);
+return sim_messagef (SCPE_ARG, "Unknown/Unsupported instruction set: %s\n", gbuf);
+}
+
 /* SYSD reset */
 
 t_stat sysd_reset (DEVICE *dptr)
@@ -531,9 +539,8 @@ const char *sysd_description (DEVICE *dptr)
 return "system devices";
 }
 
-t_stat cpu_set_model (UNIT *uptr, int32 val, char *cptr, void *desc)
+t_stat cpu_set_model (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
-#if defined(HAVE_LIBSDL) 
 char gbuf[CBUFSIZE];
 
 if ((cptr == NULL) || (!*cptr))
@@ -541,26 +548,29 @@ if ((cptr == NULL) || (!*cptr))
 cptr = get_glyph (cptr, gbuf, 0);
 if (MATCH_CMD(gbuf, "MICROVAX") == 0) {
     sys_model = 0;
+#if defined(USE_SIM_VIDEO) && defined(HAVE_LIBSDL)
     vc_dev.flags = vc_dev.flags | DEV_DIS;               /* disable QVSS */
     lk_dev.flags = lk_dev.flags | DEV_DIS;               /* disable keyboard */
     vs_dev.flags = vs_dev.flags | DEV_DIS;               /* disable mouse */
+#endif
     strcpy (sim_name, "MicroVAX I (KA610)");
     reset_all (0);                                       /* reset everything */
     }
 else if (MATCH_CMD(gbuf, "VAXSTATION") == 0) {
+#if defined(USE_SIM_VIDEO) && defined(HAVE_LIBSDL)
     sys_model = 1;
     vc_dev.flags = vc_dev.flags & ~DEV_DIS;              /* enable QVSS */
     lk_dev.flags = lk_dev.flags & ~DEV_DIS;              /* enable keyboard */
     vs_dev.flags = vs_dev.flags & ~DEV_DIS;              /* enable mouse */
-    strcpy (sim_name, "VAXStation I (KA610)");
+    strcpy (sim_name, "VAXstation I (KA610)");
     reset_all (0);                                       /* reset everything */
+#else
+    return sim_messagef(SCPE_ARG, "Simulator built without Graphic Device Support\n");
+#endif
     }
 else
     return SCPE_ARG;
 return SCPE_OK;
-#else
-return SCPE_NOFNC;
-#endif
 }
 
 t_stat cpu_print_model (FILE *st)

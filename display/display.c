@@ -1,10 +1,10 @@
 /*
- * $Id: display.c,v 1.57 2004/02/04 16:59:01 phil Exp $
+ * $Id: display.c,v 1.56 2004/02/03 21:44:34 phil Exp - revised by DAG $
  * Simulator and host O/S independent XY display simulator
  * Phil Budne <phil@ultimate.com>
  * September 2003
  *
- * with changes by Douglas A. Gwyn, 21 Jan. 2004
+ * with changes by Douglas A. Gwyn, 05 Feb. 2004
  *
  * started from PDP-8/E simulator vc8e.c;
  *  This PDP8 Emulator was written by Douglas W. Jones at the
@@ -13,7 +13,7 @@
  */
 
 /*
- * Copyright (c) 2003-2004, Philip L. Budne
+ * Copyright (c) 2003-2018 Philip L. Budne
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -98,24 +98,34 @@ struct color {
 
 struct display {
     enum display_type type;
-    char *name;
+    const char *name;
     struct color *color0, *color1;
     short xpoints, ypoints;
 };
 
 /*
  * original phosphor constants from Raphael Nabet's XMame 0.72.1 PDP-1 sim.
- * not even sure Type30 really used P17 (guess by Daniel P. B. Smith)
+ *
+ * http://bitsavers.trailing-edge.com/components/rca/hb-3/1963_HB-3_CRT_Storage_Tube_and_Monoscope_Section.pdf
+ * pdf p374 says 16ADP7 used P7 phosphor.
+ * pdf pp28-32 describe P7 phosphor (spectra, buildup, persistence)
+ *
+ * https://www.youtube.com/watch?v=hZumwXS4fJo
+ * "3RP7A CRT - P7 Phosphor Persistence" shows colors/persistence
  */
-static struct phosphor p17[] = {
+static struct phosphor p7[] = {
     {0.11, 0.11, 1.0,  0.5, 0.05},  /* fast blue */
     {1.0,  1.0,  0.11, 0.5, 0.20}   /* slow yellow/green */
 };
-static struct color color_p17 = { p17, ELEMENTS(p17), 125000 };
+static struct color color_p7 = { p7, ELEMENTS(p7), 125000 };
 
 /* green phosphor for VR14, VR17, VR20 */
 static struct phosphor p29[] = {{0.0260, 1.0, 0.00121, 0.5, 0.025}};
 struct color color_p29 = { p29, ELEMENTS(p29), 25000 };
+
+/* green phosphor for Tek 611 */
+static struct phosphor p31[] = {{0.0, 1.0, 0.77, 0.5, .1}};
+struct color color_p31 = { p31, ELEMENTS(p31), 25000 };
 
 static struct phosphor p40[] = {
     /* P40 blue-white spot with yellow-green decay (.045s to 10%?) */
@@ -131,19 +141,16 @@ static struct color color_red = { pred, ELEMENTS(pred), 100000 };
 static struct display displays[] = {
    /*
      * TX-0
-     * 
      *
      * Unknown manufacturer
      * 
      * 12" tube, 
      * maximum dot size ???
      * 50us point plot time (20,000 points/sec)
-     * P17 Phosphor??? Two phosphor layers:
+     * P7 Phosphor??? Two phosphor layers:
      * fast blue (.05s half life), and slow green (.2s half life)
-     * 
-     * 
      */
-    { DIS_TX0, "MIT TX-0", &color_p17, NULL, 512, 512 },
+    { DIS_TX0, "MIT TX-0", &color_p7, NULL, 512, 512 },
 
     
     /*
@@ -155,12 +162,12 @@ static struct display displays[] = {
      * 16" tube, 14 3/8" square raster
      * maximum dot size .015"
      * 50us point plot time (20,000 points/sec)
-     * P17 Phosphor??? Two phosphor layers:
+     * P7 Phosphor??? Two phosphor layers:
      * fast blue (.05s half life), and slow green (.2s half life)
      * 360 lb
      * 7A at 115+-10V 60Hz
      */
-    { DIS_TYPE30, "Type 30", &color_p17, NULL, 1024, 1024 },
+    { DIS_TYPE30, "Type 30", &color_p7, NULL, 1024, 1024 },
 
     /*
      * VR14
@@ -216,14 +223,25 @@ static struct display displays[] = {
 
     /*
      * Type 340 Display system
-     * on PDP-4/6/7/9/10
+     * on PDP-1/4/6/7/9/10
      *
+     * Raytheon 16ADP7A CRT, same as Type 30
      * 1024x1024
      * 9 3/8" raster (.01" dot pitch)
      * 0,0 at lower left
      * 8 intensity levels
      */
-    { DIS_TYPE340, "Type 340", &color_p17, NULL, 1024, 1024 }
+    { DIS_TYPE340, "Type 340", &color_p7, NULL, 1024, 1024 },
+
+    /*
+     * NG display
+     * on PDP-11/45
+     *
+     * Tektronix 611
+     * 512x512, out of 800x600
+     * 0,0 at middle
+     */
+    { DIS_NG, "NG Display", &color_p31, NULL, 512, 512 }
 };
 
 /*
@@ -341,6 +359,7 @@ static long queue_interval;
 #define Y(P) (((P) - points) / xpixels)
 
 static int initialized = 0;
+static void *device = NULL;  /* Current display device. */
 
 /*
  * global set by O/S display level to indicate "light pen tip switch activated"
@@ -419,6 +438,15 @@ queue_point(struct point *p)
     head->prev = p;
 
     p->delay = d;
+}
+
+/*
+ * Return true if the display is blank, i.e. no active points in list.
+ */
+int
+display_is_blank(void)
+{
+    return head->next == head;
 }
 
 /*
@@ -589,12 +617,14 @@ display_age(int t,          /* simulated us since last call */
 {
     struct point *p;
     static int elapsed = 0;
+    static int refresh_elapsed = 0; /* in units of DELAY_UNIT bounded by refresh_interval */
     int changed;
 
-    if (!initialized && !display_init(DISPLAY_TYPE, PIX_SCALE))
+    if (!initialized && !display_init(DISPLAY_TYPE, PIX_SCALE, NULL))
         return 0;
 
-    display_delay(t, slowdown);
+    if (slowdown)
+        display_delay(t, slowdown);
 
     changed = 0;
 
@@ -604,6 +634,12 @@ display_age(int t,          /* simulated us since last call */
 
     t = elapsed / DELAY_UNIT;
     elapsed %= DELAY_UNIT;
+
+    ++refresh_elapsed;
+    if (refresh_elapsed >= refresh_interval) {
+        display_sync ();
+        refresh_elapsed = 0;
+        }
 
     while ((p = head->next) != head) {
         int x, y;
@@ -717,7 +753,7 @@ display_point(int x,        /* 0..xpixels (unscaled) */
 {
     long lx, ly;
 
-    if (!initialized && !display_init(DISPLAY_TYPE, PIX_SCALE))
+    if (!initialized && !display_init(DISPLAY_TYPE, PIX_SCALE, NULL))
         return 0;
 
     /* scale x and y to the displayed number of pixels */
@@ -828,7 +864,7 @@ find_type(enum display_type type)
 }
 
 int
-display_init(enum display_type type, int sf)
+display_init(enum display_type type, int sf, void *dptr)
 {
     static int init_failed = 0;
     struct display *dp;
@@ -924,7 +960,7 @@ display_init(enum display_type type, int sf)
     if (!points)
         goto failed;
 
-    if (!ws_init(dp->name, xpixels, ypixels, ncolors))
+    if (!ws_init(dp->name, xpixels, ypixels, ncolors, dptr))
         goto failed;
 
     phosphor_init(dp->color0->phosphors, dp->color0->nphosphors, 0);
@@ -934,11 +970,28 @@ display_init(enum display_type type, int sf)
 
     initialized = 1;
     init_failed = 0;            /* hey, we made it! */
+    device = dptr;
     return 1;
 
  failed:
     fprintf(stderr, "Display initialization failed\r\n");
     return 0;
+}
+
+void
+display_close(void *dptr)
+{
+    if (!initialized)
+        return;
+
+    if (device != dptr)
+        return;
+
+    free (points);
+    ws_shutdown();
+
+    initialized = 0;
+    device = NULL;
 }
 
 void
@@ -950,7 +1003,8 @@ display_reset(void)
 void
 display_sync(void)
 {
-    ws_sync();
+    ws_poll (NULL, 0);
+    ws_sync ();
 }
 
 void
@@ -980,32 +1034,28 @@ display_scale(void)
 /*
  * handle keyboard events
  *
- * data switches; 18 -- enough for PDP-1/4/7/9/15 (for munching squares!)
+ * data switches: bit toggled on key up, all cleared on space
+ * enough for PDP-1/4/7/9/15 (for munching squares!):
  * 123 456 789 qwe rty uio
- * bit toggled on key up
- * all cleared on space
  *
- * spacewar switches; bit high as long as key down
- * asdf kl;'
- * just where PDP-1 spacewar expects them!
- * key mappings same as MIT Media Lab Java PDP-1 simulator
- * 
+ * second set of 18 for PDP-6/10, IBM7xxx (shifted versions of above):
+ * !@# $%^ &*( QWE RTY UIO
+ *
  */
 unsigned long spacewar_switches = 0;
+
+unsigned char display_last_char;
 
 /* here from window system */
 void
 display_keydown(int k)
 {
     switch (k) {
-    case 'f': case 'F': spacewar_switches |= 01; break; /* torpedos */
-    case 'd': case 'D': spacewar_switches |= 02; break; /* engines */
-    case 'a': case 'A': spacewar_switches |= 04; break; /* rotate R */
-    case 's': case 'S': spacewar_switches |= 010; break; /* rotate L */
-    case '\'': case '"': spacewar_switches |= 040000; break; /* torpedos */
-    case ';': case ':': spacewar_switches |= 0100000; break; /* engines */
-    case 'k': case 'K': spacewar_switches |= 0200000; break; /* rotate R */
-    case 'l': case 'L': spacewar_switches |= 0400000; break; /* rotate L */
+/* handle spacewar switches: see display.h for copious commentary */
+#define SWSW(LC,UC,BIT,POS36,FUNC36) \
+    case LC: case UC: spacewar_switches |= BIT; return;
+    SPACEWAR_SWITCHES
+#undef SWSW
     default: return;
     }
 }
@@ -1014,19 +1064,16 @@ display_keydown(int k)
 void
 display_keyup(int k)
 {
-    unsigned long test_switches = cpu_get_switches();
+    unsigned long test_switches, test_switches2;
 
-    /* fetch console switches from simulator? */
+    cpu_get_switches(&test_switches, &test_switches2);
     switch (k) {
-    case 'f': case 'F': spacewar_switches &= ~01; return;
-    case 'd': case 'D': spacewar_switches &= ~02; return;
-    case 'a': case 'A': spacewar_switches &= ~04; return;
-    case 's': case 'S': spacewar_switches &= ~010; return;
+/* handle spacewar switches: see display.h for copious commentary */
+#define SWSW(LC,UC,BIT,POS36,NAME36) \
+    case LC: case UC: spacewar_switches &= ~BIT; return;
 
-    case '\'': case '"': spacewar_switches &= ~040000; return;
-    case ';': case ':': spacewar_switches &= ~0100000; return;
-    case 'k': case 'K': spacewar_switches &= ~0200000; return;
-    case 'l': case 'L': spacewar_switches &= ~0400000; return;
+    SPACEWAR_SWITCHES
+#undef SWSW
 
     case '1': test_switches ^= 1<<17; break;
     case '2': test_switches ^= 1<<16; break;
@@ -1040,20 +1087,45 @@ display_keyup(int k)
     case '8': test_switches ^= 1<<10; break;
     case '9': test_switches ^= 1<<9; break;
 
-    case 'q': case 'Q': test_switches ^= 1<<8; break;
-    case 'w': case 'W': test_switches ^= 1<<7; break;
-    case 'e': case 'E': test_switches ^= 1<<6; break;
+    case 'q': test_switches ^= 1<<8; break;
+    case 'w': test_switches ^= 1<<7; break;
+    case 'e': test_switches ^= 1<<6; break;
 
-    case 'r': case 'R': test_switches ^= 1<<5; break;
-    case 't': case 'T': test_switches ^= 1<<4; break;
-    case 'y': case 'Y': test_switches ^= 1<<3; break;
+    case 'r': test_switches ^= 1<<5; break;
+    case 't': test_switches ^= 1<<4; break;
+    case 'y': test_switches ^= 1<<3; break;
 
-    case 'u': case 'U': test_switches ^= 1<<2; break;
-    case 'i': case 'I': test_switches ^= 1<<1; break;
-    case 'o': case 'O': test_switches ^= 1; break;
+    case 'u': test_switches ^= 1<<2; break;
+    case 'i': test_switches ^= 1<<1; break;
+    case 'o': test_switches ^= 1; break;
 
-    case ' ': test_switches = 0; break;
+    /* second set of 18 switches */
+    case '!': test_switches2 ^= 1<<17; break;
+    case '@': test_switches2 ^= 1<<16; break;
+    case '#': test_switches2 ^= 1<<15; break;
+
+    case '$': test_switches2 ^= 1<<14; break;
+    case '%': test_switches2 ^= 1<<13; break;
+    case '^': test_switches2 ^= 1<<12; break;
+
+    case '&': test_switches2 ^= 1<<11; break;
+    case '*': test_switches2 ^= 1<<10; break;
+    case '(': test_switches2 ^= 1<<9; break;
+
+    case 'Q': test_switches2 ^= 1<<8; break;
+    case 'W': test_switches2 ^= 1<<7; break;
+    case 'E': test_switches2 ^= 1<<6; break;
+
+    case 'R': test_switches2 ^= 1<<5; break;
+    case 'T': test_switches2 ^= 1<<4; break;
+    case 'Y': test_switches2 ^= 1<<3; break;
+
+    case 'U': test_switches2 ^= 1<<2; break;
+    case 'I': test_switches2 ^= 1<<1; break;
+    case 'O': test_switches2 ^= 1; break;
+
+    case ' ': test_switches = test_switches2 = 0; break;
     default: return;
     }
-    cpu_set_switches(test_switches);
+    cpu_set_switches(test_switches, test_switches2);
 }

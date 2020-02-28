@@ -1,6 +1,6 @@
 /* alpha_sys.c: Alpha simulator interface
 
-   Copyright (c) 2003-2006, Robert M Supnik
+   Copyright (c) 2003-20017, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -22,6 +22,8 @@
    Except as contained in this notice, the name of Robert M Supnik shall not be
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
+
+   26-May-17    RMS     Fixed bad mnemonics and reversed definitions in opcode 12
 */
 
 #include "alpha_defs.h"
@@ -32,11 +34,11 @@ extern REG cpu_reg[];
 extern uint32 pal_type;
 
 t_stat fprint_sym_m (FILE *of, t_addr addr, uint32 inst);
-t_stat parse_sym_m (char *cptr, t_addr addr, t_value *inst);
-int32 parse_reg (char *cptr);
+t_stat parse_sym_m (CONST char *cptr, t_addr addr, t_value *inst);
+int32 parse_reg (CONST char *cptr);
 
 extern t_stat fprint_pal_hwre (FILE *of, uint32 inst);
-extern t_stat parse_pal_hwre (char *cptr, t_value *inst);
+extern t_stat parse_pal_hwre (CONST char *cptr, t_value *inst);
 extern t_bool rom_wr (t_uint64 pa, t_uint64 val, uint32 lnt);
 
 /* SCP data structures and interface routines
@@ -71,7 +73,7 @@ const char *sim_stop_messages[] = {
    -o           specify origin
 */
 
-t_stat sim_load (FILE *fileref, char *cptr, char *fnam, int flag)
+t_stat sim_load (FILE *fileref, CONST char *cptr, CONST char *fnam, int flag)
 {
 t_stat r;
 int32 i;
@@ -198,9 +200,9 @@ const char *opcode[] = {
  "MSKLL", "EXTLL", "INSLL",
  "ZAP", "ZAPNOT", "MSKQL", "SRL",
  "EXTQL", "SLL", "INSQL", "SRA",
- "MSKWQ", "EXTWQ", "INSWQ",
- "MSKLQ", "EXTLQ", "INSLQ",
- "MSKQH", "EXTQH", "INSQH",
+ "MSKWH", "INSWH", "EXTWH",
+ "MSKLH", "INSLH", "EXTLH",
+ "MSKQH", "INSQH", "EXTQH",
  "MULL", "MULQ", "UMULH",
  "MULL/V", "MULLQ/V",
  "ITOFS", "ITOFF", "ITOFT",
@@ -494,11 +496,6 @@ const uint32 opval[] = {
                         if < 0, number of extra bytes retired
 */
 
-/* Use scp.c provided fprintf function */
-#define fprintf Fprintf
-#define fputs(_s,f) Fprintf(f,"%s",_s)
-#define fputc(_c,f) Fprintf(f,"%c",_c)
-
 t_stat fprint_sym (FILE *of, t_addr addr, t_value *val,
     UNIT *uptr, int32 sw)
 {
@@ -631,7 +628,7 @@ return SCPE_ARG;
                         <= 0  -number of extra words
 */
 
-t_stat parse_sym (char *cptr, t_addr addr, UNIT *uptr, t_value *val, int32 sw)
+t_stat parse_sym (CONST char *cptr, t_addr addr, UNIT *uptr, t_value *val, int32 sw)
 {
 t_value num;
 uint32 i, sc, rdx;
@@ -715,13 +712,13 @@ return -7;
                         <= 0  -number of extra words
 */
 
-t_stat parse_sym_m (char *cptr, t_addr addr, t_value *inst)
+t_stat parse_sym_m (CONST char *cptr, t_addr addr, t_value *inst)
 {
 t_uint64 bra, df, db;
 uint32 i, k, lit8, fl;
 int32 reg;
 t_stat r;
-const char *tptr;
+CONST char *tptr;
 char gbuf[CBUFSIZE];
 
 if ((r = parse_pal_hwre (cptr, inst)) < 0) return r;    /* PAL hardware? */
@@ -805,7 +802,7 @@ return -3;
 
 /* Parse a register */
 
-int32 parse_reg (char *cptr)
+int32 parse_reg (CONST char *cptr)
 {
 t_stat r;
 int32 reg;

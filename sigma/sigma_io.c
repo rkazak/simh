@@ -1,6 +1,6 @@
 /* sigma_io.c: XDS Sigma IO simulator
 
-   Copyright (c) 2007-2008, Robert M Supnik
+   Copyright (c) 2007-2017, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -22,6 +22,8 @@
    Except as contained in this notice, the name of Robert M Supnik shall not be
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
+
+   09-Mar-2017  RMS     Fixed unspecified return value in HIO (COVERITY)
 */
 
 #include "sigma_io_defs.h"
@@ -99,8 +101,8 @@ t_bool io_init_inst (uint32 ad, uint32 rn, uint32 ch, uint32 dev, uint32 r0);
 uint32 io_set_status (uint32 rn, uint32 ch, uint32 dev, uint32 dvst, t_bool tdv);
 uint32 io_rwd_m0 (uint32 op, uint32 rn, uint32 ad);
 uint32 io_rwd_m1 (uint32 op, uint32 rn, uint32 ad);
-t_stat io_set_eiblks (UNIT *uptr, int32 val, char *cptr, void *desc);
-t_stat io_show_eiblks (FILE *st, UNIT *uptr, int32 val, void *desc);
+t_stat io_set_eiblks (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+t_stat io_show_eiblks (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 t_stat int_reset (DEVICE *dptr);
 t_stat chan_reset (DEVICE *dptr);
 uint32 chan_new_cmd (uint32 ch, uint32 dev, uint32 clc);
@@ -415,33 +417,22 @@ ad = bva >> 2;
 ch = DVA_GETCHAN (ad);                                  /* get chan, dev */
 dev = DVA_GETDEV (ad);
 subop = (ad >> 13) & 0x7;
-if (subop) {                                            /* extended fnc? */
+if (subop != 0) {                                       /* extended fnc? */
     if (!QCPU_S89_5X0 || (subop > 3))                   /* S9, 5X0 only */
         return (stop_op? STOP_ILLEG: 0);
-    if (ch >= chan_num) {                               /* valid channel? */
+    if (ch >= chan_num)                                 /* valid channel? */
         CC |= CC1|CC2;
-        return 0;
-        }
-    switch (subop) {
-
-    case 1:                                             /* reset channel */
-        chan_reset (&chan_dev[ch]);
-        break;
-
-    case 2: case 3:                                     /* poll processor */
-        if (rn)                                         /* NI */
-            R[rn] = 0;
-        break;
-        }
+    else if (subop == 1)                                /* chan reset? */
+        chan_reset (&chan_dev[ch]);                     /* no status */
+    else R[rn] = 0;                                     /* poll proc, NI */
+    return 0;
     }
-else {                                                  /* normal HIO */
-    if (!io_init_inst (rn, ad, ch, dev, 0)) {           /* valid inst? */
-        CC |= CC1|CC2;
-        return 0;
-        }
-    st = chan[ch].disp[dev] (OP_HIO, ad, &dvst);        /* halt IO */
-    CC |= io_set_status (rn, ch, dev, dvst, 0);         /* set status */
+if (!io_init_inst (rn, ad, ch, dev, 0)) {               /* valid inst? */
+    CC |= CC1|CC2;
+    return 0;
     }
+st = chan[ch].disp[dev] (OP_HIO, ad, &dvst);            /* halt IO */
+CC |= io_set_status (rn, ch, dev, dvst, 0);             /* set status */
 return st;
 }
 
@@ -1052,7 +1043,7 @@ if (op == OP_RD) {                                      /* read direct? */
         }
     else if (QCPU_S89 && (fnc == 0x045)) {              /* S89 only */
         if (rn)
-            R[rn] = s9_marg & 0x00C00000 |              /* <8,9> = margins */
+            R[rn] = (s9_marg & 0x00C00000) |            /* <8,9> = margins */
                 (QCPU_S9? 0x00100000: 0x00200000);      /* S8 sets 10, S9 11 */            
         }
     else if (QCPU_S89 && (fnc == 0x049)) {              /* S89 only */
@@ -1254,8 +1245,7 @@ dib_t *dibp = (dib_t *) dptr->ctxt;
 for (i = 0; i < MEMSIZE; i++)                           /* boot clrs mem */
     WritePW (i, 0);
 if ((dibp == NULL) ||
-    ((u != 0) &&
-    ((dibp->dva & DVA_MU) == 0)))
+    ((u != 0) && ((dibp->dva & DVA_MU) == 0)))
     return SCPE_ARG;
 for (i = 0; i < BOOT_LNT; i++)
     WritePW (BOOT_SA + i, boot_rom[i]);
@@ -1317,7 +1307,7 @@ return SCPE_OK;
 
 /* Set/show external interrupt blocks */
 
-t_stat io_set_eiblks (UNIT *uptr, int32 val, char *cptr, void *desc)
+t_stat io_set_eiblks (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 int32 lnt;
 t_stat r;
@@ -1332,7 +1322,7 @@ io_set_eimax (lnt);
 return SCPE_OK;
 }
 
-t_stat io_show_eiblks (FILE *st, UNIT *uptr, int32 val, void *desc)
+t_stat io_show_eiblks (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
 fprintf (st, "eiblks=%d", ei_bmax);
 return SCPE_OK;
@@ -1368,7 +1358,7 @@ return;
 
 /* Set or show number of channels */
 
-t_stat io_set_nchan (UNIT *uptr, int32 val, char *cptr, void *desc)
+t_stat io_set_nchan (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 int32 i, num;
 t_stat r;
@@ -1388,7 +1378,7 @@ for (i = 0; i < CHAN_N_CHAN; i++) {
 return SCPE_OK;
 }
 
-t_stat io_show_nchan (FILE *st, UNIT *uptr, int32 val, void *desc)
+t_stat io_show_nchan (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
 fprintf (st, "channels=%d", chan_num);
 return SCPE_OK;
@@ -1396,7 +1386,7 @@ return SCPE_OK;
 
 /* Set or show device channel assignment */
 
-t_stat io_set_dvc (UNIT* uptr, int32 val, char *cptr, void *desc)
+t_stat io_set_dvc (UNIT* uptr, int32 val, CONST char *cptr, void *desc)
 {
 int32 num;
 DEVICE *dptr;
@@ -1414,7 +1404,7 @@ dibp->dva = (dibp->dva & ~DVA_CHAN) | (num << DVA_V_CHAN);
 return SCPE_OK;
 }
 
-t_stat io_show_dvc (FILE *st, UNIT *uptr, int32 val, void *desc)
+t_stat io_show_dvc (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
 DEVICE *dptr;
 dib_t *dibp;
@@ -1428,7 +1418,7 @@ return SCPE_OK;
 
 /* Set or show device address */
 
-t_stat io_set_dva (UNIT* uptr, int32 val, char *cptr, void *desc)
+t_stat io_set_dva (UNIT* uptr, int32 val, CONST char *cptr, void *desc)
 {
 int32 num;
 DEVICE *dptr;
@@ -1449,7 +1439,7 @@ else dibp->dva = (dibp->dva & ~DVA_DEVSU) | ((num & DVA_M_DEVSU) << DVA_V_DEVSU)
 return SCPE_OK;
 }
 
-t_stat io_show_dva (FILE *st, UNIT *uptr, int32 val, void *desc)
+t_stat io_show_dva (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
 DEVICE *dptr;
 dib_t *dibp;
@@ -1463,7 +1453,7 @@ return SCPE_OK;
 
 /* Show channel state */
 
-t_stat io_show_cst (FILE *st, UNIT *uptr, int32 val, void *desc)
+t_stat io_show_cst (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
 DEVICE *dptr;
 dib_t *dibp;

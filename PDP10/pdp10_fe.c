@@ -42,14 +42,12 @@
 #include "sim_tmxr.h"
 #define UNIT_DUMMY      (1 << UNIT_V_UF)
 
-extern d10 *M;
-extern int32 apr_flg;
 extern int32 tmxr_poll;
 t_stat fei_svc (UNIT *uptr);
 t_stat feo_svc (UNIT *uptr);
 static t_stat kaf_svc (UNIT *uptr);
 t_stat fe_reset (DEVICE *dptr);
-t_stat fe_stop_os (UNIT *uptr, int32 val, char *cptr, void *desc);
+t_stat fe_stop_os (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
 a10 fe_xct = 0;
 uint32 fe_bootrh = 0;
 int32 fe_bootunit = -1;
@@ -73,12 +71,12 @@ UNIT fe_unit[] = {
     };
 
 REG fe_reg[] = {
-    { ORDATA (IBUF, fei_unit.buf, 8) },
-    { DRDATA (ICOUNT, fei_unit.pos, T_ADDR_W), REG_RO + PV_LEFT },
-    { DRDATA (ITIME, fei_unit.wait, 24), PV_LEFT },
-    { ORDATA (OBUF, feo_unit.buf, 8) },
-    { DRDATA (OCOUNT, feo_unit.pos, T_ADDR_W), REG_RO + PV_LEFT },
-    { DRDATA (OTIME, feo_unit.wait, 24), REG_NZ + PV_LEFT },
+    { ORDATAD (IBUF, fei_unit.buf, 8, "input buffer") },
+    { DRDATAD (ICOUNT, fei_unit.pos, T_ADDR_W, "count of input characters"), REG_RO + PV_LEFT },
+    { DRDATAD (ITIME, fei_unit.wait, 24, "input polling interval (if 0, the keyboard is polled                            synchronously with the clock"), PV_LEFT },
+    { ORDATAD (OBUF, feo_unit.buf, 8, "output buffer") },
+    { DRDATAD (OCOUNT, feo_unit.pos, T_ADDR_W, "count of output characters"), REG_RO + PV_LEFT },
+    { DRDATAD (OTIME, feo_unit.wait, 24, "console output response time"), REG_NZ + PV_LEFT },
     { NULL }
     };
 
@@ -193,8 +191,9 @@ t_stat fei_svc (UNIT *uptr)
 {
 int32 temp;
 
+temp = sim_poll_kbd ();                                 /* get possible char or error? */
 sim_clock_coschedule (uptr, tmxr_poll);                 /* continue poll */
-if ((temp = sim_poll_kbd ()) < SCPE_KFLAG)              /* no char or error? */
+if (temp < SCPE_KFLAG)                                  /* no char or error? */
     return temp;
 if (temp & SCPE_BREAK)                                  /* ignore break */
     return SCPE_OK;
@@ -290,7 +289,7 @@ return SCPE_OK;
 
 t_stat fe_reset (DEVICE *dptr)
 {
-tmxr_set_console_units (&fe_unit[0], &fe_unit[1]);
+tmxr_set_console_units (&fei_unit, &feo_unit);
 fei_unit.buf = feo_unit.buf = 0;
 
 M[FE_CTYIN] = M[FE_CTYOUT] = 0;
@@ -300,14 +299,14 @@ M[FE_KEEPA] = INT64_C(0003740000000);                  /* PARITY STOP, CRM, DP P
 kaf_unit.u3 = 0;
 kaf_unit.u4 = 0;
 apr_flg = apr_flg & ~(APRF_ITC | APRF_CON);
-sim_activate (&fei_unit, KBD_WAIT (fei_unit.wait, tmxr_poll));
+sim_activate (&fei_unit, tmxr_poll);
 sim_activate_after (&kaf_unit, kaf_unit.wait);
 return SCPE_OK;
 }
 
 /* Stop operating system */
 
-t_stat fe_stop_os (UNIT *uptr, int32 val, char *cptr, void *desc)
+t_stat fe_stop_os (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 M[FE_SWITCH] = IOBA_RP;                                 /* tell OS to stop */
 return SCPE_OK;

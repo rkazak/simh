@@ -1,6 +1,6 @@
 /* vax_defs.h: VAX architecture definitions file
 
-   Copyright (c) 1998-2011, Robert M Supnik
+   Copyright (c) 1998-2019, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -26,6 +26,7 @@
    The author gratefully acknowledges the help of Stephen Shirron, Antonio
    Carlini, and Kevin Peterson in providing specifications for the Qbus VAX's
 
+   23-Apr-19    RMS     Added hook for unpredictable indexed immediate .aw
    05-Nov-11    RMS     Added PSL_IPL17 definition
    09-May-06    RMS     Added system PTE ACV error code
    03-May-06    RMS     Added EDITPC get/put cc's macros
@@ -66,6 +67,7 @@
 #define STOP_BOOT       12                              /* reboot (780) */
 #define STOP_UNKNOWN    13                              /* unknown reason */
 #define STOP_UNKABO     14                              /* unknown abort */
+#define STOP_DTOFF      15                              /* DECtape off reel */
 #define ABORT_INTR      -1                              /* interrupt */
 #define ABORT_MCHK      (-SCB_MCHK)                     /* machine check */
 #define ABORT_RESIN     (-SCB_RESIN)                    /* rsvd instruction */
@@ -76,14 +78,48 @@
 #define ABORT_ACV       (-SCB_ACV)                      /* access violation */
 #define ABORT_TNV       (-SCB_TNV)                      /* transl not vaid */
 #define ABORT(x)        longjmp (save_env, (x))         /* abort */
-#define RSVD_INST_FAULT ABORT (ABORT_RESIN)
+extern jmp_buf save_env;
+#define RSVD_INST_FAULT(opc) do {                                                                       \
+        char op_num[20];                                                                                \
+        char const *opcd = opcode[opc];                                                                 \
+                                                                                                        \
+        if (sim_deb && !opcd) {                                                                         \
+            opcd = op_num;                                                                              \
+            sprintf (op_num, "Opcode 0x%X", opc);                                                              \
+            sim_debug (LOG_CPU_FAULT_RSVD, &cpu_dev, "%s fault_PC=%08x, PSL=%08x, SP=%08x, PC=%08x\n",  \
+                                                     opcd, fault_PC, PSL, SP, PC);                      \
+            }                                                                                           \
+        ABORT (ABORT_RESIN); } while (0)
 #define RSVD_ADDR_FAULT ABORT (ABORT_RESAD)
-#define RSVD_OPND_FAULT ABORT (ABORT_RESOP)
+#define RSVD_OPND_FAULT(opc) do {                                                                       \
+        sim_debug (LOG_CPU_FAULT_RSVD, &cpu_dev, #opc " fault_PC=%08x, PSL=%08x, SP=%08x, PC=%08x\n",   \
+                                                 fault_PC, PSL, SP, PC);                                \
+        ABORT (ABORT_RESOP); } while (0)
 #define FLT_OVFL_FAULT  p1 = FLT_OVRFLO, ABORT (ABORT_ARITH)
 #define FLT_DZRO_FAULT  p1 = FLT_DIVZRO, ABORT (ABORT_ARITH)
 #define FLT_UNFL_FAULT  p1 = FLT_UNDFLO, ABORT (ABORT_ARITH)
-#define CMODE_FAULT(cd) p1 = (cd), ABORT (ABORT_CMODE)
-#define MACH_CHECK(cd)  p1 = (cd), ABORT (ABORT_MCHK)
+#define CMODE_FAULT(cd) do {                                                                            \
+        sim_debug (LOG_CPU_FAULT_CMODE, &cpu_dev, #cd " fault_PC=%08x, PSL=%08x, SP=%08x, PC=%08x\n",   \
+                                                 fault_PC, PSL, SP, PC);                                \
+        p1 = (cd);                                                                                      \
+        ABORT (ABORT_CMODE); } while (0)
+#define MACH_CHECK(cd)  do {                                                                            \
+        sim_debug (LOG_CPU_FAULT_MCHK, &cpu_dev, #cd " fault_PC=%08x, PSL=%08x, SP=%08x, PC=%08x\n",    \
+                                                 fault_PC, PSL, SP, PC);                                \
+        p1 = (cd);                                                                                      \
+        ABORT (ABORT_MCHK); } while (0)
+
+/* Logging */
+
+#define LOG_CPU_I           0x001                       /* intexc */
+#define LOG_CPU_R           0x002                       /* REI */
+#define LOG_CPU_A           0x004                       /* Abort */
+#define LOG_CPU_P           0x008                       /* process context */
+#define LOG_CPU_FAULT_RSVD  0x010                       /* reserved faults */
+#define LOG_CPU_FAULT_FLT   0x020                       /* floating faults*/
+#define LOG_CPU_FAULT_CMODE 0x040                       /* cmode faults */
+#define LOG_CPU_FAULT_MCHK  0x080                       /* machine check faults */
+#define LOG_CPU_FAULT_EMUL  0x100                       /* emulated instruction fault */
 
 /* Recovery queue */
 
@@ -372,14 +408,76 @@
 #define IE_EXC          0                               /* normal exception */
 #define IE_INT          1                               /* interrupt */
 
+/*
+ * FULL_VAX     If defined, all instructions implemented (780 like)
+ * CMPM_VAX     If defined, compatibility mode is implemented.
+ *              (Defined for 780, 750, 730 and 8600 only)
+ * NOEXS_VAX    If defined, no extra string instructions.
+ *              (Defined for MicroVAX I and II only)
+ * NOEXF_VAX    If defined, no extra floating point instructions.
+ *              (Available for future Rigel, Mariah and NVAX implementations)
+ */
+
 /* Decode ROM: opcode entry */
 
 #define DR_F            0x80                            /* FPD ok flag */
 #define DR_NSPMASK      0x07                            /* #specifiers */
 #define DR_V_USPMASK    4
-#define DR_M_USPMASK    0x70                            /* #spec, sym_ */
-#define DR_GETNSP(x)    ((x) & DR_NSPMASK)
-#define DR_GETUSP(x)    (((x) >> DR_V_USPMASK) & DR_M_USPMASK)
+#define DR_M_USPMASK    0x7                             /* #spec, sym_ */
+#define DR_GETNSP(x)    ((x) & DR_NSPMASK)              /* #specifiers */
+#define DR_GETUSP(x)    (((x) >> DR_V_USPMASK) & DR_M_USPMASK) /* #specifiers for unimplemented instructions */
+
+/* Extra bits in the opcode flag word of the Decode ROM array only for history results */
+
+#define DR_V_RESMASK    8
+#define DR_M_RESMASK    0x000F
+#define RB_0    (0 << DR_V_RESMASK)     /* No Results */
+#define RB_B    (1 << DR_V_RESMASK)     /* Byte Result */
+#define RB_W    (2 << DR_V_RESMASK)     /* Word Result */
+#define RB_L    (3 << DR_V_RESMASK)     /* Long Result */
+#define RB_Q    (4 << DR_V_RESMASK)     /* Quad Result */
+#define RB_O    (5 << DR_V_RESMASK)     /* Octa Result */
+#define RB_OB   (6 << DR_V_RESMASK)     /* Octa Byte Result */
+#define RB_OW   (7 << DR_V_RESMASK)     /* Octa Word Result */
+#define RB_OL   (8 << DR_V_RESMASK)     /* Octa Long Result */
+#define RB_OQ   (9 << DR_V_RESMASK)     /* Octa Quad Result */
+#define RB_R0  (10 << DR_V_RESMASK)     /* Reg  R0     */
+#define RB_R1  (11 << DR_V_RESMASK)     /* Regs R0-R1  */
+#define RB_R3  (12 << DR_V_RESMASK)     /* Regs R0-R3  */
+#define RB_R5  (13 << DR_V_RESMASK)     /* Regs R0-R5  */
+#define RB_SP  (14 << DR_V_RESMASK)     /* @SP         */
+#define DR_GETRES(x)    (((x) >> DR_V_RESMASK) & DR_M_RESMASK)
+
+/* Extra bits in the opcode flag word of the Decode ROM array 
+   to identify instruction group */
+
+#define DR_V_IGMASK     12
+#define DR_M_IGMASK    0x0007
+#define IG_RSVD     (0 << DR_V_IGMASK)  /* Reserved Opcode */
+#define IG_BASE     (1 << DR_V_IGMASK)  /* Base Instruction Group       */
+#define IG_BSGFL    (2 << DR_V_IGMASK)  /*   Base subgroup G-Float      */
+#define IG_BSDFL    (3 << DR_V_IGMASK)  /*   Base subgroup D-Float      */
+#define IG_PACKD    (4 << DR_V_IGMASK)  /* packed-decimal-string group  */
+#define IG_EXTAC    (5 << DR_V_IGMASK)  /* extended-accuracy group      */
+#define IG_EMONL    (6 << DR_V_IGMASK)  /* emulated-only group          */
+#define IG_VECTR    (7 << DR_V_IGMASK)  /* vector-processing group      */
+#define IG_MAX_GRP  7                   /* Maximum Instruction groups */
+#define DR_GETIGRP(x)    (((x) >> DR_V_IGMASK) & DR_M_IGMASK)
+
+#define VAX_FULL_BASE ((1 << DR_GETIGRP(IG_BASE))  | \
+                       (1 << DR_GETIGRP(IG_BSGFL)) | \
+                       (1 << DR_GETIGRP(IG_BSDFL)))
+#define VAX_BASE   (1 << DR_GETIGRP(IG_BASE))
+#define VAX_GFLOAT (1 << DR_GETIGRP(IG_BSGFL))
+#define VAX_DFLOAT (1 << DR_GETIGRP(IG_BSDFL))
+#define VAX_PACKED (1 << DR_GETIGRP(IG_PACKD))
+#define VAX_EXTAC  (1 << DR_GETIGRP(IG_EXTAC))
+#define VAX_EMONL  (1 << DR_GETIGRP(IG_EMONL))
+#define VAX_VECTR  (1 << DR_GETIGRP(IG_VECTR))
+#define FULL_INSTRUCTION_SET (VAX_FULL_BASE               | \
+                              (1 << DR_GETIGRP(IG_PACKD)) | \
+                              (1 << DR_GETIGRP(IG_EXTAC)) | \
+                              (1 << DR_GETIGRP(IG_EMONL)))
 
 /* Decode ROM: specifier entry */
 
@@ -585,10 +683,20 @@ enum opcodes {
 #define PCQ_MASK        (PCQ_SIZE - 1)
 #define PCQ_ENTRY       pcq[pcq_p = (pcq_p - 1) & PCQ_MASK] = fault_PC
 #define GET_ISTR(d,l)   d = get_istr (l, acc)
-#define BRANCHB(d)      PCQ_ENTRY, PC = PC + SXTB (d), FLUSH_ISTR
-#define BRANCHW(d)      PCQ_ENTRY, PC = PC + SXTW (d), FLUSH_ISTR
-#define JUMP(d)         PCQ_ENTRY, PC = (d), FLUSH_ISTR
-#define CMODE_JUMP(d)   PCQ_ENTRY, PC = (d)
+#define CHECK_FOR_IDLE_LOOP if (PC == fault_PC) {                           /* to self? */ \
+                                if (PSL_GETIPL (PSL) == 0x1F)               /* int locked out? */ \
+                                    ABORT (STOP_LOOP);                      /* infinite loop */ \
+                                cpu_idle ();                                /* idle loop */ \
+                                }
+/* Instructions which have side effects (ACB, AOBLSS, BBSC, BBCS, etc.) can't be an idle loop so avoid the idle check */
+#define BRANCHB_ALWAYS(d)      do {PCQ_ENTRY; PC = PC + SXTB (d); FLUSH_ISTR; } while (0)
+#define BRANCHW_ALWAYS(d)      do {PCQ_ENTRY; PC = PC + SXTW (d); FLUSH_ISTR; } while (0)
+#define JUMP_ALWAYS(d)         do {PCQ_ENTRY; PC = (d);           FLUSH_ISTR; } while (0)
+/* Any basic branch instructions could be an idle loop */
+#define BRANCHB(d)      do {PCQ_ENTRY; PC = PC + SXTB (d); FLUSH_ISTR; CHECK_FOR_IDLE_LOOP; } while (0)
+#define BRANCHW(d)      do {PCQ_ENTRY; PC = PC + SXTW (d); FLUSH_ISTR; CHECK_FOR_IDLE_LOOP; } while (0)
+#define JUMP(d)         do {PCQ_ENTRY; PC = (d); FLUSH_ISTR; CHECK_FOR_IDLE_LOOP; } while (0)
+#define CMODE_JUMP(d)   do {PCQ_ENTRY; PC = (d); CHECK_FOR_IDLE_LOOP; } while (0)
 #define SETPC(d)        PC = (d), FLUSH_ISTR
 #define FLUSH_ISTR      ibcnt = 0, ppc = -1
 
@@ -602,7 +710,7 @@ enum opcodes {
 #define STR_GETDPC(x)   (((x) >> STR_V_DPC) & STR_M_DPC)
 #define STR_GETCHR(x)   (((x) >> STR_V_CHR) & STR_M_CHR)
 #define STR_PACK(m,x)   ((((PC - fault_PC) & STR_M_DPC) << STR_V_DPC) | \
-                    (((m) & STR_M_CHR) << STR_V_CHR) | ((x) & STR_LNMASK))
+                        (((m) & STR_M_CHR) << STR_V_CHR) | ((x) & STR_LNMASK))
 
 /* Read and write */
 
@@ -718,6 +826,9 @@ enum opcodes {
             else cc = 0; \
             if (((uint32) s1) < ((uint32) s2)) cc = cc | CC_C
 
+/* Operand Memory vs Register Indicator */
+#define OP_MEM          0xFFFFFFFF
+
 #define VAX_IDLE_VMS        0x01
 #define VAX_IDLE_ULT        0x02    /* Ultrix more recent versions */
 #define VAX_IDLE_ULTOLD     0x04    /* Ultrix older versions */
@@ -725,10 +836,142 @@ enum opcodes {
 #define VAX_IDLE_QUAD       0x10
 #define VAX_IDLE_BSDNEW     0x20
 #define VAX_IDLE_SYSV       0x40
-extern uint32 cpu_idle_mask;                            /* idle mask */
+#define VAX_IDLE_ELN        0x40    /* VAXELN */
+extern uint32 cpu_idle_mask;        /* idle mask */
+extern int32 extra_bytes;           /* bytes referenced by current string instruction */
+extern BITFIELD cpu_psl_bits[];
+extern char const * const opcode[];
+extern const uint16 drom[NUM_INST][MAX_SPEC + 1];
+extern int32 cpu_emulate_exception (int32 *opnd, int32 cc, int32 opc, int32 acc);
 void cpu_idle (void);
 
+/* Instruction History */
+#define HIST_MIN        64
+#define HIST_MAX        250000
+
+#define OPND_SIZE       16
+#define INST_SIZE       52
+
+typedef struct {
+    double              time;
+    int32               iPC;
+    int32               PSL;
+    int32               opc;
+    uint8               inst[INST_SIZE];
+    uint32              opnd[OPND_SIZE];
+    uint32              res[6];
+    } InstHistory;
+
+
+/* CPU Register definitions */
+
+extern int32 R[16];                                     /* registers */
+extern int32 STK[5];                                    /* stack pointers */
+extern int32 PSL;                                       /* PSL */
+extern int32 SCBB;                                      /* SCB base */
+extern int32 PCBB;                                      /* PCB base */
+extern int32 SBR, SLR;                                  /* S0 mem mgt */                                          /* S0 mem mgt */
+extern int32 P0BR, P0LR;                                /* P0 mem mgt */
+extern int32 P1BR, P1LR;                                /* P1 mem mgt */
+extern int32 ASTLVL;                                    /* AST Level */
+extern int32 SISR;                                      /* swre int req */
+extern int32 pme;                                       /* perf mon enable */
+extern int32 trpirq;                                    /* trap/intr req */
+extern int32 fault_PC;                                  /* fault PC */
+extern int32 p1, p2;                                    /* fault parameters */
+extern int32 recq[];                                    /* recovery queue */
+extern int32 recqptr;                                   /* recq pointer */
+extern int32 pcq[PCQ_SIZE];                             /* PC queue */
+extern int32 pcq_p;                                     /* PC queue ptr */
+extern int32 in_ie;                                     /* in exc, int */
+extern int32 ibcnt, ppc;                                /* prefetch ctl */
+extern int32 hlt_pin;                                   /* HLT pin intr */
+extern int32 mxpr_cc_vc;                                /* cc V & C bits from mtpr/mfpr operations */
+extern int32 mem_err;
+extern int32 crd_err;
+
+/* vax_cpu1.c externals */
+extern int32 op_bb_n (int32 *opnd, int32 acc);
+extern int32 op_bb_x (int32 *opnd, int32 newb, int32 acc);
+extern int32 op_extv (int32 *opnd, int32 vfldrp1, int32 acc);
+extern void op_insv (int32 *opnd, int32 vfldrp1, int32 acc);
+extern int32 op_ffs (uint32 fld, int32 size);
+extern int32 op_call (int32 *opnd, t_bool gs, int32 acc);
+extern int32 op_ret (int32 acc);
+extern int32 op_insque (int32 *opnd, int32 acc);
+extern int32 op_remque (int32 *opnd, int32 acc);
+extern int32 op_insqhi (int32 *opnd, int32 acc);
+extern int32 op_insqti (int32 *opnd, int32 acc);
+extern int32 op_remqhi (int32 *opnd, int32 acc);
+extern int32 op_remqti (int32 *opnd, int32 acc);
+extern void op_pushr (int32 *opnd, int32 acc);
+extern void op_popr (int32 *opnd, int32 acc);
+extern int32 op_movc (int32 *opnd, int32 opc, int32 acc);
+extern int32 op_cmpc (int32 *opnd, int32 opc, int32 acc);
+extern int32 op_locskp (int32 *opnd, int32 opc, int32 acc);
+extern int32 op_scnspn (int32 *opnd, int32 opc, int32 acc);
+extern int32 op_chm (int32 *opnd, int32 cc, int32 opc);
+extern int32 op_rei (int32 acc);
+extern void op_ldpctx (int32 acc);
+extern void op_svpctx (int32 acc);
+extern int32 op_probe (int32 *opnd, int32 opc);
+extern int32 op_mtpr (int32 *opnd);
+extern int32 op_mfpr (int32 *opnd);
+extern int32 intexc (int32 vec, int32 cc, int32 ipl, int ei);
+
+/* vax_cis.c externals */
+extern int32 op_cis (int32 *opnd, int32 cc, int32 opc, int32 acc);
+
+/* vax_fpa.c externals */
+extern int32 op_ashq (int32 *opnd, int32 *rh, int32 *flg);
+extern int32 op_emul (int32 mpy, int32 mpc, int32 *rh);
+extern int32 op_ediv (int32 *opnd, int32 *rh, int32 *flg);
+extern int32 op_cmpfd (int32 h1, int32 l1, int32 h2, int32 l2);
+extern int32 op_cmpg (int32 h1, int32 l1, int32 h2, int32 l2);
+extern int32 op_cvtifdg (int32 val, int32 *rh, int32 opc);
+extern int32 op_cvtfdgi (int32 *opnd, int32 *flg, int32 opc);
+extern int32 op_emodf (int32 *opnd, int32 *intgr, int32 *flg);
+extern int32 op_emodd (int32 *opnd, int32 *rh, int32 *intgr, int32 *flg);
+extern int32 op_emodg (int32 *opnd, int32 *rh, int32 *intgr, int32 *flg);
+extern int32 op_movfd (int32 val);
+extern int32 op_mnegfd (int32 val);
+extern int32 op_movg (int32 val);
+extern int32 op_mnegg (int32 val);
+extern int32 op_cvtdf (int32 *opnd);
+extern int32 op_cvtfg (int32 *opnd, int32 *rh);
+extern int32 op_cvtgf (int32 *opnd);
+extern int32 op_addf (int32 *opnd, t_bool sub);
+extern int32 op_addd (int32 *opnd, int32 *rh, t_bool sub);
+extern int32 op_addg (int32 *opnd, int32 *rh, t_bool sub);
+extern int32 op_mulf (int32 *opnd);
+extern int32 op_muld (int32 *opnd, int32 *rh);
+extern int32 op_mulg (int32 *opnd, int32 *rh);
+extern int32 op_divf (int32 *opnd);
+extern int32 op_divd (int32 *opnd, int32 *rh);
+extern int32 op_divg (int32 *opnd, int32 *rh);
+extern void op_polyf (int32 *opnd, int32 acc);
+extern void op_polyd (int32 *opnd, int32 acc);
+extern void op_polyg (int32 *opnd, int32 acc);
+
+/* vax_octa.c externals */
+extern int32 op_octa (int32 *opnd, int32 cc, int32 opc, int32 acc, int32 spec, int32 va, InstHistory *hst);
+
+/* vax_cmode.c externals */
+extern int32 op_cmode (int32 cc);
+extern t_bool BadCmPSL (int32 newpsl);
+
+/* vax_sys.c externals */
+extern const uint16 drom[NUM_INST][MAX_SPEC + 1];
+
 /* Model dependent definitions */
+extern int32 eval_int (void);
+extern int32 machine_check (int32 p1, int32 opc, int32 cc, int32 delta);
+extern int32 get_vector (int32 lvl);
+extern int32 con_halt (int32 code, int32 cc);
+extern t_stat cpu_boot (int32 unitno, DEVICE *dptr);
+extern t_stat build_dib_tab (void);
+extern void rom_wr_B (int32 pa, int32 val);
+extern int32 cpu_instruction_set;
 
 #if defined (VAX_780)
 #include "vax780_defs.h"
@@ -736,18 +979,48 @@ void cpu_idle (void);
 #include "vax750_defs.h"
 #elif defined (VAX_730)
 #include "vax730_defs.h"
+#elif defined (VAX_410)
+#include "vax410_defs.h"
+#elif defined (VAX_420)
+#include "vax420_defs.h"
+#elif defined (VAX_43)
+#include "vax43_defs.h"
+#elif defined (VAX_440)
+#include "vax440_defs.h"
+#elif defined (IS_1000)
+#include "is1000_defs.h"
 #elif defined (VAX_610)
 #include "vax610_defs.h"
 #elif defined (VAX_620) || defined (VAX_630)
 #include "vax630_defs.h"
+#elif defined (VAX_820)
+#include "vax820_defs.h"
 #elif defined (VAX_860)
 #include "vax860_defs.h"
 #else /* VAX 3900 */
 #include "vaxmod_defs.h"
 #endif
+#ifndef CPU_INSTRUCTION_SET
+#if defined (FULL_VAX)
+#define CPU_INSTRUCTION_SET FULL_INSTRUCTION_SET
+#else
+#define CPU_INSTRUCTION_SET VAX_FULL_BASE
+#endif
+#endif
 #ifndef CPU_MODEL_MODIFIERS
 #define CPU_MODEL_MODIFIERS             /* No model specific CPU modifiers */
 #endif
+#ifndef CPU_INST_MODIFIERS
+#define CPU_INST_MODIFIERS  { MTAB_XTD|MTAB_VDV|MTAB_VALR|MTAB_NMO, 0, "INSTRUCTIONS", "INSTRUCTIONS={{NO}G-FLOAT|{NO}D-FLOAT|{NO}PACKED|{NO}EXTENDED|{NO}EMULATED}", \
+                              &cpu_set_instruction_set, NULL, NULL,                 "Set the CPU Instruction Set" },                    \
+                            { MTAB_XTD|MTAB_VDV, 0, "INSTRUCTIONS", NULL,                                                                    \
+                              NULL,                     &cpu_show_instruction_set, NULL, "Show the CPU Instruction Set (SHOW -V)" },
+#endif
+#ifndef IDX_IMM_TEST
+#define IDX_IMM_TEST RSVD_ADDR_FAULT
+#endif
+
+#include "vax_watch.h"                  /* Watch chip definitions */
 
 #ifdef DONT_USE_INTERNAL_ROM
 #define BOOT_CODE_ARRAY NULL
@@ -756,9 +1029,18 @@ void cpu_idle (void);
 
 extern t_stat cpu_load_bootcode (const char *filename, const unsigned char *builtin_code, size_t size, t_bool rom, t_addr offset);
 extern t_stat cpu_print_model (FILE *st);
-extern t_stat cpu_show_model (FILE *st, UNIT *uptr, int32 val, void *desc);
-extern t_stat cpu_set_model (UNIT *uptr, int32 val, char *cptr, void *desc);
+extern t_stat cpu_show_model (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+extern t_stat cpu_set_model (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+extern t_stat cpu_show_instruction_set (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+extern t_stat cpu_set_instruction_set (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
 extern t_stat cpu_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
 extern t_stat cpu_model_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
+extern void vax_init();
+extern const uint32 byte_mask[33];
+extern int32 autcon_enb;                                /* autoconfig enable */
+extern int32 int_req[IPL_HLVL];                         /* intr, IPL 14-17 */
+extern uint32 *M;                                       /* Memory */
+extern DEVICE cpu_dev;                                  /* CPU */
+extern UNIT cpu_unit;                                   /* CPU */
 
 #endif                                                  /* _VAX_DEFS_H */

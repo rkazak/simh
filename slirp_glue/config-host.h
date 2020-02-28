@@ -8,9 +8,12 @@
 #include <winsock2.h>
 #else
 typedef int SOCKET;
+#define SOCKET_ERROR (-1)
 #endif
 
+#ifndef  __cplusplus
 typedef int bool;
+#endif
 #ifdef _MSC_VER
 #include <win32/stdint.h>
 #else
@@ -22,7 +25,10 @@ int qemu_setsockopt (int s, int level, int optname, void *optval, int optlen);
 int qemu_recv (int s, void *buf, size_t len, int flags);
 #ifdef _MSC_VER
 #define snprintf _snprintf
+#ifndef strcasecmp
 #define strcasecmp stricmp
+#endif
+#define inline
 #else
 #ifndef _WIN32
 #define CONFIG_IOVEC 1

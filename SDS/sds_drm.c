@@ -1,6 +1,6 @@
 /* sds_drm.c: SDS 940 Project Genie drum simulator
 
-   Copyright (c) 2002-2013, Robert M. Supnik
+   Copyright (c) 2002-2017, Robert M. Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,7 @@
 
    drm          drum
 
+   13-Mar-17    RMS     Annotated fall through in switch
    03-Sep-13    RMS     Added explicit void * cast
 
    The drum is buffered in memory.
@@ -105,7 +106,6 @@ int32 drm_ftime = 3;                                    /* time to fetch */
 int32 drm_xtime = 1;                                    /* time to xfr */
 int32 drm_stopioe = 1;                                  /* stop on error */
 
-DEVICE drm_dev;
 t_stat drm (uint32 fnc, uint32 inst, uint32 *dat);
 t_stat drm_svc (UNIT *uptr);
 t_stat drm_reset (DEVICE *dptr);
@@ -237,7 +237,7 @@ if (drm_sta != DRM_SXFR) {                              /* fetch drum prog? */
         case DRM_EIE:                                   /* end, int if err */
             if (!drm_err)
                 return SCPE_OK;
-
+            /* fall through */
         case DRM_EIU:                                   /* end, int uncond */
             int_req = int_req | INT_DRM;
             return SCPE_OK;

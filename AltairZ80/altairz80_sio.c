@@ -55,12 +55,6 @@
 #include "sim_sock.h"
 #include "sim_tmxr.h"
 #include <time.h>
-#include <assert.h>
-#if UNIX_PLATFORM
-#include <glob.h>
-#elif defined (_WIN32)
-#include <windows.h>
-#endif
 
 uint8 *URLContents(const char *URL, uint32 *length);
 #ifndef URL_READER_SUPPORT
@@ -123,23 +117,28 @@ uint8 *URLContents(const char *URL, uint32 *length) {
 
 #define PORT_TABLE_SIZE     256                 /* size of port mapping table                   */
 #define SLEEP_ALLOWED_START_DEFAULT 100         /* default initial value for sleepAllowedCounter*/
-#define DEFAULT_TIMER_DELTA 100                 /* default value for timer delta in ms          */
+#define DEFAULT_TIMER_DELTA         100         /* default value for timer delta in ms          */
+#define CPM_COMMAND_LINE_LENGTH     128
 
-static t_stat simh_dev_set_timeron  (UNIT *uptr, int32 value, char *cptr, void *desc);
-static t_stat simh_dev_set_timeroff (UNIT *uptr, int32 value, char *cptr, void *desc);
+static t_stat simh_dev_set_timeron  (UNIT *uptr, int32 value, CONST char *cptr, void *desc);
+static t_stat simh_dev_set_timeroff (UNIT *uptr, int32 value, CONST char *cptr, void *desc);
 static t_stat sio_reset(DEVICE *dptr);
-static t_stat sio_attach(UNIT *uptr, char *cptr);
+static t_stat sio_attach(UNIT *uptr, CONST char *cptr);
 static t_stat sio_detach(UNIT *uptr);
 static t_stat ptr_reset(DEVICE *dptr);
 static t_stat ptp_reset(DEVICE *dptr);
 static t_stat toBool(char tf, int32 *result);
-static t_stat sio_dev_set_port(UNIT *uptr, int32 value, char *cptr, void *desc);
-static t_stat sio_dev_show_port(FILE *st, UNIT *uptr, int32 val, void *desc);
-static t_stat sio_dev_set_interrupton(UNIT *uptr, int32 value, char *cptr, void *desc);
-static t_stat sio_dev_set_interruptoff(UNIT *uptr, int32 value, char *cptr, void *desc);
+static t_stat sio_dev_set_port(UNIT *uptr, int32 value, CONST char *cptr, void *desc);
+static t_stat sio_dev_show_port(FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+static t_stat sio_dev_set_interrupton(UNIT *uptr, int32 value, CONST char *cptr, void *desc);
+static t_stat sio_dev_set_interruptoff(UNIT *uptr, int32 value, CONST char *cptr, void *desc);
 static t_stat sio_svc(UNIT *uptr);
 static t_stat simh_dev_reset(DEVICE *dptr);
 static t_stat simh_svc(UNIT *uptr);
+static const char* sio_description(DEVICE *dptr);
+static const char* simh_description(DEVICE *dptr);
+static const char* ptr_description(DEVICE *dptr);
+static const char* ptp_description(DEVICE *dptr);
 static void mapAltairPorts(void);
 int32 nulldev   (const int32 port, const int32 io, const int32 data);
 int32 sr_dev    (const int32 port, const int32 io, const int32 data);
@@ -163,12 +162,9 @@ extern uint32 sim_map_resource(uint32 baseaddr, uint32 size, uint32 resource_typ
 extern uint32 getClockFrequency(void);
 extern void setClockFrequency(const uint32 Value);
 
-extern int32 chiptype;
-extern const t_bool rtc_avail;
 extern uint32 PCX;
 extern int32 SR;
 extern UNIT cpu_unit;
-extern volatile int32 stop_cpu;
 
 /* Debug Flags */
 static DEBTAB generic_dt[] = {
@@ -208,13 +204,11 @@ static int32 getStopWatchDeltaPos   = 0;        /* determines the state for rece
 static uint32 stopWatchNow          = 0;        /* stores starting time of stop watch                           */
 static int32 markTimeSP             = 0;        /* stack pointer for timer stack                                */
 
-                                                /* default time in microseconds to sleep for SIMHSleepCmd       */
-#if defined (_WIN32)
-static uint32 SIMHSleep             = 1000;     /* Sleep uses milliseconds                                      */
-#elif defined (__MWERKS__) && defined (macintosh)
+                                                /* default time in milliseconds to sleep for SIMHSleepCmd       */
+#if defined (__MWERKS__) && defined (macintosh)
 static uint32 SIMHSleep             = 0;        /* no sleep on Macintosh OS9                                    */
 #else
-static uint32 SIMHSleep             = 100;      /* on other platforms 100 micro seconds is good enough          */
+static uint32 SIMHSleep             = 1;        /* default value is one millisecond                             */
 #endif
 static uint32 sleepAllowedCounter   = 0;        /* only sleep on no character available when == 0               */
 static uint32 sleepAllowedStart     = SLEEP_ALLOWED_START_DEFAULT;  /* default start for above counter          */
@@ -230,22 +224,55 @@ static uint32 newClockFrequency;
 static int32 setClockFrequencyPos   = 0;        /* determines state for sending the clock frequency             */
 static int32 getClockFrequencyPos   = 0;        /* determines state for receiving the clock frequency           */
 
-/* support for wild card expansion                                                                              */
-#if UNIX_PLATFORM
-static glob_t globS;
-static uint32 globPosNameList       = 0;
-static int32 globPosName            = 0;
-static int32 globValid              = FALSE;
-static int32 globError              = 0;
+/* support for wild card file expansion */
+
+#if defined (__MWERKS__) && defined (macintosh)
+const static char hostPathSeparator     = ':';  /* colon on Macintosh OS 9  */
+const static char hostPathSeparatorAlt  = ':';  /* no alternative           */
 #elif defined (_WIN32)
-static WIN32_FIND_DATA FindFileData;
-static HANDLE hFind                 = INVALID_HANDLE_VALUE;
-static int32 globFinished           = FALSE;
-static int32 globValid              = FALSE;
-static int32 globPosName            = 0;
-static int32 lastPathSeparator      = 0;
-static int32 firstPathCharacter     = 0;
+const static char hostPathSeparator     = '\\'; /* back slash in Windows    */
+const static char hostPathSeparatorAlt  = '/';  /* '/' is an alternative    */
+#else
+const static char hostPathSeparator     = '/';  /* slash in UNIX            */
+const static char hostPathSeparatorAlt  = '/';  /* no alternative           */
 #endif
+
+typedef struct NameNode {
+    char *name;
+    struct NameNode *next;
+} NameNode_t;
+
+static char cpmCommandLine[CPM_COMMAND_LINE_LENGTH];
+static NameNode_t *nameListHead         = NULL;
+static NameNode_t *currentName          = NULL;
+static int32 currentNameIndex           = 0;
+static int32 lastPathSeparatorIndex     = 0;
+static int32 firstPathCharacterIndex    = 0;
+
+static void deleteNameList() {
+    while (nameListHead != NULL) {
+        NameNode_t *next = nameListHead -> next;
+        free(nameListHead -> name);
+        free(nameListHead);
+        nameListHead = next;
+    }
+    currentName = NULL;
+    currentNameIndex = 0;
+}
+
+static void processDirEntry (const char *directory,
+                             const char *filename,
+                             t_offset FileSize,
+                             const struct stat *filestat,
+                             void *context) {
+    if (filename != NULL) {
+        NameNode_t *top = (NameNode_t *)malloc(sizeof(NameNode_t));
+        top -> name = strdup(filename);
+        top -> next = nameListHead;
+        nameListHead = top;
+    }
+}
+
 
 /* SIO status registers                                                                                         */
 static int32 warnLevelSIO           = 3;        /* display at most 'warnLevelSIO' times the same warning        */
@@ -347,13 +374,17 @@ static MTAB sio_mod[] = {
     { 0 }
 };
 
+static const char* sio_description(DEVICE *dptr) {
+    return "Serial Input Output";
+}
+
 DEVICE sio_dev = {
     "SIO", &sio_unit, sio_reg, sio_mod,
     1, 10, 31, 1, 8, 8,
     NULL, NULL, &sio_reset,
     NULL, &sio_attach, &sio_detach,
     NULL, DEV_DEBUG | DEV_MUX, 0,
-    generic_dt, NULL, "Serial Input Output SIO"
+    generic_dt, NULL, NULL, NULL, NULL, NULL, &sio_description
 };
 
 static MTAB ptpptr_mod[] = {
@@ -369,18 +400,26 @@ static REG ptr_reg[] = {
     { NULL }
 };
 
+static const char* ptr_description(DEVICE *dptr) {
+    return "Paper Tape Reader";
+}
+
 DEVICE ptr_dev = {
     "PTR", &ptr_unit, ptr_reg, ptpptr_mod,
     1, 10, 31, 1, 8, 8,
     NULL, NULL, &ptr_reset,
     NULL, NULL, NULL,
     NULL, (DEV_DISABLE | DEV_DEBUG), 0,
-    generic_dt, NULL, "Paper Tape Reader PTR"
+    generic_dt, NULL, NULL, NULL, NULL, NULL, &ptr_description
 };
 
 static UNIT ptp_unit = {
     UDATA (NULL, UNIT_ATTABLE, 0)
 };
+
+static const char* ptp_description(DEVICE *dptr) {
+    return "Paper Tape Puncher";
+}
 
 DEVICE ptp_dev = {
     "PTP", &ptp_unit, NULL, ptpptr_mod,
@@ -388,7 +427,7 @@ DEVICE ptp_dev = {
     NULL, NULL, &ptp_reset,
     NULL, NULL, NULL,
     NULL, (DEV_DISABLE | DEV_DEBUG), 0,
-    generic_dt, NULL, "Paper Tape Puncher PTP"
+    generic_dt, NULL, NULL, NULL, NULL, NULL, &ptp_description
 };
 
 /*  Synthetic device SIMH for communication
@@ -431,7 +470,7 @@ static REG simh_reg[] = {
     { DRDATAD (STDP,     setTimerDeltaPos,       8,
                "Status register for receiving the timer delta"), REG_RO                             },
     { DRDATAD (SLEEP,    SIMHSleep,              32,
-               "Sleep time in milliseconds after SIO status check (when enabled)")                                 },
+               "Sleep time in milliseconds after SIO status check (when enabled)")                  },
     { DRDATAD (VOSLP,    sleepAllowedStart,      32,
                "Only sleep when this many unsuccessful SIO status checks have been made")           },
 
@@ -442,7 +481,7 @@ static REG simh_reg[] = {
     { DRDATAD (STPNW,    stopWatchNow,           32,
                "Starting time of stop watch"), REG_RO                                               },
     { DRDATAD (MTSP,     markTimeSP,             8,
-               "Stack pointer of timer stack"), REG_RO                                             },
+               "Stack pointer of timer stack"), REG_RO                                              },
 
     { DRDATAD (VPOS,     versionPos,             8,
                "Status register for sending version information"), REG_RO                           },
@@ -465,20 +504,24 @@ static MTAB simh_mod[] = {
     { 0 }
 };
 
+const char* simh_description(DEVICE *dptr) {
+    return "Pseudo Device";
+}
+
 DEVICE simh_device = {
     "SIMH", &simh_unit, simh_reg, simh_mod,
     1, 10, 31, 1, 16, 4,
     NULL, NULL, &simh_dev_reset,
     NULL, NULL, NULL,
     NULL, (DEV_DISABLE | DEV_DEBUG), 0,
-    generic_dt, NULL, "Pseudo Device SIMH"
+    generic_dt, NULL, NULL, NULL, NULL, NULL, &simh_description
 };
 
 static void resetSIOWarningFlags(void) {
     warnUnattachedPTP = warnUnattachedPTR = warnPTREOF = warnUnassignedPort = 0;
 }
 
-static t_stat sio_attach(UNIT *uptr, char *cptr) {
+static t_stat sio_attach(UNIT *uptr, CONST char *cptr) {
     t_stat r = SCPE_IERR;
     sio_unit.u3 = FALSE;                                    /* no character in terminal input buffer    */
     get_uint(cptr, 10, 65535, &r);                          /* attempt to get port, discard result      */
@@ -704,7 +747,7 @@ static void voidSleep(void) {
 static int32 sio0sCore(const int32 port, const int32 io, const int32 data) {
     int32 ch, result;
     const SIO_PORT_INFO spi = lookupPortInfo(port, &ch);
-    assert(spi.port == port);
+    ASSURE(spi.port == port);
     pollConnection();
     if (io == 0) { /* IN */
         if (sio_unit.u4) {                                  /* attached to a file?                      */
@@ -774,7 +817,7 @@ int32 sio0s(const int32 port, const int32 io, const int32 data) {
 static int32 sio0dCore(const int32 port, const int32 io, const int32 data) {
     int32 ch;
     const SIO_PORT_INFO spi = lookupPortInfo(port, &ch);
-    assert(spi.port == port);
+    ASSURE(spi.port == port);
     pollConnection();
     if (io == 0) { /* IN */
         if ((sio_unit.flags & UNIT_ATT) && (!sio_unit.u4))
@@ -954,7 +997,7 @@ static uint32 equalSIP(SIO_PORT_INFO x, SIO_PORT_INFO y) {
     (x.sio_reset == y.sio_reset) && (x.hasOUT == y.hasOUT);
 }
 
-static t_stat sio_dev_set_port(UNIT *uptr, int32 value, char *cptr, void *desc) {
+static t_stat sio_dev_set_port(UNIT *uptr, int32 value, CONST char *cptr, void *desc) {
     int32 result, n, position;
     SIO_PORT_INFO sip = { 0 }, old;
     char hasReset, hasOUT;
@@ -1020,7 +1063,7 @@ static t_stat sio_dev_set_port(UNIT *uptr, int32 value, char *cptr, void *desc) 
     return SCPE_OK;
 }
 
-static t_stat sio_dev_show_port(FILE *st, UNIT *uptr, int32 val, void *desc) {
+static t_stat sio_dev_show_port(FILE *st, UNIT *uptr, int32 val, CONST void *desc) {
     int32 i, first = TRUE;
     for (i = 0; port_table[i].port != -1; i++)
         if (!port_table[i].isBuiltin) {
@@ -1035,12 +1078,12 @@ static t_stat sio_dev_show_port(FILE *st, UNIT *uptr, int32 val, void *desc) {
     return SCPE_OK;
 }
 
-static t_stat sio_dev_set_interrupton(UNIT *uptr, int32 value, char *cptr, void *desc) {
+static t_stat sio_dev_set_interrupton(UNIT *uptr, int32 value, CONST char *cptr, void *desc) {
     keyboardInterrupt = FALSE;
     return sim_activate(&sio_unit, sio_unit.wait);          /* activate unit */
 }
 
-static t_stat sio_dev_set_interruptoff(UNIT *uptr, int32 value, char *cptr, void *desc) {
+static t_stat sio_dev_set_interruptoff(UNIT *uptr, int32 value, CONST char *cptr, void *desc) {
     keyboardInterrupt = FALSE;
     sim_cancel(&sio_unit);
     return SCPE_OK;
@@ -1162,7 +1205,7 @@ enum simhPseudoDeviceCommands { /* do not change order or remove commands, add o
     setTimerInterruptAdrCmd,    /* 24 set the address to call by timer interrupts                       */
     resetStopWatchCmd,          /* 25 reset the millisecond stop watch                                  */
     readStopWatchCmd,           /* 26 read the millisecond stop watch                                   */
-    SIMHSleepCmd,               /* 27 let SIMH sleep for SIMHSleep microseconds                         */
+    SIMHSleepCmd,               /* 27 let SIMH sleep for SIMHSleep milliseconds                         */
     getHostOSPathSeparatorCmd,  /* 28 obtain the file path separator of the OS under which SIMH runs    */
     getHostFilenamesCmd,        /* 29 perform wildcard expansion and obtain list of file names          */
     readURLCmd,                 /* 30 read the contents of an URL                                       */
@@ -1171,7 +1214,7 @@ enum simhPseudoDeviceCommands { /* do not change order or remove commands, add o
     kSimhPseudoDeviceCommands
 };
 
-static char *cmdNames[kSimhPseudoDeviceCommands] = {
+static const char *cmdNames[kSimhPseudoDeviceCommands] = {
     "printTime",
     "startTimer",
     "stopTimer",
@@ -1207,7 +1250,6 @@ static char *cmdNames[kSimhPseudoDeviceCommands] = {
     "setCPUClockFrequency",
 };
 
-#define CPM_COMMAND_LINE_LENGTH    128
 #define TIMER_STACK_LIMIT          10       /* stack depth of timer stack   */
 static uint32 markTime[TIMER_STACK_LIMIT];  /* timer stack                  */
 static struct tm currentTime;
@@ -1257,12 +1299,12 @@ static void warnNoRealTimeClock(void) {
               " Sorry - no real time clock available.\n", PCX);
 }
 
-static t_stat simh_dev_set_timeron(UNIT *uptr, int32 value, char *cptr, void *desc) {
+static t_stat simh_dev_set_timeron(UNIT *uptr, int32 value, CONST char *cptr, void *desc) {
     timeOfNextInterrupt = sim_os_msec() + timerDelta;
     return sim_activate(&simh_unit, simh_unit.wait);    /* activate unit */
 }
 
-static t_stat simh_dev_set_timeroff(UNIT *uptr, int32 value, char *cptr, void *desc) {
+static t_stat simh_dev_set_timeroff(UNIT *uptr, int32 value, CONST char *cptr, void *desc) {
     timerInterrupt = FALSE;
     return SCPE_OK;
 }
@@ -1292,25 +1334,12 @@ static t_stat simh_svc(UNIT *uptr) {
     return SCPE_OK;
 }
 
-static char cpmCommandLine[CPM_COMMAND_LINE_LENGTH];
 static void createCPMCommandLine(void) {
     int32 i, len = (GetBYTEWrapper(0x80) & 0x7f); /* 0x80 contains length of command line, discard first char   */
     for (i = 0; i < len - 1; i++)
         cpmCommandLine[i] = (char)GetBYTEWrapper(0x82 + i); /* the first char, typically ' ', is discarded      */
     cpmCommandLine[i] = 0; /* make C string */
 }
-
-#if defined (_WIN32)
-static void setLastPathSeparator(void) {
-    int32 i = 0;
-    while (cpmCommandLine[i])
-        i++;
-    while ((i >= 0) && (cpmCommandLine[i] != '\\'))
-        i--;
-    lastPathSeparator = i;
-    firstPathCharacter = 0;
-}
-#endif
 
 /* The CP/M command line is used as the name of a file and UNIT* uptr is attached to it. */
 static void attachCPM(UNIT *uptr) {
@@ -1339,6 +1368,7 @@ static void setClockZSDOS(void) {
     newTime.tm_hour = fromBCD(GetBYTEWrapper(setClockZSDOSAdr + 3));
     newTime.tm_min  = fromBCD(GetBYTEWrapper(setClockZSDOSAdr + 4));
     newTime.tm_sec  = fromBCD(GetBYTEWrapper(setClockZSDOSAdr + 5));
+    newTime.tm_isdst = 0;
     ClockZSDOSDelta = mktime(&newTime) - time(NULL);
 }
 
@@ -1353,6 +1383,7 @@ static time_t mkCPM3Origin(void) {
     date.tm_hour    = 0;
     date.tm_min     = 0;
     date.tm_sec     = 0;
+    date.tm_isdst   = 0;
     return mktime(&date);
 }
 
@@ -1400,37 +1431,23 @@ static int32 simh_in(const int32 port) {
             break;
 
         case getHostFilenamesCmd:
-#if UNIX_PLATFORM
-            if (globValid) {
-                if (globPosNameList < globS.gl_pathc) {
-                    if (!(result = globS.gl_pathv[globPosNameList][globPosName++])) {
-                        globPosNameList++;
-                        globPosName = 0;
-                    }
-                }
-                else {
-                    globValid = FALSE;
+            if (nameListHead != NULL) {
+                if (currentName == NULL) {
+                    deleteNameList();
                     lastCommand = 0;
-                    globfree(&globS);
+                }
+                else if (firstPathCharacterIndex <= lastPathSeparatorIndex)
+                    result = cpmCommandLine[firstPathCharacterIndex++];
+                else {
+                    result = currentName -> name[currentNameIndex];
+                    if (result == 0) {
+                        currentName = currentName -> next;
+                        firstPathCharacterIndex = currentNameIndex = 0;
+                    }
+                    else
+                        currentNameIndex++;
                 }
             }
-#elif defined (_WIN32)
-            if (globValid)
-                if (globFinished)
-                    globValid = FALSE;
-                else if (firstPathCharacter <= lastPathSeparator)
-                    result = cpmCommandLine[firstPathCharacter++];
-                else if (!(result = FindFileData.cFileName[globPosName++])) {
-                    globPosName = firstPathCharacter = 0;
-                    if (!FindNextFile(hFind, &FindFileData)) {
-                        globFinished = TRUE;
-                        FindClose(hFind);
-                        hFind = INVALID_HANDLE_VALUE;
-                    }
-                }
-#else
-            lastCommand = 0;
-#endif
             break;
 
         case attachPTRCmd:
@@ -1567,13 +1584,7 @@ static int32 simh_in(const int32 port) {
             break;
 
         case getHostOSPathSeparatorCmd:
-#if defined (__MWERKS__) && defined (macintosh)
-            result = ':';   /* colon on Macintosh OS 9  */
-#elif defined (_WIN32)
-            result = '\\';  /* back slash in Windows    */
-#else
-            result = '/';   /* slash in UNIX            */
-#endif
+            result = hostPathSeparator;
             break;
 
         default:
@@ -1590,13 +1601,8 @@ void do_SIMH_sleep(void) {
      Otherwise there is the possibility that such interrupts are skipped. */
     if ((simh_unit.flags & UNIT_SIMH_TIMERON) && rtc_avail && (sim_os_msec() + 1 >= timeOfNextInterrupt))
         return;
-#if defined (_WIN32)
-    if ((SIMHSleep / 1000) && !sio_unit.u4) /* time to sleep and SIO not attached to a file */
-        Sleep(SIMHSleep / 1000);
-#else
-    if (SIMHSleep && !sio_unit.u4)          /* time to sleep and SIO not attached to a file */
-        usleep(SIMHSleep);
-#endif
+    if (SIMHSleep && !sio_unit.u4)  /* time to sleep and SIO not attached to a file */
+        sim_os_ms_sleep(SIMHSleep);
 }
 
 static int32 simh_out(const int32 port, const int32 data) {
@@ -1709,39 +1715,30 @@ static int32 simh_out(const int32 port, const int32 data) {
                     isInReadPhase = FALSE;
                     break;
 
-                case getHostFilenamesCmd:
-#if UNIX_PLATFORM
-                    if (!globValid) {
-                        globValid = TRUE;
-                        globPosNameList = globPosName = 0;
+                case getHostFilenamesCmd:   /* list files of host file directory */
+                    if (nameListHead == NULL) {
+                        t_stat result;
+
                         createCPMCommandLine();
-                        globError = glob(cpmCommandLine, GLOB_ERR, NULL, &globS);
-                        if (globError) {
+                        lastPathSeparatorIndex = 0;
+                        while (cpmCommandLine[lastPathSeparatorIndex])
+                            lastPathSeparatorIndex++;
+                        while ((lastPathSeparatorIndex >= 0) && (cpmCommandLine[lastPathSeparatorIndex] != hostPathSeparator) && (cpmCommandLine[lastPathSeparatorIndex] != hostPathSeparatorAlt))
+                            lastPathSeparatorIndex--;
+                        firstPathCharacterIndex = 0;
+                        deleteNameList();
+                        result = sim_dir_scan(cpmCommandLine, processDirEntry, NULL);
+                        if (result == SCPE_OK) {
+                            currentName = nameListHead;
+                            currentNameIndex = 0;
+                        } else {
+                            deleteNameList();
                             sim_debug(VERBOSE_MSG, &simh_device,
                                       "SIMH: " ADDRESS_FORMAT
-                                      " Cannot expand '%s'. Error is %i.\n",
-                                      PCX, cpmCommandLine, globError);
-                            globfree(&globS);
-                            globValid = FALSE;
+                                      " Cannot expand '%s'. Error is %s.\n",
+                                      PCX, cpmCommandLine, sim_error_text(result));
                         }
                     }
-#elif defined (_WIN32)
-                    if (!globValid) {
-                        globValid = TRUE;
-                        globPosName = 0;
-                        globFinished = FALSE;
-                        createCPMCommandLine();
-                        setLastPathSeparator();
-                        hFind = FindFirstFile(cpmCommandLine, &FindFileData);
-                        if (hFind == INVALID_HANDLE_VALUE) {
-                            sim_debug(VERBOSE_MSG, &simh_device,
-                                      "SIMH: " ADDRESS_FORMAT
-                                      " Cannot expand '%s'. Error is %lu.\n",
-                                      PCX, cpmCommandLine, GetLastError());
-                            globValid = FALSE;
-                        }
-                    }
-#endif
                     break;
 
                 case SIMHSleepCmd:
@@ -1839,19 +1836,7 @@ static int32 simh_out(const int32 port, const int32 data) {
                 case resetSIMHInterfaceCmd:
                     markTimeSP  = 0;
                     lastCommand = 0;
-#if UNIX_PLATFORM
-                    if (globValid) {
-                        globValid = FALSE;
-                        globfree(&globS);
-                    }
-#elif defined (_WIN32)
-                    if (globValid) {
-                        globValid = FALSE;
-                        if (hFind != INVALID_HANDLE_VALUE) {
-                            FindClose(hFind);
-                        }
-                    }
-#endif
+                    deleteNameList();
                     break;
 
                 case showTimerCmd:  /* show time difference to timer on top of stack */

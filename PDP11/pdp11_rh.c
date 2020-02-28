@@ -23,7 +23,7 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
-   rha, rhb             RH11/RH70 Massbus adapter
+   rha, rhb, rhc        RH11/RH70 Massbus adapter
 
    02-Sep-13    RMS     Added third Massbus adapter, debug printouts
    19-Mar-12    RMS     Fixed declaration of cpu_opt (Mark Pizzolato)
@@ -160,17 +160,11 @@ typedef struct {
 
 MBACTX massbus[MBA_NUM];
 
-extern uint32 cpu_opt;
-extern int32 cpu_bme;
-extern uint16 *M;
-extern int32 int_req[IPL_HLVL];
-extern t_addr cpu_memsize;
-
 t_stat mba_reset (DEVICE *dptr);
 t_stat mba_rd (int32 *val, int32 pa, int32 access);
 t_stat mba_wr (int32 val, int32 pa, int32 access);
-t_stat mba_set_type (UNIT *uptr, int32 val, char *cptr, void *desc);
-t_stat mba_show_type (FILE *st, UNIT *uptr, int32 val, void *desc);
+t_stat mba_set_type (UNIT *uptr, int32 val, char *cptr, CONST void *desc);
+t_stat mba_show_type (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 int32 mba0_inta (void);
 int32 mba1_inta (void);
 int32 mba2_inta (void);
@@ -206,11 +200,9 @@ static int32 mba_mapofs[(MBA_OFSMASK + 1) >> 1] = {
    mbax_reg     RHx register list
 */
 
-#define IOLN_RP         054
-
 DIB mba0_dib = {
-    IOBA_AUTO, IOLN_RP, &mba_rd, &mba_wr,
-    1, IVCL (RP), VEC_AUTO, { &mba0_inta }, IOLN_RP,
+    IOBA_AUTO, 0, &mba_rd, &mba_wr,
+    1, IVCL (RP), VEC_AUTO, { &mba0_inta }
     };
 
 UNIT mba0_unit = { UDATA (NULL, 0, 0) };
@@ -234,18 +226,16 @@ REG mba0_reg[] = {
     };
 
 MTAB mba0_mod[] = {
-    { MTAB_XTD|MTAB_VDV, 0100, "ADDRESS", "ADDRESS",
+    { MTAB_XTD|MTAB_VDV|MTAB_VALR, 0100, "ADDRESS", "ADDRESS",
       &set_addr, &show_addr, NULL },
-    { MTAB_XTD|MTAB_VDV, 0, "VECTOR", "VECTOR",
+    { MTAB_XTD|MTAB_VDV|MTAB_VALR, 0, "VECTOR", "VECTOR",
       &set_vec, &show_vec, NULL },
     { 0 }
     };
 
-#define IOLN_TU         040
-
 DIB mba1_dib = {
-    IOBA_AUTO, IOLN_TU, &mba_rd, &mba_wr,
-    1, IVCL (TU), VEC_AUTO, { &mba1_inta }, IOLN_TU
+    IOBA_AUTO, 0, &mba_rd, &mba_wr,
+    1, IVCL (TU), VEC_AUTO, { &mba1_inta }
     };
 
 UNIT mba1_unit = { UDATA (NULL, 0, 0) };
@@ -269,18 +259,16 @@ REG mba1_reg[] = {
     };
 
 MTAB mba1_mod[] = {
-    { MTAB_XTD|MTAB_VDV, 0040, "ADDRESS", "ADDRESS",
+    { MTAB_XTD|MTAB_VDV|MTAB_VALR, 0040, "ADDRESS", "ADDRESS",
       &set_addr, &show_addr, NULL },
-    { MTAB_XTD|MTAB_VDV, 0, "VECTOR", "VECTOR",
+    { MTAB_XTD|MTAB_VDV|MTAB_VALR, 0, "VECTOR", "VECTOR",
       &set_vec, &show_vec, NULL },
     { 0 }
     };
 
-#define IOLN_RS         040
-
 DIB mba2_dib = {
-    IOBA_AUTO, IOLN_RS, &mba_rd, &mba_wr,
-    1, IVCL (RS), VEC_AUTO, { &mba2_inta }, IOLN_RS
+    IOBA_AUTO, 0, &mba_rd, &mba_wr,
+    1, IVCL (RS), VEC_AUTO, { &mba2_inta }
     };
 
 UNIT mba2_unit = { UDATA (NULL, 0, 0) };
@@ -304,9 +292,9 @@ REG mba2_reg[] = {
     };
 
 MTAB mba2_mod[] = {
-    { MTAB_XTD|MTAB_VDV, 0040, "ADDRESS", "ADDRESS",
+    { MTAB_XTD|MTAB_VDV|MTAB_VALR, 0040, "ADDRESS", "ADDRESS",
       &set_addr, &show_addr, NULL },
-    { MTAB_XTD|MTAB_VDV, 0, "VECTOR", "VECTOR",
+    { MTAB_XTD|MTAB_VDV|MTAB_VALR, 0, "VECTOR", "VECTOR",
       &set_vec, &show_vec, NULL },
     { 0 }
     };
@@ -317,7 +305,7 @@ DEVICE mba_dev[] = {
     1, 0, 0, 0, 0, 0,
     NULL, NULL, &mba_reset,
     NULL, NULL, NULL,
-    &mba0_dib, DEV_DEBUG | DEV_DISABLE | DEV_UBUS | DEV_QBUS, 0,
+    &mba0_dib, DEV_DEBUG | DEV_UBUS | DEV_QBUS, 0,
     NULL, NULL, NULL, &rh_help, NULL, NULL,
     &rh_description 
     },
@@ -326,7 +314,7 @@ DEVICE mba_dev[] = {
     1, 0, 0, 0, 0, 0,
     NULL, NULL, &mba_reset,
     NULL, NULL, NULL,
-    &mba1_dib, DEV_DEBUG | DEV_DISABLE | DEV_UBUS | DEV_QBUS, 0,
+    &mba1_dib, DEV_DEBUG | DEV_UBUS | DEV_QBUS, 0,
     NULL, NULL, NULL, &rh_help, NULL, NULL,
     &rh_description 
     },
@@ -335,7 +323,7 @@ DEVICE mba_dev[] = {
     1, 0, 0, 0, 0, 0,
     NULL, NULL, &mba_reset,
     NULL, NULL, NULL,
-    &mba2_dib, DEV_DEBUG | DEV_DISABLE | DEV_UBUS | DEV_QBUS, 0,
+    &mba2_dib, DEV_DEBUG | DEV_UBUS | DEV_QBUS, 0,
     NULL, NULL, NULL, &rh_help, NULL, NULL,
     &rh_description 
     }
@@ -575,7 +563,7 @@ for (i = 0; i < bc; i = i + pbc) {                      /* loop by pages */
     if (pbc > (bc - i))                                 /* limit to rem xfr */
         pbc = bc - i;
     for (j = 0; j < pbc; j = j + 2) {                   /* loop by words */
-        *buf++ = M[pa >> 1];                            /* fetch word */
+        *buf++ = RdMemW (pa);                           /* fetch word */
         if (!(massbus[mb].cs2 & CS2_UAI)) {             /* if not inhb */
             ba = ba + 2;                                /* incr ba, pa */
             pa = pa + 2;
@@ -590,7 +578,7 @@ massbus[mb].cs1 = (massbus[mb].cs1 & ~ CS1_UAE) |         /* update CS1 */
 return i;
 }
 
-int32 mba_wrbufW (uint32 mb, int32 bc, uint16 *buf)
+int32 mba_wrbufW (uint32 mb, int32 bc, const uint16 *buf)
 {
 int32 i, j, ba, mbc, pbc;
 uint32 pa;
@@ -614,7 +602,7 @@ for (i = 0; i < bc; i = i + pbc) {                      /* loop by pages */
     if (pbc > (bc - i))                                 /* limit to rem xfr */
         pbc = bc - i;
     for (j = 0; j < pbc; j = j + 2) {                   /* loop by words */
-        M[pa >> 1] = *buf++;                            /* put word */
+        WrMemW (pa, *buf++);                            /* put word */
         if (!(massbus[mb].cs2 & CS2_UAI)) {             /* if not inhb */
             ba = ba + 2;                                /* incr ba, pa */
             pa = pa + 2;
@@ -653,7 +641,7 @@ for (i = 0; i < bc; i = i + pbc) {                      /* loop by pages */
         pbc = bc - i;
     for (j = 0; j < pbc; j = j + 2) {                   /* loop by words */
         massbus[mb].db = *buf++;                        /* get dev word */
-        if (M[pa >> 1] != massbus[mb].db) {             /* miscompare? */
+        if (RdMemW (pa) != massbus[mb].db) {            /* miscompare? */
             mba_set_cs2 (CS2_WCE, mb);                  /* set error */
             massbus[mb].cs3 = massbus[mb].cs3 |         /* set even/odd */
                 ((pa & 1)? CS3_WCO: CS3_WCE);
@@ -827,7 +815,6 @@ return -1;
 t_stat mba_reset (DEVICE *dptr)
 {
 uint32 mb;
-
 mb = dptr - mba_dev;
 if (mb >= MBA_NUM)
     return SCPE_NOFNC;
@@ -842,28 +829,34 @@ massbus[mb].iff = 0;
 mba_clr_int (mb);
 if (mbabort[mb])
     mbabort[mb] ();
-return auto_config (0, 0);
+return build_dib_tab();
 }
 
 /* Enable/disable Massbus adapter */
 
-void mba_set_enbdis (uint32 mb, t_bool dis)
+void mba_set_enbdis (DEVICE *dptr)
 {
-t_bool orig;
-if (mb >= MBA_NUM)                                      /* valid MBA? */
+DIB *dibp = (DIB *)dptr->ctxt;
+
+if (((dptr->flags & DEV_DIS) &&     /* Already Disabled     */
+     (dibp->ba == MBA_AUTO)) ||     /* OR                   */
+    (!(dptr->flags & DEV_DIS) &&    /* Already Enabled      */
+     (dibp->ba != MBA_AUTO)))
     return;
-orig = mba_dev[mb].flags & DEV_DIS;
-if (dis)
-    mba_dev[mb].flags |= DEV_DIS;
-else mba_dev[mb].flags &= ~DEV_DIS;
-if (orig ^ dis)
-    mba_reset (&mba_dev[mb]);                           /* reset on change */
-return;
+if (dptr->flags & DEV_DIS) {        /* Disabling? */
+    uint32 mb = dibp->ba;
+
+    dibp->ba = MBA_AUTO;            /*   Flag unassigned */
+    mba_reset (&mba_dev[mb]);       /*   reset prior MBA */
+    }
+build_dib_tab();
+if (!(dptr->flags & DEV_DIS))       /* Enabling? */
+    mba_reset (&mba_dev[dibp->ba]); /*   reset new MBA */
 }
 
 /* Show Massbus adapter number */
 
-t_stat mba_show_num (FILE *st, UNIT *uptr, int32 val, void *desc)
+t_stat mba_show_num (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
 DEVICE *dptr = find_dev_from_unit (uptr);
 DIB *dibp;
@@ -873,7 +866,7 @@ if (dptr == NULL)
 dibp = (DIB *) dptr->ctxt;
 if (dibp == NULL)
     return SCPE_IERR;
-fprintf (st, "Massbus adapter %d", dibp->ba);
+fprintf (st, "Massbus adapter %d (RH%c)", dibp->ba, 'A' + dibp->ba);
 return SCPE_OK;
 }
 
@@ -882,13 +875,21 @@ return SCPE_OK;
 void init_mbus_tab (void)
 {
 uint32 i;
+int mba_devs;
 
 for (i = 0; i < MBA_NUM; i++) {
     mbregR[i] = NULL;
     mbregW[i] = NULL;
     mbabort[i] = NULL;
+    mba_dev[i].flags |= DEV_DIS;
     }
-return;
+for (i = mba_devs = 0; sim_devices[i] != NULL; i++) {
+    if ((sim_devices[i]->flags & DEV_MBUS) &&
+        (!(sim_devices[i]->flags & DEV_DIS))) {
+        mba_dev[mba_devs].flags &= ~DEV_DIS;
+        mba_devs++;
+        }
+    }
 }
 
 /* Build dispatch tables */
@@ -896,12 +897,16 @@ return;
 t_stat build_mbus_tab (DEVICE *dptr, DIB *dibp)
 {
 uint32 idx;
+static const char *mbus_devs[MBA_NUM+1] = {"RP", "TU", "RS", NULL};
 
 if ((dptr == NULL) || (dibp == NULL))                   /* validate args */
     return SCPE_IERR;
-idx = dibp->ba;                                         /* Mbus # */
-if (idx >= MBA_NUM)
-    return SCPE_STOP;
+for (idx = 0; mbus_devs[idx]; idx++)
+    if (!strcmp (dptr->name, mbus_devs[idx]))
+        break;
+if ((!mbus_devs[idx]) || (idx >= MBA_NUM))
+    return SCPE_IERR;
+dibp->ba = idx;                                         /* Mbus # */
 if ((mbregR[idx] && dibp->rd &&                         /* conflict? */
     (mbregR[idx] != dibp->rd)) ||
     (mbregW[idx] && dibp->wr &&
@@ -912,13 +917,13 @@ if ((mbregR[idx] && dibp->rd &&                         /* conflict? */
                     sim_dname (dptr), dibp->ba);
         return SCPE_STOP;
         }
-if (dibp->rd)                                           /* set rd dispatch */
-    mbregR[idx] = dibp->rd;
-if (dibp->wr)                                           /* set wr dispatch */
-    mbregW[idx] = dibp->wr;
-if (dibp->ack[0])                                       /* set abort dispatch */
-    mbabort[idx] = dibp->ack[0];
-return SCPE_OK;
+mbregR[idx] = dibp->rd;                                 /* set rd dispatch */
+mbregW[idx] = dibp->wr;                                 /* set wr dispatch */
+mbabort[idx] = dibp->ack[0];                            /* set abort dispatch */
+mba_dev[idx].flags &= ~DEV_DIS;                         /* mark MBA enabled */
+((DIB *)mba_dev[idx].ctxt)->lnt = dibp->lnt;
+((DIB *)mba_dev[idx].ctxt)->ulnt = dibp->ulnt;
+return build_ubus_tab (&mba_dev[idx], (DIB *)mba_dev[idx].ctxt);
 }
 
 t_stat rh_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr)
@@ -927,15 +932,17 @@ const char *const text =
 /*567901234567890123456789012345678901234567890123456789012345678901234567890*/
 " RH70/RH11 Massbus adapters (RHA, RHB, RHC)\n"
 "\n"
-" The RH70/RH11 Massbus adapters interface Massbus peripherals to the memory\n"
-" bus or Unibus of the CPU.  The simulator provides three Massbus adapters.\n"
-" The first, RHA, is configured for the RP family of disk drives.  The\n"
-" second, RHB, is configured for the TU family of tape controllers.  The\n"
-" third, RHC, is configured for the RS family of fixed head disks.  By\n"
-" default, RHA is enabled, and RHB and RHC are disabled.  In a Unibus system,\n"
-" the RH adapters implement 22b addressing for the 11/70 and 18b addressing\n"
-" for all other models.  In a Qbus system, the RH adapters always implement\n"
-" 22b addressing.\n"
+" The RH70/RH11 Massbus adapters interface Massbus peripherals to the\n"
+" memory bus or Unibus of the CPU.  The simulator provides three Massbus\n"
+" adapters.  These adapters (RHA, RHB, and RHC) are used by (in order):\n"
+"       1) the RP family of disk drives.\n"
+"       2) the TU family of tape controllers.\n"
+"       3) the RS family of fixed head disks.\n"
+" Depending on which of the RP, TU, and RS devices are enabled, will\n"
+" determine which adapter is assigned to which device.\n"
+" In a Unibus system, the RH adapters implement 22b addressing for the\n"
+" 11/70 and 18b addressing for all other models.  In a Qbus system, the\n"
+" RH adapters always implement 22b addressing.\n"
 /*567901234567890123456789012345678901234567890123456789012345678901234567890*/
 "\n";
 fprintf (st, "%s", text);
@@ -947,11 +954,22 @@ return SCPE_OK;
 
 const char *rh_description (DEVICE *dptr)
 {
-if (dptr == &mba_dev[0])
-    return "RH70/RH11 Massbus adapter (for RP)";
-else
-    if (dptr == &mba_dev[1])
-        return "RH70/RH11 Massbus adapter (for TU)";
-    else
-        return "RH70/RH11 Massbus adapter (for RS)";
+static char buf[64];
+uint32 mb = dptr - mba_dev;
+
+if (dptr->flags & DEV_DIS)
+    dptr = NULL;
+else {
+    int i;
+
+    for (i = 0; (dptr = sim_devices[i]) != NULL; i++) { /* loop thru devs */
+        if (!(dptr->flags & DEV_DIS) && 
+            (dptr->flags & DEV_MBUS) &&
+            ((DIB *)dptr->ctxt)->ba == mb)
+            break;
+        }
+    }
+sprintf (buf, "RH70/RH11 Massbus adapter%s%s%s", 
+               dptr ? " (for " : "", dptr ? dptr->name : "", dptr ? ")" : "");
+return buf;
 }

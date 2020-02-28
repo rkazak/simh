@@ -284,41 +284,34 @@ if (hostname) {
         (0 == strcmp("255.255.255.255", hostname))) {
         fixed[0] = &ipaddr;
         fixed[1] = NULL;
+        if ((hints->ai_flags & AI_CANONNAME) && !(hints->ai_flags & AI_NUMERICHOST)) {
+            he = gethostbyaddr((char *)&ipaddr, 4, AF_INET);
+            if (NULL != he)
+                cname = he->h_name;
+            else
+                cname = hostname;
+            }
+        ips = fixed;
         }
     else {
-        if ((0xffffffff != (ipaddr.s_addr = inet_addr(hostname))) || 
-            (0 == strcmp("255.255.255.255", hostname))) {
-            fixed[0] = &ipaddr;
-            fixed[1] = NULL;
-            if ((hints->ai_flags & AI_CANONNAME) && !(hints->ai_flags & AI_NUMERICHOST)) {
-                he = gethostbyaddr((char *)&ipaddr, 4, AF_INET);
-                if (NULL != he)
-                    cname = he->h_name;
-                else
-                    cname = hostname;
-                }
-            ips = fixed;
+        if (hints->ai_flags & AI_NUMERICHOST)
+            return EAI_NONAME;
+        he = gethostbyname(hostname);
+        if (he) {
+            ips = (struct in_addr **)he->h_addr_list;
+            if (hints->ai_flags & AI_CANONNAME)
+                cname = he->h_name;
             }
         else {
-            if (hints->ai_flags & AI_NUMERICHOST)
-                return EAI_NONAME;
-            he = gethostbyname(hostname);
-            if (he) {
-                ips = (struct in_addr **)he->h_addr_list;
-                if (hints->ai_flags & AI_CANONNAME)
-                    cname = he->h_name;
-                }
-            else {
-                switch (h_errno)
-                    {
-                    case HOST_NOT_FOUND:
-                    case NO_DATA:
-                        return EAI_NONAME;
-                    case TRY_AGAIN:
-                        return EAI_AGAIN;
-                    default:
-                        return EAI_FAIL;
-                    }
+            switch (h_errno)
+                {
+                case HOST_NOT_FOUND:
+                case NO_DATA:
+                    return EAI_NONAME;
+                case TRY_AGAIN:
+                    return EAI_AGAIN;
+                default:
+                    return EAI_FAIL;
                 }
             }
         }
@@ -384,7 +377,7 @@ static int     WSAAPI s_getnameinfo (const struct sockaddr *sa, socklen_t salen,
 {
 struct hostent *he;
 struct servent *se = NULL;
-struct sockaddr_in *sin = (struct sockaddr_in *)sa;
+const struct sockaddr_in *sin = (const struct sockaddr_in *)sa;
 
 if (sin->sin_family != PF_INET)
     return EAI_FAMILY;
@@ -416,7 +409,7 @@ if ((host) && (hostlen > 0)) {
     if (flags & NI_NUMERICHOST)
         he = NULL;
     else
-        he = gethostbyaddr((char *)&sin->sin_addr, 4, AF_INET);
+        he = gethostbyaddr((const char *)&sin->sin_addr, 4, AF_INET);
     if (he) {
         if (hostlen < strlen(he->h_name)+1)
             return EAI_OVERFLOW;
@@ -445,21 +438,19 @@ static HINSTANCE hLib = 0;                      /* handle to DLL */
 static void *hLib = NULL;                       /* handle to Library */
 #endif
 static int lib_loaded = 0;                      /* 0=not loaded, 1=loaded, 2=library load failed, 3=Func load failed */
-static char* lib_name = "Ws2_32.dll";
+static const char* lib_name = "Ws2_32.dll";
 
 /* load function pointer from DLL */
 typedef int (*_func)();
 
-static void load_function(char* function, _func* func_ptr) {
+static void load_function(const char* function, _func* func_ptr) {
 #ifdef _WIN32
     *func_ptr = (_func)GetProcAddress(hLib, function);
 #else
     *func_ptr = (_func)dlsym(hLib, function);
 #endif
     if (*func_ptr == 0) {
-    char* msg = "Sockets: Failed to find function '%s' in %s\r\n";
-
-    sim_printf (msg, function, lib_name);
+    sim_printf ("Sockets: Failed to find function '%s' in %s\r\n", function, lib_name);
     lib_loaded = 3;
   }
 }
@@ -476,9 +467,7 @@ int load_ws2(void) {
 #endif
       if (hLib == 0) {
         /* failed to load DLL */
-        char* msg  = "Sockets: Failed to load %s\r\n";
-
-        sim_printf (msg, lib_name);
+        sim_printf ("Sockets: Failed to load %s\r\n", lib_name);
         lib_loaded = 2;
         break;
       } else {
@@ -540,8 +529,9 @@ int load_ws2(void) {
 
 int sim_parse_addr (const char *cptr, char *host, size_t host_len, const char *default_host, char *port, size_t port_len, const char *default_port, const char *validate_addr)
 {
-char gbuf[CBUFSIZE];
-char *hostp, *portp;
+char gbuf[CBUFSIZE], default_pbuf[CBUFSIZE];
+const char *hostp;
+char *portp;
 char *endc;
 unsigned long portval;
 
@@ -560,6 +550,9 @@ if ((cptr == NULL) || (*cptr == 0)) {
     strcpy (port, default_port);
     return 0;
     }
+memset (default_pbuf, 0, sizeof(default_pbuf));
+if (default_port)
+    strncpy (default_pbuf, default_port, sizeof(default_pbuf)-1);
 gbuf[sizeof(gbuf)-1] = '\0';
 strncpy (gbuf, cptr, sizeof(gbuf)-1);
 hostp = gbuf;                                           /* default addr */
@@ -568,11 +561,11 @@ if ((portp = strrchr (gbuf, ':')) &&                    /* x:y? split */
     (NULL == strchr (portp, ']'))) {
     *portp++ = 0;
     if (*portp == '\0')
-        portp = (char *)default_port;
+        portp = default_pbuf;
     }
 else {                                                  /* No colon in input */
     portp = gbuf;                                       /* Input is the port specifier */
-    hostp = (char *)default_host;                       /* host is defaulted if provided */
+    hostp = (const char *)default_host;                 /* host is defaulted if provided */
     }
 if (portp != NULL) {
     portval = strtoul(portp, &endc, 10);
@@ -598,8 +591,8 @@ if (hostp != NULL) {
             return -1;                                  /* invalid domain literal */
         /* host may be the const default_host so move to temp buffer before modifying */
         strncpy(gbuf, hostp+1, sizeof(gbuf)-1);         /* remove brackets from domain literal host */
+        gbuf[strlen(gbuf)-1] = '\0';
         hostp = gbuf;
-        hostp[strlen(hostp)-1] = '\0';
         }
     }
 if (host) {                                             /* host wanted? */
@@ -1045,7 +1038,7 @@ int keepalive = 1;
     defined (__APPLE__) || defined (__OpenBSD__) || \
     defined(__NetBSD__) || defined(__FreeBSD__) || \
     (defined(__hpux) && defined(_XOPEN_SOURCE_EXTENDED)) || \
-    defined (__HAIKU__)
+    defined (__HAIKU__) || defined(__CYGWIN__)
 socklen_t size;
 #elif defined (_WIN32) || defined (__EMX__) || \
      (defined (__ALPHA) && defined (__unix__)) || \
@@ -1111,7 +1104,7 @@ struct sockaddr_storage peername;
     defined (__APPLE__) || defined (__OpenBSD__) || \
     defined(__NetBSD__) || defined(__FreeBSD__) || \
     (defined(__hpux) && defined(_XOPEN_SOURCE_EXTENDED)) || \
-    defined (__HAIKU__)
+    defined (__HAIKU__) || defined(__CYGWIN__)
 socklen_t peernamesize = (socklen_t)sizeof(peername);
 #elif defined (_WIN32) || defined (__EMX__) || \
      (defined (__ALPHA) && defined (__unix__)) || \
@@ -1127,9 +1120,9 @@ FD_ZERO (er_p);
 FD_SET (sock, rw_p);
 FD_SET (sock, er_p);
 if (rd)
-    select ((int) sock + 1, rw_p, NULL, er_p, &zero);
+    (void)select ((int) sock + 1, rw_p, NULL, er_p, &zero);
 else
-    select ((int) sock + 1, NULL, rw_p, er_p, &zero);
+    (void)select ((int) sock + 1, NULL, rw_p, er_p, &zero);
 if (FD_ISSET (sock, er_p))
     return -1;
 if (FD_ISSET (sock, rw_p)) {
@@ -1147,7 +1140,7 @@ static int _sim_getaddrname (struct sockaddr *addr, size_t addrsize, char *hostn
     defined (__APPLE__) || defined (__OpenBSD__) || \
     defined(__NetBSD__) || defined(__FreeBSD__) || \
     (defined(__hpux) && defined(_XOPEN_SOURCE_EXTENDED)) || \
-    defined (__HAIKU__)
+    defined (__HAIKU__) || defined(__CYGWIN__)
 socklen_t size = (socklen_t)addrsize;
 #elif defined (_WIN32) || defined (__EMX__) || \
      (defined (__ALPHA) && defined (__unix__)) || \
@@ -1181,7 +1174,7 @@ struct sockaddr_storage sockname, peername;
     defined (__APPLE__) || defined (__OpenBSD__) || \
     defined(__NetBSD__) || defined(__FreeBSD__) || \
     (defined(__hpux) && defined(_XOPEN_SOURCE_EXTENDED)) || \
-    defined (__HAIKU__)
+    defined (__HAIKU__) || defined(__CYGWIN__)
 socklen_t socknamesize = (socklen_t)sizeof(sockname);
 socklen_t peernamesize = (socklen_t)sizeof(peername);
 #elif defined (_WIN32) || defined (__EMX__) || \
@@ -1200,8 +1193,8 @@ if (socknamebuf)
     *socknamebuf = (char *)calloc(1, NI_MAXHOST+NI_MAXSERV+4);
 if (peernamebuf)
     *peernamebuf = (char *)calloc(1, NI_MAXHOST+NI_MAXSERV+4);
-getsockname (sock, (struct sockaddr *)&sockname, &socknamesize);
-getpeername (sock, (struct sockaddr *)&peername, &peernamesize);
+(void)getsockname (sock, (struct sockaddr *)&sockname, &socknamesize);
+(void)getpeername (sock, (struct sockaddr *)&peername, &peernamesize);
 if (socknamebuf != NULL) {
     _sim_getaddrname ((struct sockaddr *)&sockname, (size_t)socknamesize, hostbuf, portbuf);
     sprintf(*socknamebuf, "[%s]:%s", hostbuf, portbuf);

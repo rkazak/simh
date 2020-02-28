@@ -25,6 +25,7 @@
 
    tim          timer subsystem
 
+   10-Nov-16    R.V     Fix wallclock issue for 50 Hz systems (R. Voorhorst)
    18-Apr-12    RMS     Removed absolute scheduling on reset
    18-Jun-07    RMS     Added UNIT_IDLE flag
    03-Nov-06    RMS     Rewritten to support idling
@@ -131,32 +132,23 @@ static d10 tim_new_period = 0;                          /* period for the next i
 static int32 tim_mult;                                  /* Multiple of interval timer period at which tmxr is polled */
 
 d10 quant = 0;                                          /* ITS quantum */
-static int32 tim_t20_prob = 33;                         /* TOPS-20 prob */
 
 /* Exported variables - initialized by set CPU model and reset */
 
 int32 clk_tps;                                          /* Interval clock ticks/sec */
+int32 tick_in_usecs;                                    /* Interval tick size in usecs */
 int32 tmr_poll;                                         /* SimH instructions/clock service */
 int32 tmxr_poll;                                        /* SimH instructions/term mux poll */
 
 extern int32 apr_flg, pi_act;
-extern UNIT cpu_unit;
 extern d10 pcst;
-extern a10 pager_PC;
-extern int32 t20_idlelock;
 
-DEVICE tim_dev;
 static t_stat tcu_rd (int32 *data, int32 PA, int32 access);
 static t_stat tim_svc (UNIT *uptr);
 static t_stat tim_reset (DEVICE *dptr);
 static t_bool update_interval (d10 new_interval);
 static void tim_incr_base (d10 *base, d10 incr);
 
-extern d10 Read (a10 ea, int32 prv);
-extern d10 ReadM (a10 ea, int32 prv);
-extern void Write (a10 ea, d10 val, int32 prv);
-extern void WriteP (a10 ea, d10 val);
-extern int32 pi_eval (void);
 extern t_stat wr_nop (int32 data, int32 PA, int32 access);
 
 /* TIM data structures
@@ -171,11 +163,10 @@ DIB tcu_dib = { IOBA_TCU, IOLN_TCU, &tcu_rd, &wr_nop, 0 };
 static UNIT tim_unit = { UDATA (&tim_svc, UNIT_IDLE, 0), 0 };
 
 static REG tim_reg[] = {
-    { BRDATA (TIMEBASE, tim_base, 8, 36, 2) },
-    { ORDATA (PERIOD, tim_period, 36) },
-    { ORDATA (QUANT, quant, 36) },
-    { DRDATA (TIME, tim_unit.wait, 24), REG_NZ + PV_LEFT },
-    { DRDATA (PROB, tim_t20_prob, 6), REG_NZ + PV_LEFT + REG_HIDDEN },
+    { BRDATAD (TIMEBASE, tim_base, 8, 36, 2, "time base (double precision)") },
+    { ORDATAD (PERIOD, tim_period, 36, "reset value for interval") },
+    { ORDATAD (QUANT, quant, 36, "quantum timer (ITS only)") },
+    { DRDATAD (TIME, tim_unit.wait, 24, "tick delay"), REG_NZ + PV_LEFT },
     { DRDATA (POLL, tmr_poll, 32), REG_HRO + PV_LEFT },
     { DRDATA (MUXPOLL, tmxr_poll, 32), REG_HRO + PV_LEFT },
     { DRDATA (MULT, tim_mult, 6), REG_HRO + PV_LEFT },
@@ -191,12 +182,31 @@ static MTAB tim_mod[] = {
     { 0 }
     };
 
+/* Debug detail levels */
+
+#define DEB_RRD       0001                          /* reg reads */
+#define DEB_RWR       0002                          /* reg writes */
+#define DEB_TPS       0004                          /* Ticks Per Second changes */
+#define DEB_INT       0010                          /* interrupts */
+#define DEB_TRC       0020                          /* trace */
+
+static DEBTAB tim_deb[] = {
+    { "RRD",      DEB_RRD, "register reads" },
+    { "RWR",      DEB_RWR, "register writes" },
+    { "TPS",      DEB_TPS, "Ticks Per Second changes " },
+    { "INT",      DEB_INT, "interrupts" },
+    { "TRACE",    DEB_TRC, "trace" },
+    { NULL, 0 }
+    };
+
+
 DEVICE tim_dev = {
     "TIM", &tim_unit, tim_reg, tim_mod,
     1, 0, 0, 0, 0, 0,
     NULL, NULL, &tim_reset,
     NULL, NULL, NULL,
-    &tcu_dib, DEV_UBUS
+    &tcu_dib, DEV_UBUS | DEV_DEBUG,
+    0, tim_deb
     };
 
 /* Timer instructions */
@@ -204,26 +214,25 @@ DEVICE tim_dev = {
 /* Timebase - the timer is always running at less than hardware frequency,
  * need to interpolate the value by calculating how much of the current
  * clock tick has elapsed, and what that equates to in sysfreq units.
+ * 
+ * Read the contents of the time base registers, add the current contents of the
+ * millisecond counter to the doubleword read, and place the result in location
+ * E,E+1.
  */
 
 t_bool rdtim (a10 ea, int32 prv)
 {
-double fract;                     /* Fraction of current interval completed */
 d10 tempbase[2];                  /* Local copy of tempbase to interpolate */
-int32 used;                       /* Used part of curr intv, in hw ticks   */
 d10 incr;                         /* Interpolated increment for timebase   */
 
 tempbase[0] = tim_base[0];                              /* copy time base */
 tempbase[1] = tim_base[1];
 
-used = tmr_poll - (sim_activate_time (&tim_unit) - 1);
-fract = ((double)used) / ((double)tmr_poll);
-
 /*
  * incr is approximate number of HW ticks to add to the timebase
  * value returned.  This does NOT update the timebase.
  */
-incr = (d10)(fract * (double)tim_period);
+incr = (d10)((((double)TIM_HW_FREQ) / 1000000.0) * (tick_in_usecs - sim_activate_time_usecs (&tim_unit)));
 tim_incr_base (tempbase, incr);
 
 /* Although the two LSB of the counter contribute carry to the
@@ -250,19 +259,31 @@ tempbase[1] &= ~((d10) TIM_BASE_RAZ);
  */
 Write (ea, tempbase[0], prv);
 Write (INCA(ea), tempbase[1], prv);
+sim_debug (DEB_RRD, &tim_dev, "rdtim() = %012" LL_FMT "o %012" LL_FMT "o\n", tempbase[0], tempbase[1]);
 return FALSE;
 }
 
+/*
+ * Read the contents of location E,E+l, clear the right twelve bits of the low
+ * order word read (the part corresponding to the hardware millisecond
+ * counter), and place the result in the time base registers in the workspace.
+ */
 t_bool wrtim (a10 ea, int32 prv)
 {
 tim_base[0] = Read (ea, prv);
 tim_base[1] = CLRS (Read (INCA (ea), prv) & ~((d10) TIM_HWRE_MASK));
+sim_debug (DEB_RWR, &tim_dev, "wrtim(%012" LL_FMT "o, %012" LL_FMT "o)\n", tim_base[0], tim_base[1]);
 return FALSE;
 }
 
+/*
+ * Read the contents of the interval register into location E. The period read is
+ * the same as that supplied by WRINT.
+ */
 t_bool rdint (a10 ea, int32 prv)
 {
 Write (ea, tim_interval, prv);
+sim_debug (DEB_RRD, &tim_dev, "rdint() = %012" LL_FMT "o\n", tim_interval);
 return FALSE;
 }
 
@@ -270,30 +291,77 @@ return FALSE;
  * This does not clear the harware counter, so the first
  * completion can come up to ~1 msc later than the new
  * period.
+ * 
+ * Load the contents of location E into the interval register in 
+ * the workspace.
  */
 
 t_bool wrint (a10 ea, int32 prv)
 {
 tim_interval = CLRS (Read (ea, prv));
+sim_debug (DEB_RWR, &tim_dev, "wrint(%012" LL_FMT "o)\n", tim_interval);
 return update_interval (tim_interval);
 }
 
 static t_bool update_interval (d10 new_interval)
 {
+int32 old_clk_tps = clk_tps;
+int32 old_tick_in_usecs = tick_in_usecs;
+
 /*
  * The value provided is in hardware clicks. For a frequency of 4.1 
  * MHz, that means that dividing by 4096 (shifting 12 to the right) we get
- * the aproximate value in millisenconds. If any of rhe rightmost bits is
+ * the aproximate value in milliseconds. If any of the rightmost bits is
  * one, we add one unit (4096 ticks ). Reference:
  * AA-H391A-TK_DECsystem-10_DECSYSTEM-20_Processor_Reference_Jun1982.pdf
- * (page 4-37)
+ * (page 4-37):
+ * 
+ * The timer includes a 12-bit hardware millisecond counter, a doubleword
+ * time base kept from it, and an interval register for timed interrupts. The
+ * millisecond counter runs continuously at 4.1 MHz and represents an
+ * elapsed time of just under 1 ms at each overflow. Whenever the counter is
+ * read, its two least significant bits are ignored, so its contents effectively
+ * represent a count in lllicroseconds (1/1025th ms).
+ * The time base is a double length number kept in a pair of registers in
+ * the workspace. It is a 71-bit unsigned quantity in which the entire first
+ * word comprises the high order thirty-six bits, and the low order thirty-five
+ * are in bits 1-35 of the second word.  In this doubleword, the hardware
+ * counter corresponds to the right twelve bits of the low order word. The
+ * program can initialize the time base as a number of milliseconds (the low
+ * order twelve bits are ignored), and every time the counter overflows the
+ * microcode adds 4096 (2**12) to the base.
+ * 
+ * The interval register (in the workspace) holds a period that is specified
+ * by the program and corresponds in magnitude to the low order word of the
+ * time base. This allows a maximum interval of 223 ms, which is almost 140
+ * minutes. At the end of each interval, the :microcode sets Interval Done
+ * (RDAPR bit 30), requesting an interrupt on the level assigned to the system
+ * flags (§4.8). In a separate workspace register, the microcode starts with
+ * the given period, decrements it by 4096 (2**12) every time the millisecond 
+ * counter overflows, and sets the flag when the contents of this "time to go"
+ * register reach zero or less. Hence the countdown is by milliseconds, and 
+ * any nonzero quantity in the low order twelve bits of the given period adds 
+ * a whole millisecond to the count. (However, following specification of an 
+ * interval by the program, the first downcount occurs at the first counter 
+ * overflow regardless of when the register was loaded.)
  */
+
 tim_new_period = new_interval & ~TIM_HWRE_MASK;
-if (new_interval & TIM_HWRE_MASK) tim_new_period += 010000;
+if (new_interval & TIM_HWRE_MASK)
+    tim_new_period += 010000;
     
+if (tim_new_period == 0) {
+    sim_debug (DEB_TPS, &tim_dev, "update_interval() - ignoring 0 value interval\n");
+    return FALSE;
+    }
+tick_in_usecs = (int32)(((double)new_interval)/(((double)TIM_HW_FREQ)/1000000.0));
+if (tick_in_usecs != old_tick_in_usecs)
+    sim_debug (DEB_TPS, &tim_dev, "update_interval() - tick_in_usecs changed from %d to %d\n", old_tick_in_usecs, tick_in_usecs);
 /* clk_tps is the new number of clocks ticks per second */
-clk_tps = (int32) ceil((double)TIM_HW_FREQ /(double)tim_new_period);
-   
+clk_tps = (int32) ceil(((double)TIM_HW_FREQ /(double)tim_new_period) - 0.5);
+if (clk_tps != old_clk_tps)
+    sim_debug (DEB_TPS, &tim_dev, "update_interval() - clk_tps changed from %d to %d\n", old_clk_tps, clk_tps);
+
 /* tmxr is polled every tim_mult clks.  Compute the divisor matching the target. */
 tim_mult = (clk_tps <= TIM_TMXR_FREQ) ? 1 : (clk_tps / TIM_TMXR_FREQ) ;
    
@@ -315,15 +383,23 @@ return FALSE;
 
 static t_stat tim_svc (UNIT *uptr)
 {
-if (cpu_unit.flags & UNIT_KLAD)                         /* diags? */
+if (cpu_unit.flags & UNIT_KLAD) {                       /* diags? */
     tmr_poll = uptr->wait;                              /* fixed clock */
-else tmr_poll = sim_rtc_calb (clk_tps);                 /* else calibrate */
-    
-sim_activate (uptr, tmr_poll);                          /* reactivate unit */
-tmxr_poll = tmr_poll * tim_mult;                        /* set mux poll */
+    sim_activate (uptr, tmr_poll);                          /* reactivate unit */
+    }
+else {
+    sim_activate_after (uptr, tick_in_usecs);           /* reactivate unit */
+    tmr_poll = sim_activate_time (uptr) - 1;
+    }
+
+/* tmxr is polled every tim_mult clks.  Compute the divisor matching the target. */
+tim_mult = (clk_tps <= TIM_TMXR_FREQ) ? 1 : (clk_tps / TIM_TMXR_FREQ) ;
+   
+tmxr_poll = tim_mult * (int32)(sim_timer_inst_per_sec () / clk_tps);/* set mux poll */
 tim_incr_base (tim_base, tim_period);                   /* incr time base based on period of expired interval */
 tim_period = tim_new_period;                            /* If interval has changed, update period */
 apr_flg = apr_flg | APRF_TIM;                           /* request interrupt */
+sim_debug (DEB_INT, &tim_dev, "tim_svc(INT) tmr_poll=%d, tmxr_poll=%d, tim_period=%" LL_FMT "d\n", tmr_poll, tmxr_poll, tim_period);
 if (Q_ITS) {                                            /* ITS? */
     if (pi_act == 0)
         quant = (quant + TIM_ITS_QUANT) & DMASK;
@@ -332,8 +408,6 @@ if (Q_ITS) {                                            /* ITS? */
         pcst = AOB (pcst);                              /* add 1,,1 */
         }
     }                                                   /* end ITS */
-else if (t20_idlelock && PROB (100 - tim_t20_prob))
-    t20_idlelock = 0;
 return SCPE_OK;
 }
 
@@ -350,7 +424,7 @@ return;
 
 static t_stat tim_reset (DEVICE *dptr)
 {
-sim_register_clock_unit (&tim_unit);                    /* declare clock unit */
+sim_debug (DEB_TRC, &tim_dev, "tim_reset()\n");
 
 tim_base[0] = tim_base[1] = 0;                          /* clear timebase (HW does) */
 /* HW does not initialize the interval timer, so the rate at which the timer flag
@@ -366,11 +440,12 @@ tim_base[0] = tim_base[1] = 0;                          /* clear timebase (HW do
  */
 tim_interval = 0;
 clk_tps = 60;
+sim_debug (DEB_TPS, &tim_dev, "tim_reset() - clk_tps set to %d\n", clk_tps);
 update_interval(17*4096);
+tmr_poll = (int32)(20000 * ((double)sim_rand () / (double)RAND_MAX));
 
 apr_flg = apr_flg & ~APRF_TIM;                          /* clear interrupt */
 
-tmr_poll = sim_rtc_init (tim_unit.wait);                /* init timer */
 sim_activate (&tim_unit, tmr_poll);                     /* activate unit */
 tmxr_poll = tmr_poll * tim_mult;                        /* set mux poll */
 return SCPE_OK;
@@ -378,7 +453,7 @@ return SCPE_OK;
 
 /* Set timer parameters from CPU model */
 
-t_stat tim_set_mod (UNIT *uptr, int32 val, char *cptr, void *desc)
+t_stat tim_set_mod (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 if (val & (UNIT_T20|UNIT_KLAD)) {
     clk_tps = TIM_TPS_T20;
@@ -411,6 +486,7 @@ static t_stat tcu_rd (int32 *data, int32 PA, int32 access)
 {
 time_t curtim;
 struct tm *tptr;
+t_stat st = SCPE_OK;
 
 curtim = time (NULL);                                   /* get time */
 tptr = localtime (&curtim);                             /* decompose */
@@ -425,21 +501,23 @@ switch ((PA >> 1) & 03) {                               /* decode PA<3:1> */
         *data = (((tptr->tm_year) & 0177) << 9) |
                 (((tptr->tm_mon + 1) & 017) << 5) |
                 ((tptr->tm_mday) & 037);
-        return SCPE_OK;
+        break;
 
     case 1:                                             /* hour/minute */
         *data = (((tptr->tm_hour) & 037) << 8) |
                 ((tptr->tm_min) & 077);
-        return SCPE_OK;
+        break;
 
     case 2:                                             /* second */
         *data = (tptr->tm_sec) & 077;
-        return SCPE_OK;
+        break;
 
     case 3:                                             /* status */
         *data = CSR_DONE;
-        return SCPE_OK;
+        break;
         }
 
-return SCPE_NXM;                                        /* can't get here */
+sim_debug (DEB_RRD, &tim_dev, "tcu_rd() = %o\n", *data);
+
+return st;
 }

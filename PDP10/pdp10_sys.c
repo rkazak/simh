@@ -1,6 +1,6 @@
 /* pdp10_sys.c: PDP-10 simulator interface
 
-   Copyright (c) 1993-2011, Robert M Supnik
+   Copyright (c) 1993-2017, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -23,6 +23,9 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
+   09-Mar-17    RMS     Added mask on EXE repeat count (COVERITY)
+                        Fixed word count test in EXE loader (COVERITY)
+   20-Jan-17    RMS     Fixed RIM loader to handle ITS and RIM10B formats
    04-Apr-11    RMS     Removed DEUNA/DELUA support - never implemented
    01-Feb-07    RMS     Added CD support
    22-Jul-05    RMS     Fixed warning from Solaris C (from Doug Gwyn)
@@ -59,9 +62,8 @@ extern DEVICE xu_dev;
 extern DEVICE dup_dev;
 extern DEVICE kmc_dev;
 extern DEVICE dmc_dev;
-extern UNIT cpu_unit;
+extern DEVICE ch_dev;
 extern REG cpu_reg[];
-extern d10 *M;
 extern a10 saved_PC;
 
 /* SCP data structures and interface routines
@@ -98,6 +100,7 @@ DEVICE *sim_devices[] = {
     &dup_dev,
     &kmc_dev,
     &dmc_dev,
+    &ch_dev,
     NULL
     };
 
@@ -130,9 +133,9 @@ const char *sim_stop_messages[] = {
 #define EXE_PDV 01774                                   /* EXE ignored */
 #define EXE_END 01777                                   /* EXE end */
 
-/* RIM10 loader
+/* RIM10B loader
 
-   RIM10 format is a binary paper tape format (all data frames
+   RIM10B format is a binary paper tape format (all data frames
    are 200 or greater).  It consists of blocks containing
 
         -count,,origin-1
@@ -142,6 +145,30 @@ const char *sim_stop_messages[] = {
         checksum (includes IOWD)
         :
         JRST start
+
+   The checksum is the simple binary sum of all the words in
+   the block, including the IOWD.
+
+   ITS RIM format is a binary paper tape format (all data frames
+   are 200 or greater). It consists of blocks containing
+
+        -count,,origin
+        word
+        :
+        word
+        checksum (includes pseudo IOWD)
+        :
+        JRST start
+
+   The checksum is the simple binary sum of all the words in
+   the block, including the pseudo IOWD. The checksum is rotated
+   left by 1 before each new word is added in.
+
+   Both formats include the actual RIM loader as the first block.
+   It begins with a BLKI word: -count,,start-1. The count is 16(8)
+   for RIM10B and 17(8) for ITS RIM. On a real KA10 or KI10, this
+   twisty little program is loaded into the ACs and executed.
+   Here it is simply skipped.
 */
 
 d10 getrimw (FILE *fileref)
@@ -165,7 +192,25 @@ t_stat load_rim (FILE *fileref)
 {
 d10 count, cksm, data;
 a10 pa;
-int32 op;
+int32 op, i, ldrc;
+t_bool its_rim;
+extern d10 rot (d10 val, a10 ea);
+
+data = getrimw (fileref);                               /* get first word */
+if ((data < 0) || ((data & AMASK) != 0))                /* error? SA != 0? */
+    return SCPE_FMT;
+ldrc = 01000000 - ((int32) (LRZ (data)));               /* get loader count */
+if (ldrc == 016)                                        /* 16? RIM10B */
+    its_rim = FALSE;
+else if (ldrc == 017)                                   /* 17? ITS RIM */
+    its_rim = TRUE;
+else return SCPE_FMT;                                   /* unknown */
+
+for (i = 0; i < ldrc; i++) {                            /* skip the loader */
+    data = getrimw (fileref);
+    if (data < 0)
+        return SCPE_FMT;
+    }
 
 for ( ;; ) {                                            /* loop until JRST */
     count = cksm = getrimw (fileref);                   /* get header */
@@ -176,14 +221,20 @@ for ( ;; ) {                                            /* loop until JRST */
             data = getrimw (fileref);                   /* get data wd */
             if (data < 0)
                 return SCPE_FMT;
-            cksm = cksm + data;                         /* add to cksm */
-            pa = ((a10) count + 1) & AMASK;             /* store */
+            if (its_rim) {                              /* ITS RIM? */
+                cksm = (rot (cksm, 1) + data) & DMASK;  /* add to rotated cksm */
+                pa = ((a10) count) & AMASK;             /* store */
+                }
+            else {                                      /* RIM10B */
+                cksm = (cksm + data) & DMASK;           /* add to cksm */
+                pa = ((a10) count + 1) & AMASK;         /* store */
+                }
             M[pa] = data;
             }                                           /* end for */
         data = getrimw (fileref);                       /* get cksm */
         if (data < 0)
             return SCPE_FMT;
-        if ((cksm + data) & DMASK)                      /* test cksm */
+        if (cksm != data)                               /* test cksm */
             return SCPE_CSUM;
         }                                               /* end if count */
     else {
@@ -280,21 +331,21 @@ do {
     if (wc == 0)                                        /* error? */
         return SCPE_FMT;
     bsz = (int32) ((data & RMASK) - 1);                 /* get count */
-    if (bsz <= 0)                                       /* zero? */
+    if (bsz < 0)                                        /* zero? */
         return SCPE_FMT;
     bty = (int32) LRZ (data);                           /* get type */
     switch (bty) {                                      /* case type */
 
     case EXE_DIR:                                       /* directory */
-        if (ndir)                                       /* got one */
+        if (ndir != 0)                                  /* got one */
             return SCPE_FMT;
         ndir = fxread (dirbuf, sizeof (d10), bsz, fileref);
         if (ndir < bsz)                                 /* error */
             return SCPE_FMT;
         break;
 
-    case EXE_PDV:                                       /* ??? */
-        fseek (fileref, bsz * sizeof (d10), SEEK_CUR);
+    case EXE_PDV:                                       /* optional */
+        (void)fseek (fileref, bsz * sizeof (d10), SEEK_CUR);/* skip data */
         break;
 
     case EXE_VEC:                                       /* entry vec */
@@ -320,10 +371,10 @@ do {
 for (i = 0; i < ndir; i = i + 2) {                      /* loop thru dir */
     fpage = (int32) (dirbuf[i] & RMASK);                /* file page */
     mpage = (int32) (dirbuf[i + 1] & RMASK);            /* memory page */
-    rpt = (int32) ((dirbuf[i + 1] >> 27) + 1);          /* repeat count */
+    rpt = ((int32) ((dirbuf[i + 1] >> 27) + 1)) & 0777; /* repeat count */
     for (j = 0; j < rpt; j++, mpage++) {                /* loop thru rpts */
         if (fpage) {                                    /* file pages? */
-            fseek (fileref, (fpage << PAG_V_PN) * sizeof (d10), SEEK_SET);
+            (void)fseek (fileref, (fpage << PAG_V_PN) * sizeof (d10), SEEK_SET);
             wc = fxread (pagbuf, sizeof (d10), PAG_SIZE, fileref);
             if (wc < PAG_SIZE)
                 return SCPE_FMT;
@@ -338,13 +389,13 @@ for (i = 0; i < ndir; i = i + 2) {                      /* loop thru dir */
         }                                               /* end rpt */
     }                                                   /* end directory */
 if (entvec && entbuf[1])
-    saved_PC = (int32) entbuf[1] & RMASK;               /* start addr */
+    saved_PC = (int32) (entbuf[1] & RMASK);             /* start addr */
 return SCPE_OK;
 }
 
 /* Master loader */
 
-t_stat sim_load (FILE *fileref, char *cptr, char *fnam, int flag)
+t_stat sim_load (FILE *fileref, CONST char *cptr, CONST char *fnam, int flag)
 {
 d10 data;
 int32 wc, fmt;
@@ -368,9 +419,12 @@ else {
         return SCPE_FMT;
     if (LRZ (data) == EXE_DIR)                          /* EXE magic? */
         fmt = FMT_E;
-    else if (TSTS (data))                               /* SAV magic? */
-        fmt = FMT_S;
-    fseek (fileref, 0, SEEK_SET);                       /* rewind */
+    else if (TSTS (data)) {                             /* SAV/RIM magic? */
+        if ((data & AMASK) != 0)                        /* SAV has SA != 0 */
+           fmt = FMT_S;
+        else fmt = FMT_R;                               /* RIM has SA == 0 */
+        }
+    (void)fseek (fileref, 0, SEEK_SET);                 /* rewind */
     }
 
 switch (fmt) {                                          /* case fmt */
@@ -698,10 +752,6 @@ static const char *devnam[NUMDEV] = {
 
 #define FMTASC(x) ((x) < 040)? "<%03o>": "%c", (x)
 #define SIXTOASC(x) ((x) + 040)
-/* Use scp.c provided fprintf function */
-#define fprintf Fprintf
-#define fputs(_s,f) Fprintf(f,"%s",_s)
-#define fputc(_c,f) Fprintf(f,"%c",_c)
 
 t_stat fprint_sym (FILE *of, t_addr addr, t_value *val,
     UNIT *uptr, int32 sw)
@@ -782,11 +832,11 @@ return SCPE_ARG;
         val     =       output value
 */
 
-t_value get_opnd (char *cptr, t_stat *status)
+t_value get_opnd (CONST char *cptr, t_stat *status)
 {
 int32 sign = 0;
 t_value val, xr = 0, ind = 0;
-const char *tptr;
+CONST char *tptr;
 
 *status = SCPE_ARG;                                     /* assume fail */
 if (*cptr == '@') {
@@ -804,14 +854,14 @@ if (val > 0777777)
     return 0;
 if (sign)
     val = (~val + 1) & 0777777;
-cptr = (char *)tptr;
+cptr = tptr;
 if (*cptr == '(') {
     cptr++;
     xr = strtotv (cptr, &tptr, 8);
     if ((cptr == tptr) || (*tptr != ')') ||
         (xr > AC_NUM) || (xr == 0))
         return 0;
-    cptr = (char *)++tptr;
+    cptr = ++tptr;
     }
 if (*cptr == 0)
     *status = SCPE_OK;
@@ -830,20 +880,17 @@ return (ind | (xr << 18) | val);
         status  =       error status
 */
 
-t_stat parse_sym (char *cptr, t_addr addr, UNIT *uptr, t_value *val, int32 sw)
+t_stat parse_sym (CONST char *cptr, t_addr addr, UNIT *uptr, t_value *val, int32 sw)
 {
 int32 i, j;
 t_value ac, dev;
 t_stat r;
-char gbuf[CBUFSIZE];
+char gbuf[CBUFSIZE], cbuf[2*CBUFSIZE];
 
 while (isspace (*cptr)) cptr++;
-for (i = 0; i < 6; i++) {
-    if (cptr[i] == 0) {
-        for (j = i + 1; j <= 6; j++) cptr[j] = 0;
-        break;
-        }
-    }
+memset (cbuf, '\0', sizeof(cbuf));
+strncpy (cbuf, cptr, sizeof(cbuf)-7);
+cptr = cbuf;
 if ((sw & SWMASK ('A')) || ((*cptr == '\'') && cptr++)) { /* ASCII char? */
     if (cptr[0] == 0)                                   /* must have 1 char */
         return SCPE_ARG;

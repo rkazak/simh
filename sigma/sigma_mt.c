@@ -1,6 +1,6 @@
 /* sigma_mt.c: Sigma 732X 9-track magnetic tape
 
-   Copyright (c) 2007-2008, Robert M. Supnik
+   Copyright (c) 2007-2017, Robert M. Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -24,6 +24,8 @@
    in this Software without prior written authorization from Robert M Supnik.
 
    mt           7320 and 7322/7323 magnetic tape
+
+   13-Mar-17    RMS     Annotated fall through in switch
 
    Magnetic tapes are represented as a series of variable records
    of the form:
@@ -130,7 +132,7 @@ t_stat mt_chan_err (uint32 st);
 t_stat mtu_svc (UNIT *uptr);
 t_stat mtr_svc (UNIT *uptr);
 t_stat mt_reset (DEVICE *dptr);
-t_stat mt_attach (UNIT *uptr, char *cptr);
+t_stat mt_attach (UNIT *uptr, CONST char *cptr);
 t_stat mt_detach (UNIT *uptr);
 t_stat mt_flush_buf (UNIT *uptr);
 t_stat mt_map_err (UNIT *uptr, t_stat r);
@@ -334,12 +336,12 @@ r = SCPE_OK;
 switch (cmd) {                                          /* case on command */
 
     case MCM_SFWR:                                      /* space forward */
-        if (r = sim_tape_sprecf (uptr, &tbc))           /* spc rec fwd, err? */
+        if ((r = sim_tape_sprecf (uptr, &tbc)))         /* spc rec fwd, err? */
             r = mt_map_err (uptr, r);                   /* map error */
         break;
 
     case MCM_SBKR:                                      /* space reverse */
-        if (r = sim_tape_sprecr (uptr, &tbc))           /* spc rec rev, err? */
+        if ((r = sim_tape_sprecr (uptr, &tbc)))         /* spc rec rev, err? */
             r = mt_map_err (uptr, r);                   /* map error */
         break;
 
@@ -358,7 +360,7 @@ switch (cmd) {                                          /* case on command */
         break;
 
     case MCM_WTM:                                       /* write eof */
-        if (r = sim_tape_wrtmk (uptr))                  /* write tmk, err? */
+        if ((r = sim_tape_wrtmk (uptr)))                /* write tmk, err? */
             r = mt_map_err (uptr, r);                   /* map error */
         uptr->UST |= MTDV_EOF;                          /* set eof */
         break;
@@ -369,7 +371,7 @@ switch (cmd) {                                          /* case on command */
 
     case MCM_REW:                                       /* rewind */
     case MCM_RWI:                                       /* rewind and int */
-        if (r = sim_tape_rewind (uptr))                 /* rewind */
+        if ((r = sim_tape_rewind (uptr)))               /* rewind */
             r = mt_map_err (uptr, r);                   /* map error */
         mt_unit[un + MT_REW].UCMD = uptr->UCMD;         /* copy command */
         sim_activate (uptr + MT_REW, mt_rwtime);        /* sched compl */
@@ -459,7 +461,7 @@ t_stat st;
 
 if (mt_blim == 0)                                       /* any output? */
     return SCPE_OK;
-if (st = sim_tape_wrrecf (uptr, mt_xb, mt_blim))        /* write, err? */
+if ((st = sim_tape_wrrecf (uptr, mt_xb, mt_blim)))      /* write, err? */
     return mt_map_err (uptr, st);                       /* map error */
 return SCPE_OK;
 }
@@ -475,7 +477,7 @@ switch (st) {
     case MTSE_FMT:                                      /* illegal fmt */
     case MTSE_UNATT:                                    /* not attached */
     case MTSE_WRP:                                      /* write protect */
-        chan_set_chf (mt_dib.dva, CHF_XMME);
+        chan_set_chf (mt_dib.dva, CHF_XMME);            /* set err, fall through */
     case MTSE_OK:                                       /* no error */
         chan_uen (mt_dib.dva);                          /* uend */
         return SCPE_IERR;
@@ -623,7 +625,7 @@ return SCPE_OK;
 
 /* Attach routine */
 
-t_stat mt_attach (UNIT *uptr, char *cptr)
+t_stat mt_attach (UNIT *uptr, CONST char *cptr)
 {
 t_stat r;
 

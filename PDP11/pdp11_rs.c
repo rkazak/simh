@@ -1,6 +1,6 @@
 /* pdp11_rs.c - RS03/RS04 Massbus disk controller
 
-   Copyright (c) 2013, Robert M Supnik
+   Copyright (c) 2013-2017, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,7 @@
 
    rs           RS03/RS04 fixed head disks
 
+   13-Mar-17    RMS     Annotated intentional fall through in switch
    23-Oct-13    RMS     Revised for new boot setup routine
 */
 
@@ -145,7 +146,7 @@
 
 #define RS_LA_OF        7
 
-/* This controller supports many two disk drive types:
+/* This controller supports two disk drive types:
 
    type         #words/        #sectors/      #tracks/
                  sector         track          drive
@@ -177,14 +178,14 @@ t_stat rs_mbrd (int32 *data, int32 ofs, int32 drv);
 t_stat rs_mbwr (int32 data, int32 ofs, int32 drv);
 t_stat rs_svc (UNIT *uptr);
 t_stat rs_reset (DEVICE *dptr);
-t_stat rs_attach (UNIT *uptr, char *cptr);
+t_stat rs_attach (UNIT *uptr, CONST char *cptr);
 t_stat rs_detach (UNIT *uptr);
 t_stat rs_boot (int32 unitno, DEVICE *dptr);
 void rs_set_er (uint16 flg, int32 drv);
 void rs_clr_as (int32 mask);
 void rs_update_ds (uint16 flg, int32 drv);
 t_stat rs_go (int32 drv);
-t_stat rs_set_size (UNIT *uptr, int32 val, char *cptr, void *desc);
+t_stat rs_set_size (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
 int32 rs_abort (void);
 t_stat rs_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
 const char *rs_description (DEVICE *dptr);
@@ -197,7 +198,9 @@ const char *rs_description (DEVICE *dptr);
    rs_mod       RS modifier list
 */
 
-DIB rs_dib = { MBA_RS, 0, &rs_mbrd, &rs_mbwr, 0, 0, 0, { &rs_abort } };
+#define IOLN_RS         034
+
+DIB rs_dib = { MBA_AUTO, IOLN_RS, &rs_mbrd, &rs_mbwr, 0, 0, 0, { &rs_abort } };
 
 UNIT rs_unit[] = {
     { UDATA (&rs_svc, UNIT_FIX|UNIT_ATTABLE|UNIT_DISABLE|UNIT_AUTO|
@@ -351,7 +354,7 @@ switch (ofs) {                                          /* decode PA<5:1> */
         break;  
 
     case RS_DA_OF:                                      /* RSDA */
-        rsda[drv] = (uint16)data;
+        rsda[drv] = (uint16) data;
         break;
 
     case RS_AS_OF:                                      /* RSAS */
@@ -359,7 +362,7 @@ switch (ofs) {                                          /* decode PA<5:1> */
         break;
 
     case RS_MR_OF:                                      /* RSMR */
-        rsmr[drv] = (uint16)data;
+        rsmr[drv] = (uint16) data;
         break;
 
     case RS_ER_OF:                                      /* RSER */
@@ -480,10 +483,11 @@ switch (fnc) {                                          /* case on function */
             rs_update_ds (DS_ATA, drv);                 /* set attn */
             return SCPE_OK;
             }
+        /* fall through */
     case FNC_WCHK:                                      /* write check */
     case FNC_READ:                                      /* read */
         if (rsda[drv] & DA_INV) {                       /* bad addr? */
-            rs_set_er (ER_IAE, drv);                   /* set error */
+            rs_set_er (ER_IAE, drv);                    /* set error */
             mba_set_exc (rs_dib.ba);                    /* set exception */
             rs_update_ds (DS_ATA, drv);                 /* set attn */
             break;
@@ -580,7 +584,7 @@ t_stat rs_reset (DEVICE *dptr)
 int32 i;
 UNIT *uptr;
 
-mba_set_enbdis (MBA_RS, rs_dev.flags & DEV_DIS);
+mba_set_enbdis (dptr);
 for (i = 0; i < RS_NUMDR; i++) {
     uptr = rs_dev.units + i;
     sim_cancel (uptr);
@@ -596,7 +600,7 @@ return SCPE_OK;
 
 /* Device attach */
 
-t_stat rs_attach (UNIT *uptr, char *cptr)
+t_stat rs_attach (UNIT *uptr, CONST char *cptr)
 {
 int32 drv, p;
 t_stat r;
@@ -641,7 +645,7 @@ return detach_unit (uptr);
 
 /* Set size command validation routine */
 
-t_stat rs_set_size (UNIT *uptr, int32 val, char *cptr, void *desc)
+t_stat rs_set_size (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 int32 dtype = GET_DTYPE (val);
 
@@ -685,12 +689,11 @@ static const uint16 boot_rom[] = {
 t_stat rs_boot (int32 unitno, DEVICE *dptr)
 {
 size_t i;
-extern uint16 *M;
 
 for (i = 0; i < BOOT_LEN; i++)
-    M[(BOOT_START >> 1) + i] = boot_rom[i];
-M[BOOT_UNIT >> 1] = unitno & (RS_NUMDR - 1);
-M[BOOT_CSR >> 1] = mba_get_csr (rs_dib.ba) & DMASK;
+    WrMemW (BOOT_START + (2 * i), boot_rom[i]);
+WrMemW (BOOT_UNIT, unitno & (RS_NUMDR - 1));
+WrMemW (BOOT_CSR, mba_get_csr (rs_dib.ba) & DMASK);
 cpu_set_boot (BOOT_ENTRY);
 return SCPE_OK;
 }

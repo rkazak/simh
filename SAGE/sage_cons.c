@@ -44,7 +44,7 @@
 static t_stat sio_reset(DEVICE* dptr);
 static t_stat sioterm_svc(UNIT*);
 static t_stat siopoll_svc(UNIT*);
-static t_stat sio_attach(UNIT*,char*);
+static t_stat sio_attach(UNIT*, CONST char*);
 static t_stat sio_detach(UNIT*);
 static t_stat sio_txint(I8251* chip);
 static t_stat sio_rxint(I8251* chip);
@@ -115,6 +115,7 @@ static t_stat sioterm_svc(UNIT* uptr)
         chip->crlf = chip->crlf==1 ? 2 : 0; break;
     case 0:
         if (chip->crlf==2) goto set_stat;
+        chip->crlf = 0; break;
     default:
         chip->crlf = 0;
     }
@@ -210,7 +211,7 @@ static t_stat sio_reset(DEVICE* dptr)
     return SCPE_OK;
 }
 
-static t_stat sio_attach(UNIT* uptr, char* cptr)
+static t_stat sio_attach(UNIT* uptr, CONST char* cptr)
 {
     return mux_attach(uptr,cptr,&sio_mux);
 }
@@ -247,7 +248,7 @@ static t_stat cons_txint(I8251* chip);
 static t_stat cons_rxint(I8251* chip);
 static t_stat conspoll_svc(UNIT*);
 static t_stat consterm_svc(UNIT*);
-static t_stat cons_attach(UNIT*,char*);
+static t_stat cons_attach(UNIT*, CONST char*);
 static t_stat cons_detach(UNIT*);
 extern DEVICE sagecons_dev;
 
@@ -390,6 +391,7 @@ static t_stat consterm_svc(UNIT* uptr)
         chip->crlf = (chip->crlf==1) ? 2 : 0; break;
     case 0:
         if (chip->crlf==2) goto set_stat;
+        chip->crlf = 0; break;
     default:
         chip->crlf = 0;
     }
@@ -432,7 +434,7 @@ static t_stat cons_rxint(I8251* chip)
     return m68k_raise_autoint(CONSRX_AUTOINT);
 }
 
-static t_stat cons_attach(UNIT* uptr,char* cptr)
+static t_stat cons_attach(UNIT* uptr, CONST char* cptr)
 {
     return mux_attach(uptr,cptr,&cons_mux);
 }
@@ -442,7 +444,7 @@ static t_stat cons_detach(UNIT* uptr)
     return mux_detach(uptr,&cons_mux);
 }
 
-t_stat mux_attach(UNIT* uptr, char* cptr, SERMUX* mux)
+t_stat mux_attach(UNIT* uptr, CONST char* cptr, SERMUX* mux)
 {
     t_stat rc;
 

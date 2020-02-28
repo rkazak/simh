@@ -1,6 +1,6 @@
 /* i7094_com.c: IBM 7094 7750 communications interface simulator
 
-   Copyright (c) 2005-2010, Robert M Supnik
+   Copyright (c) 2005-2017, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -26,6 +26,7 @@
    com          7750 controller
    coml         7750 lines
 
+   07-Apr-17    RMS     Fixed typo in accessing unit array (COVERITY)
    12-Aug-10    RMS     Major rewrite for CTSS (Dave Pitts)
    19-Nov-08    RMS     Revised for common TMXR show routines
 
@@ -221,12 +222,12 @@ t_stat coms_svc (UNIT *uptr);
 t_stat comti_svc (UNIT *uptr);
 t_stat comto_svc (UNIT *uptr);
 t_stat com_reset (DEVICE *dptr);
-t_stat com_attach (UNIT *uptr, char *cptr);
+t_stat com_attach (UNIT *uptr, CONST char *cptr);
 t_stat com_detach (UNIT *uptr);
-t_stat com_show_ctrl (FILE *st, UNIT *uptr, int32 val, void *desc);
-t_stat com_show_freeq (FILE *st, UNIT *uptr, int32 val, void *desc);
-t_stat com_show_allq (FILE *st, UNIT *uptr, int32 val, void *desc);
-t_stat com_show_oneq (FILE *st, UNIT *uptr, int32 val, void *desc);
+t_stat com_show_ctrl (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+t_stat com_show_freeq (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+t_stat com_show_allq (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+t_stat com_show_oneq (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 void com_reset_ln (uint32 i);
 uint16 com_get_nexti (uint32 *ln);
 uint16 com_gethd_free (LISTHD *lh);
@@ -504,7 +505,7 @@ switch (com_sta) {                                      /* case on state */
                 ent = com_gethd_free (&com_inpq[ln]);   /* get first char */
                 if (ent != 0)                           /* any input? */
                     chr = com_pkt[ent].data;            /* return char */
-                else coml_unit[i].INPP = 0;             /* this line is idle */
+                else coml_unit[ln].INPP = 0;            /* this line is idle */
                 }                                       /* end if input pending */
             if (chr != 0) {                             /* got something? */
                 if ((i++ % 3) == 0)                     /* next word? */
@@ -1085,7 +1086,7 @@ return SCPE_OK;
 
 /* Attach master unit */
 
-t_stat com_attach (UNIT *uptr, char *cptr)
+t_stat com_attach (UNIT *uptr, CONST char *cptr)
 {
 t_stat r;
 
@@ -1129,7 +1130,7 @@ return;
 
 /* Special show commands */
 
-uint32 com_show_qsumm (FILE *st, LISTHD *lh, char *name)
+uint32 com_show_qsumm (FILE *st, LISTHD *lh, const char *name)
 {
 uint32 i, next;
 
@@ -1160,13 +1161,13 @@ if (((ch & 07400) == 0) && (c >= 040) && (c != 0177))
 return;
 }
 
-t_stat com_show_freeq (FILE *st, UNIT *uptr, int32 val, void *desc)
+t_stat com_show_freeq (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
 com_show_qsumm (st, &com_free, "Free queue");
 return SCPE_OK;
 }
 
-t_stat com_show_oneq (FILE *st, UNIT *uptr, int32 val, void *desc)
+t_stat com_show_oneq (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
 uint32 entc, ln, i, next;
 LISTHD *lh;
@@ -1189,7 +1190,7 @@ if ((entc = com_show_qsumm (st, lh, name))) {
 return SCPE_OK;
 }
 
-t_stat com_show_allq (FILE *st, UNIT *uptr, int32 val, void *desc)
+t_stat com_show_allq (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
 uint32 i;
 
@@ -1198,7 +1199,7 @@ for (i = 0; i < COM_TLINES; i++)
 return SCPE_OK;
 }
 
-t_stat com_show_ctrl (FILE *st, UNIT *uptr, int32 val, void *desc)
+t_stat com_show_ctrl (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
 if (!com_enab)
     fprintf (st, "Controller is not initialized\n");

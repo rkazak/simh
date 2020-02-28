@@ -68,11 +68,6 @@
 #define CLK_DELAY       5000                            /* 100 Hz */
 #define TMXR_MULT       1                               /* 100 Hz */
 
-extern int32 int_req[IPL_HLVL];
-extern int32 hlt_pin;
-extern jmp_buf save_env;
-extern int32 p1;
-
 int32 tti_csr = 0;                                      /* control/status */
 uint32 tti_buftime;                                     /* time input character arrived */
 int32 tto_csr = 0;                                      /* control/status */
@@ -253,6 +248,8 @@ void iccs_wr (int32 data)
 {
 if ((data & CSR_IE) == 0)
     CLR_INT (CLK);
+if (data & CSR_DONE)                                    /* Interrupt Acked? */
+    sim_rtcn_tick_ack (20, TMR_CLK);                    /* Let timers know */
 clk_csr = (clk_csr & ~CLKCSR_RW) | (data & CLKCSR_RW);
 return;
 }
@@ -315,11 +312,11 @@ if (sel == TXDB_MISC) {                                 /* misc function? */
     }
 else
     if (sel != 0)
-        RSVD_OPND_FAULT;
+        RSVD_OPND_FAULT(txdb_func);
 
 }
 
-t_stat cpu_show_leds (FILE *st, UNIT *uptr, int32 val, void *desc)
+t_stat cpu_show_leds (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
 fprintf (st, "leds=%d(%s,%s,%s)", tto_leds, tto_leds&4 ? "ON" : "OFF", 
                                             tto_leds&2 ? "ON" : "OFF", 
@@ -337,8 +334,8 @@ t_stat tti_svc (UNIT *uptr)
 {
 int32 c;
 
-sim_clock_coschedule (uptr, KBD_WAIT (uptr->wait, tmr_poll));
-                                                        /* continue poll */
+sim_clock_coschedule (uptr, tmxr_poll);                 /* continue poll */
+
 if ((tti_csr & CSR_DONE) &&                             /* input still pending and < 500ms? */
     ((sim_os_msec () - tti_buftime) < 500))
      return SCPE_OK;
@@ -364,7 +361,7 @@ tmxr_set_console_units (&tti_unit, &tto_unit);
 tti_unit.buf = 0;
 tti_csr = 0;
 CLR_INT (TTI);
-sim_activate_abs (&tti_unit, KBD_WAIT (tti_unit.wait, tmr_poll));
+sim_activate_abs (&tti_unit, tmr_poll);
 return SCPE_OK;
 }
 
@@ -458,11 +455,10 @@ t_stat clk_reset (DEVICE *dptr)
 {
 int32 t;
 
-sim_register_clock_unit (&clk_unit);                    /* declare clock unit */
 clk_csr = 0;
 CLR_INT (CLK);
-t = sim_rtcn_init (clk_unit.wait, TMR_CLK);             /* init timer */
-sim_activate_abs (&clk_unit, t);                        /* activate unit */
+t = sim_rtcn_init_unit (&clk_unit, clk_unit.wait, TMR_CLK);/* init 100Hz timer */
+sim_activate_after (&clk_unit, 1000000/clk_tps);        /* activate 100Hz unit */
 tmr_poll = t;                                           /* set tmr poll */
 tmxr_poll = t * TMXR_MULT;                              /* set mux poll */
 return SCPE_OK;

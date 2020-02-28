@@ -42,6 +42,14 @@
 #include "sim_sock.h"
 #include "libslirp.h"
 
+#if !defined (USE_READER_THREAD)
+#define pthread_mutex_init(mtx, val)
+#define pthread_mutex_destroy(mtx)
+#define pthread_mutex_lock(mtx)
+#define pthread_mutex_unlock(mtx)
+#define pthread_mutex_t int
+#endif
+
 #define IS_TCP 0
 #define IS_UDP 1
 static const char *tcpudp[] = {
@@ -58,28 +66,32 @@ struct redir_tcp_udp {
     };
 
 static int
-_parse_redirect_port (struct redir_tcp_udp **head, char *buff, int is_udp)
+_parse_redirect_port (struct redir_tcp_udp **head, const char *buff, int is_udp)
 {
+char gbuf[4*CBUFSIZE];
 uint32 inaddr = 0;
 int port = 0;
 int lport = 0;
 char *ipaddrstr = NULL;
 char *portstr = NULL;
-struct redir_tcp_udp *new;
-        
-if (((ipaddrstr = strchr(buff, ':')) == NULL) || (*(ipaddrstr+1) == 0)) {
+struct redir_tcp_udp *newp;
+
+gbuf[sizeof(gbuf)-1] = '\0';
+strncpy (gbuf, buff, sizeof(gbuf)-1);
+if (((ipaddrstr = strchr(gbuf, ':')) == NULL) || (*(ipaddrstr+1) == 0)) {
     sim_printf ("redir %s syntax error\n", tcpudp[is_udp]);
     return -1;
     }
 *ipaddrstr++ = 0;
 
-if (((portstr = strchr (ipaddrstr, ':')) == NULL) || (*(portstr+1) == 0)) {
+if ((ipaddrstr) && 
+    (((portstr = strchr (ipaddrstr, ':')) == NULL) || (*(portstr+1) == 0))) {
     sim_printf ("redir %s syntax error\n", tcpudp[is_udp]);
     return -1;
     }
 *portstr++ = 0;
 
-sscanf (buff, "%d", &lport);
+sscanf (gbuf, "%d", &lport);
 sscanf (portstr, "%d", &port);
 if (ipaddrstr) 
     inaddr = inet_addr (ipaddrstr);
@@ -89,15 +101,15 @@ if (!inaddr) {
     return -1;
     }
 
-if ((new = g_malloc (sizeof(struct redir_tcp_udp))) == NULL)
+if ((newp = (struct redir_tcp_udp *)g_malloc (sizeof(struct redir_tcp_udp))) == NULL)
     return -1;
 else {
-    inet_aton (ipaddrstr, &new->inaddr);
-    new->is_udp = is_udp;
-    new->port = port;
-    new->lport = lport;
-    new->next = *head;
-    *head = new;
+    inet_aton (ipaddrstr, &newp->inaddr);
+    newp->is_udp = is_udp;
+    newp->port = port;
+    newp->lport = lport;
+    newp->next = *head;
+    *head = newp;
     return 0;
     }
 }
@@ -119,6 +131,11 @@ if (head) {
 return ret;
 }
 
+struct slirp_write_request {
+    struct slirp_write_request *next;
+    char msg[1518];
+    size_t len;
+    };
 
 struct sim_slirp {
     Slirp *slirp;
@@ -137,12 +154,8 @@ struct sim_slirp {
     struct redir_tcp_udp *rtcp;
     GArray *gpollfds;
     SOCKET db_chime;            /* write packet doorbell */
-    struct write_request {
-        struct write_request *next;
-        char msg[1518];
-        size_t len;
-        } *write_requests;
-    struct write_request *write_buffers;
+    struct slirp_write_request *write_requests;
+    struct slirp_write_request *write_buffers;
     pthread_mutex_t write_buffer_lock;
     void *opaque;               /* opaque value passed during packet delivery */
     packet_callback callback;   /* slirp arriving packet delivery callback */
@@ -150,16 +163,22 @@ struct sim_slirp {
     uint32 dbit;
     };
 
+#if defined(__cplusplus)
+extern "C" {
+#endif
 DEVICE *slirp_dptr;
 uint32 slirp_dbit;
+#if defined(__cplusplus)
+}
+#endif
 
-SLIRP *sim_slirp_open (const char *args, void *opaque, packet_callback callback, DEVICE *dptr, uint32 dbit)
+SLIRP *sim_slirp_open (const char *args, void *opaque, packet_callback callback, DEVICE *dptr, uint32 dbit, char *errbuf, size_t errbuf_size)
 {
 SLIRP *slirp = (SLIRP *)g_malloc0(sizeof(*slirp));
 char *targs = g_strdup (args);
-char *tptr = targs;
-char *cptr;
-char tbuf[CBUFSIZE], gbuf[CBUFSIZE];
+const char *tptr = targs;
+const char *cptr;
+char tbuf[CBUFSIZE], gbuf[CBUFSIZE], abuf[CBUFSIZE];
 int err;
 
 slirp_dptr = dptr;
@@ -172,6 +191,7 @@ slirp->maskbits = 24;
 slirp->dhcpmgmt = 1;
 slirp->db_chime = INVALID_SOCKET;
 inet_aton(DEFAULT_IP_ADDR,&slirp->vgateway);
+pthread_mutex_init (&slirp->write_buffer_lock, NULL);
 
 err = 0;
 while (*tptr && !err) {
@@ -190,7 +210,7 @@ while (*tptr && !err) {
         if (cptr && *cptr)
             slirp->tftp_path = g_strdup (cptr);
         else {
-            sim_printf ("Missing TFTP Path\n");
+            strlcpy (errbuf, "Missing TFTP Path", errbuf_size);
             err = 1;
             }
         continue;
@@ -199,7 +219,7 @@ while (*tptr && !err) {
         if (cptr && *cptr)
             slirp->boot_file = g_strdup (cptr);
         else {
-            sim_printf ("Missing DHCP Boot file name\n");
+            strlcpy (errbuf, "Missing DHCP Boot file name", errbuf_size);
             err = 1;
             }
         continue;
@@ -209,7 +229,7 @@ while (*tptr && !err) {
         if (cptr && *cptr)
             inet_aton (cptr, &slirp->vnameserver);
         else {
-            sim_printf ("Missing nameserver\n");
+            strlcpy (errbuf, "Missing nameserver", errbuf_size);
             err = 1;
             }
         continue;
@@ -223,7 +243,7 @@ while (*tptr && !err) {
             name = slirp->dns_search;
             do {
                 ++count;
-                slirp->dns_search_domains = realloc (slirp->dns_search_domains, (count + 1)*sizeof(char *));
+                slirp->dns_search_domains = (char **)realloc (slirp->dns_search_domains, (count + 1)*sizeof(char *));
                 slirp->dns_search_domains[count] = NULL;
                 slirp->dns_search_domains[count-1] = name;
                 name = strchr (name, ':');
@@ -234,37 +254,33 @@ while (*tptr && !err) {
                 } while (name && *name);
             }
         else {
-            sim_printf ("Missing DNS search list\n");
+            strlcpy (errbuf, "Missing DNS search list", errbuf_size);
             err = 1;
             }
         continue;
         }
     if (0 == MATCH_CMD (gbuf, "GATEWAY")) {
         if (cptr && *cptr) {
-            char *slash = strchr (cptr, '/');
-            if (slash) {
-                slirp->maskbits = atoi (slash+1);
-                *slash = '\0';
-                }
-            inet_aton (cptr, &slirp->vgateway);
+            cptr = get_glyph (cptr, abuf, '/');
+            if (cptr && *cptr)
+                slirp->maskbits = atoi (cptr);
+            inet_aton (abuf, &slirp->vgateway);
             }
         else {
-            sim_printf ("Missing host\n");
+            strlcpy (errbuf, "Missing host", errbuf_size);
             err = 1;
             }
         continue;
         }
     if (0 == MATCH_CMD (gbuf, "NETWORK")) {
         if (cptr && *cptr) {
-            char *slash = strchr (cptr, '/');
-            if (slash) {
-                slirp->maskbits = atoi (slash+1);
-                *slash = '\0';
-                }
-            inet_aton (cptr, &slirp->vnetwork);
+            cptr = get_glyph (cptr, abuf, '/');
+            if (cptr && *cptr)
+                slirp->maskbits = atoi (cptr);
+            inet_aton (abuf, &slirp->vnetwork);
             }
         else {
-            sim_printf ("Missing network\n");
+            strlcpy (errbuf, "Missing network", errbuf_size);
             err = 1;
             }
         continue;
@@ -277,7 +293,7 @@ while (*tptr && !err) {
         if (cptr && *cptr)
             err = _parse_redirect_port (&slirp->rtcp, cptr, IS_UDP);
         else {
-            sim_printf ("Missing UDP port mapping\n");
+            strlcpy (errbuf, "Missing UDP port mapping", errbuf_size);
             err = 1;
             }
         continue;
@@ -286,12 +302,12 @@ while (*tptr && !err) {
         if (cptr && *cptr)
             err = _parse_redirect_port (&slirp->rtcp, cptr, IS_TCP);
         else {
-            sim_printf ("Missing TCP port mapping\n");
+            strlcpy (errbuf, "Missing TCP port mapping", errbuf_size);
             err = 1;
             }
         continue;
         }
-    sim_printf ("Unexpected NAT argument: %s\n", gbuf);
+    snprintf (errbuf, errbuf_size - 1, "Unexpected NAT argument: %s", gbuf);
     err = 1;
     }
 if (err) {
@@ -300,7 +316,7 @@ if (err) {
     return NULL;
     }
 
-slirp->vnetmask.s_addr = htonl(~((1 << (32-slirp->maskbits)) - 1));
+slirp->vnetmask.s_addr = slirp->maskbits ? htonl(~((1 << (32-slirp->maskbits)) - 1)) : 0xFFFFFFFF;
 slirp->vnetwork.s_addr = slirp->vgateway.s_addr & slirp->vnetmask.s_addr;
 if ((slirp->vgateway.s_addr & ~slirp->vnetmask.s_addr) == 0)
     slirp->vgateway.s_addr = htonl(ntohl(slirp->vnetwork.s_addr) | 2);
@@ -320,9 +336,8 @@ if (_do_redirects (slirp->slirp, slirp->rtcp)) {
 else {
     char db_host[32];
     GPollFD pfd;
-    int64_t rnd_val = qemu_clock_get_ns (0) / 1000000;
+    int64_t rnd_val = qemu_clock_get_ns ((QEMUClockType)0) / 1000000;
 
-    pthread_mutex_init (&slirp->write_buffer_lock, NULL);
     slirp->gpollfds = g_array_new(FALSE, FALSE, sizeof(GPollFD));
     /* setup transmit packet wakeup doorbell */
     do {
@@ -367,7 +382,7 @@ if (slirp) {
     if (slirp->db_chime != INVALID_SOCKET)
         closesocket (slirp->db_chime);
     if (1) {
-        struct write_request *buffer;
+        struct slirp_write_request *buffer;
 
         while (NULL != (buffer = slirp->write_buffers)) {
             slirp->write_buffers = buffer->next;
@@ -399,12 +414,16 @@ fprintf (st, "%s",
 "    DNSSEARCH=domain{:domain{:domain}}  specifies DNS Domains search suffixes\n"
 "    GATEWAY=host_ipaddress{/masklen}    specifies LAN gateway IP address\n"
 "    NETWORK=network_ipaddress{/masklen} specifies LAN network address\n"
-"    UDP=port:address:internal-port      maps host UDP port to guest port\n"
-"    TCP=port:address:internal-port      maps host TCP port to guest port\n"
-"    NODHCP                              disables DHCP server\n"
+"    UDP=port:address:address's-port     maps host UDP port to guest port\n"
+"    TCP=port:address:address's-port     maps host TCP port to guest port\n"
+"    NODHCP                              disables DHCP server\n\n"
 "Default NAT Options: GATEWAY=10.0.2.2, masklen=24(netmask is 255.255.255.0)\n"
 "                     DHCP=10.0.2.15, NAMESERVER=10.0.2.3\n"
 "    Nameserver defaults to proxy traffic to host system's active nameserver\n\n"
+"The 'address' field in the UDP and TCP port mappings are the simulated\n"
+"(guest) system's IP address which, if DHCP allocated would default to\n"
+"10.0.2.15 or could be statically configured to any address including\n"
+"10.0.2.4 thru 10.0.2.14.\n\n"
 "NAT limitations\n\n"
 "There are four limitations of NAT mode which users should be aware of:\n\n"
 " 1) ICMP protocol limitations:\n"
@@ -434,16 +453,20 @@ return SCPE_OK;
 
 int sim_slirp_send (SLIRP *slirp, const char *msg, size_t len, int flags)
 {
-struct write_request *request;
+struct slirp_write_request *request;
 int wake_needed = 0;
 
+if (!slirp) {
+    errno = EBADF;
+    return 0;
+    }
 /* Get a buffer */
 pthread_mutex_lock (&slirp->write_buffer_lock);
 if (NULL != (request = slirp->write_buffers))
     slirp->write_buffers = request->next;
 pthread_mutex_unlock (&slirp->write_buffer_lock);
 if (NULL == request)
-    request = (struct write_request *)g_malloc(sizeof(*request));
+    request = (struct slirp_write_request *)g_malloc(sizeof(*request));
 
 /* Copy buffer contents */
 request->len = len;
@@ -454,7 +477,7 @@ memcpy(request->msg, msg, len);
 pthread_mutex_lock (&slirp->write_buffer_lock);
 request->next = NULL;
 if (slirp->write_requests) {
-    struct write_request *last_request = slirp->write_requests;
+    struct slirp_write_request *last_request = slirp->write_requests;
 
     while (last_request->next) {
         last_request = last_request->next;
@@ -576,6 +599,8 @@ fd_set rfds, wfds, xfds;
 fd_set save_rfds, save_wfds, save_xfds;
 int nfds;
 
+if (!slirp)                         /* Not active? */
+    return -1;                      /* That's an error */
 /* Populate the GPollFDs from slirp */
 g_array_set_size (slirp->gpollfds, 1);  /* Leave the doorbell chime alone */
 slirp_pollfds_fill(slirp->gpollfds, &slirp_timeout);
@@ -598,7 +623,7 @@ if (select_ret) {
     if (FD_ISSET (slirp->db_chime, &rfds)) {
         char buf[32];
         /* consume the doorbell wakeup ring */
-        recv (slirp->db_chime, buf, sizeof (buf), 0);
+        (void)recv (slirp->db_chime, buf, sizeof (buf), 0);
         }
     sim_debug (slirp->dbit, slirp->dptr, "Select returned %d\r\n", select_ret);
     for (i=0; i<nfds+1; i++) {
@@ -615,7 +640,7 @@ return select_ret + 1;  /* Force dispatch even on timeout */
 
 void sim_slirp_dispatch (SLIRP *slirp)
 {
-struct write_request *request;
+struct slirp_write_request *request;
 
 /* first deliver any transmit packets which are pending */
 

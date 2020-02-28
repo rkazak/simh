@@ -48,10 +48,6 @@
 #include "altairz80_defs.h"
 #include "sim_imd.h"
 
-#if defined (_WIN32)
-#include <windows.h>
-#endif
-
 #ifdef DBG_MSG
 #define DBG_PRINT(args) sim_printf args
 #else
@@ -67,13 +63,14 @@
 #define VERBOSE_MSG (1 << 5)
 
 extern uint32 PCX;
-extern t_stat set_membase(UNIT *uptr, int32 val, char *cptr, void *desc);
-extern t_stat show_membase(FILE *st, UNIT *uptr, int32 val, void *desc);
+extern t_stat set_membase(UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+extern t_stat show_membase(FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 extern uint32 sim_map_resource(uint32 baseaddr, uint32 size, uint32 resource_type,
     int32 (*routine)(const int32, const int32, const int32), uint8 unmap);
 extern int32 find_unit_index(UNIT *uptr);
 
 static void MFDC_Command(uint8 cData);
+static const char* mfdc_description(DEVICE *dptr);
 
 #define MFDC_MAX_DRIVES 4
 #define JUMPER_W9       1   /* Not Installed (0) = 2MHz, Installed (1) = 4MHz. */
@@ -131,7 +128,7 @@ static SECTOR_FORMAT sdata;
 #define MFDC_CAPACITY           (77*16*MFDC_SECTOR_LEN) /* Default Micropolis Disk Capacity */
 
 static t_stat mfdc_reset(DEVICE *mfdc_dev);
-static t_stat mfdc_attach(UNIT *uptr, char *cptr);
+static t_stat mfdc_attach(UNIT *uptr, CONST char *cptr);
 static t_stat mfdc_detach(UNIT *uptr);
 static uint8 MFDC_Read(const uint32 Addr);
 static uint8 MFDC_Write(const uint32 Addr, uint8 cData);
@@ -149,7 +146,11 @@ static REG mfdc_reg[] = {
     { NULL }
 };
 
-#define MDSK_NAME   "Micropolis FD Control MDSK"
+#define MDSK_NAME   "Micropolis FD Control"
+
+static const char* mfdc_description(DEVICE *dptr) {
+    return MDSK_NAME;
+}
 
 static MTAB mfdc_mod[] = {
     { MTAB_XTD|MTAB_VDV,            0,                  "MEMBASE",  "MEMBASE",
@@ -184,7 +185,7 @@ DEVICE mfdc_dev = {
     NULL, NULL, &mfdc_reset,
     NULL, &mfdc_attach, &mfdc_detach,
     &mfdc_info_data, (DEV_DISABLE | DEV_DIS | DEV_DEBUG), 0,
-    mfdc_dt, NULL, MDSK_NAME
+    mfdc_dt, NULL, NULL, NULL, NULL, NULL, &mfdc_description
 };
 
 /* Micropolis FD Control Boot ROM
@@ -233,10 +234,10 @@ static t_stat mfdc_reset(DEVICE *dptr)
 }
 
 /* Attach routine */
-static t_stat mfdc_attach(UNIT *uptr, char *cptr)
+static t_stat mfdc_attach(UNIT *uptr, CONST char *cptr)
 {
     t_stat r;
-    unsigned int i = 0;
+    int32 i = 0;
 
     r = attach_unit(uptr, cptr);    /* attach unit  */
     if ( r != SCPE_OK)              /* error?       */
@@ -250,6 +251,9 @@ static t_stat mfdc_attach(UNIT *uptr, char *cptr)
     }
 
     i = find_unit_index(uptr);
+    if (i == -1) {
+        return (SCPE_IERR);
+    }
 
     /* Default for new file is DSK */
     uptr->u3 = IMAGE_TYPE_DSK;
@@ -469,8 +473,7 @@ static uint8 MFDC_Read(const uint32 Addr)
                     case IMAGE_TYPE_DSK:
                         if(pDrive->uptr->fileref == NULL) {
                             sim_printf(".fileref is NULL!" NLP);
-                        } else {
-                            sim_fseek((pDrive->uptr)->fileref, sec_offset, SEEK_SET);
+                        } else if (sim_fseek((pDrive->uptr)->fileref, sec_offset, SEEK_SET) == 0) {
 #ifdef USE_VGI
                             rtn = sim_fread(sdata.raw, 1, MFDC_SECTOR_LEN, (pDrive->uptr)->fileref);
                             if (rtn != MFDC_SECTOR_LEN)
@@ -479,6 +482,8 @@ static uint8 MFDC_Read(const uint32 Addr)
                             if (rtn != 256)
 #endif /* USE_VGI */
                                 sim_printf("%s: sim_fread error. Result = %d." NLP, __FUNCTION__, rtn);
+                        } else {
+                            sim_printf("%s: sim_fseek error." NLP, __FUNCTION__);
                         }
                         break;
                     case IMAGE_TYPE_CPT:
@@ -596,13 +601,14 @@ static uint8 MFDC_Write(const uint32 Addr, uint8 cData)
                         case IMAGE_TYPE_DSK:
                             if(pDrive->uptr->fileref == NULL) {
                                 sim_printf(".fileref is NULL!" NLP);
-                            } else {
-                                sim_fseek((pDrive->uptr)->fileref, sec_offset, SEEK_SET);
+                            } else if (sim_fseek((pDrive->uptr)->fileref, sec_offset, SEEK_SET) == 0) {
 #ifdef USE_VGI
                                 sim_fwrite(sdata.raw, 1, MFDC_SECTOR_LEN, (pDrive->uptr)->fileref);
 #else
                                 sim_fwrite(sdata.u.data, 1, 256, (pDrive->uptr)->fileref);
 #endif /* USE_VGI */
+                            } else {
+                                sim_printf("%s: sim_fseek error." NLP, __FUNCTION__);
                             }
                             break;
                         case IMAGE_TYPE_CPT:

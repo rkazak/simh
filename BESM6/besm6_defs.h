@@ -146,6 +146,7 @@ extern DEVICE clock_dev;
 extern DEVICE printer_dev;
 extern DEVICE tty_dev;
 extern DEVICE fs_dev;
+extern DEVICE pi_dev;
 extern jmp_buf cpu_halt;
 
 /*
@@ -311,6 +312,12 @@ extern void mmu_setprotection (int idx, t_value word);
 extern void mmu_print_brz (void);
 
 /*
+ * Utility functions
+ */
+extern void gost_putc(unsigned char, FILE *);
+extern int odd_parity(unsigned char);
+
+/*
  * Выполнение обращения к барабану.
  */
 void drum (int ctlr, uint32 cmd);
@@ -349,6 +356,13 @@ void fs_control (int num, uint32 cmd);
 int fs_read (int num);
 
 /*
+ * Вывод на перфокарты.
+ */
+void pi_control (int num, uint32 cmd);
+void pi_write (int num, uint32 cmd);
+int pi_read (int num);
+
+/*
  * Отладочная выдача.
  */
 void besm6_fprint_cmd (FILE *of, uint32 cmd);
@@ -358,9 +372,9 @@ void besm6_debug (const char *fmt, ...);
 t_stat fprint_sym (FILE *of, t_addr addr, t_value *val,
                    UNIT *uptr, int32 sw);
 void besm6_draw_panel (int force);
-t_stat besm6_init_panel (UNIT *u, int32 val, char *cptr, void *desc);
-t_stat besm6_close_panel (UNIT *u, int32 val, char *cptr, void *desc);
-t_stat besm6_show_panel (FILE *st, struct sim_unit *up, int32 v, void *dp);
+t_stat besm6_init_panel (UNIT *u, int32 val, CONST char *cptr, void *desc);
+t_stat besm6_close_panel (UNIT *u, int32 val, CONST char *cptr, void *desc);
+t_stat besm6_show_panel (FILE *st, UNIT *up, int32 v, CONST void *dp);
 
 /*
  * Арифметика.

@@ -43,11 +43,6 @@
  *************************************************************************/
 
 #include "altairz80_defs.h"
-
-#if defined (_WIN32)
-#include <windows.h>
-#endif
-
 #include "sim_imd.h"
 
 /* Debug flags */
@@ -95,14 +90,14 @@ static HDC1001_INFO hdc1001_info_data = { { 0x0, 0, 0xC8, 8 } };
 static HDC1001_INFO *hdc1001_info = &hdc1001_info_data;
 
 extern uint32 PCX;
-extern t_stat set_iobase(UNIT *uptr, int32 val, char *cptr, void *desc);
-extern t_stat show_iobase(FILE *st, UNIT *uptr, int32 val, void *desc);
+extern t_stat set_iobase(UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+extern t_stat show_iobase(FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 extern uint32 sim_map_resource(uint32 baseaddr, uint32 size, uint32 resource_type,
         int32 (*routine)(const int32, const int32, const int32), uint8 unmap);
 extern int32 find_unit_index(UNIT *uptr);
 
 /* These are needed for DMA. */
-extern void PutBYTEWrapper(const uint32 Addr, const uint32 Value);
+extern void PutBYTEWrapper(const uint32 Addr, CONST uint32 Value);
 extern uint8 GetBYTEWrapper(const uint32 Addr);
 
 #define UNIT_V_HDC1001_VERBOSE    (UNIT_V_UF + 1) /* verbose mode, i.e. show error messages   */
@@ -110,13 +105,14 @@ extern uint8 GetBYTEWrapper(const uint32 Addr);
 #define HDC1001_CAPACITY          (77*2*16*256)   /* Default Micropolis Disk Capacity         */
 
 static t_stat hdc1001_reset(DEVICE *hdc1001_dev);
-static t_stat hdc1001_attach(UNIT *uptr, char *cptr);
+static t_stat hdc1001_attach(UNIT *uptr, CONST char *cptr);
 static t_stat hdc1001_detach(UNIT *uptr);
 
 static int32 hdc1001dev(const int32 port, const int32 io, const int32 data);
 
 static uint8 HDC1001_Read(const uint32 Addr);
 static uint8 HDC1001_Write(const uint32 Addr, uint8 cData);
+static const char* hdc1001_description(DEVICE *dptr);
 
 static UNIT hdc1001_unit[] = {
     { UDATA (NULL, UNIT_FIX + UNIT_ATTABLE + UNIT_DISABLE + UNIT_ROABLE, HDC1001_CAPACITY) },
@@ -129,7 +125,11 @@ static REG hdc1001_reg[] = {
     { NULL }
 };
 
-#define HDC1001_NAME    "ADC Hard Disk Controller HDC1001"
+#define HDC1001_NAME    "ADC Hard Disk Controller"
+
+static const char* hdc1001_description(DEVICE *dptr) {
+    return HDC1001_NAME;
+}
 
 static MTAB hdc1001_mod[] = {
     { MTAB_XTD|MTAB_VDV,    0,                      "IOBASE",   "IOBASE",
@@ -160,7 +160,7 @@ DEVICE hdc1001_dev = {
     NULL, NULL, &hdc1001_reset,
     NULL, &hdc1001_attach, &hdc1001_detach,
     &hdc1001_info_data, (DEV_DISABLE | DEV_DIS | DEV_DEBUG), ERROR_MSG,
-    hdc1001_dt, NULL, HDC1001_NAME
+    hdc1001_dt, NULL, NULL, NULL, NULL, NULL, &hdc1001_description
 };
 
 /* Reset routine */
@@ -185,7 +185,7 @@ static t_stat hdc1001_reset(DEVICE *dptr)
 
 
 /* Attach routine */
-static t_stat hdc1001_attach(UNIT *uptr, char *cptr)
+static t_stat hdc1001_attach(UNIT *uptr, CONST char *cptr)
 {
     t_stat r = SCPE_OK;
     HDC1001_DRIVE_INFO *pDrive;
@@ -301,41 +301,41 @@ static int32 hdc1001dev(const int32 port, const int32 io, const int32 data)
 #define HDC1001_OP_HEAD   0x02
 #define HDC1001_OP_SECTOR 0x03
 
-#define HDC1001_CMD_NULL          0x00
-#define HDC1001_CMD_READ_DATA     0x01
-#define HDC1001_CMD_WRITE_DATA    0x02
-#define HDC1001_CMD_WRITE_HEADER  0x03
-#define HDC1001_CMD_READ_HEADER   0x04
+#define HDC1001_CMD_NULL            0x00
+#define HDC1001_CMD_READ_DATA       0x01
+#define HDC1001_CMD_WRITE_DATA      0x02
+#define HDC1001_CMD_WRITE_HEADER    0x03
+#define HDC1001_CMD_READ_HEADER     0x04
 
-#define HDC1001_STATUS_BUSY     0
+#define HDC1001_STATUS_BUSY         0
 #define HDC1001_STATUS_RANGE        1
 #define HDC1001_STATUS_NOT_READY    2
-#define HDC1001_STATUS_TIMEOUT  3
-#define HDC1001_STATUS_DAT_CRC  4
-#define HDC1001_STATUS_WR_FAULT 5
-#define HDC1001_STATUS_OVERRUN  6
-#define HDC1001_STATUS_HDR_CRC  7
-#define HDC1001_STATUS_MAP_FULL 8
-#define HDC1001_STATUS_COMPLETE 0xFF    /* Complete with No Error */
+#define HDC1001_STATUS_TIMEOUT      3
+#define HDC1001_STATUS_DAT_CRC      4
+#define HDC1001_STATUS_WR_FAULT     5
+#define HDC1001_STATUS_OVERRUN      6
+#define HDC1001_STATUS_HDR_CRC      7
+#define HDC1001_STATUS_MAP_FULL     8
+#define HDC1001_STATUS_COMPLETE     0xFF    /* Complete with No Error */
 
 #define HDC1001_CODE_NOOP           0x00
 #define HDC1001_CODE_VERSION        0x01
-#define HDC1001_CODE_GLOBAL     0x02
+#define HDC1001_CODE_GLOBAL         0x02
 #define HDC1001_CODE_SPECIFY        0x03
 #define HDC1001_CODE_SET_MAP        0x04
 #define HDC1001_CODE_HOME           0x05
 #define HDC1001_CODE_SEEK           0x06
 #define HDC1001_CODE_READ_HDR       0x07
-#define HDC1001_CODE_READWRITE  0x08
+#define HDC1001_CODE_READWRITE      0x08
 #define HDC1001_CODE_RELOCATE       0x09
-#define HDC1001_CODE_FORMAT     0x0A
-#define HDC1001_CODE_FORMAT_BAD 0x0B
-#define HDC1001_CODE_STATUS     0x0C
-#define HDC1001_CODE_SELECT     0x0D
+#define HDC1001_CODE_FORMAT         0x0A
+#define HDC1001_CODE_FORMAT_BAD     0x0B
+#define HDC1001_CODE_STATUS         0x0C
+#define HDC1001_CODE_SELECT         0x0D
 #define HDC1001_CODE_EXAMINE        0x0E
-#define HDC1001_CODE_MODIFY     0x0F
+#define HDC1001_CODE_MODIFY         0x0F
 
-#define HDC1001_IOPB_LEN    16
+#define HDC1001_IOPB_LEN            16
 
 #define TF_DATA     0
 #define TF_ERROR    1
@@ -357,6 +357,7 @@ static uint8 HDC1001_Write(const uint32 Addr, uint8 cData)
     switch(Addr & 0x07) {
         case TF_SDH:
             hdc1001_info->sel_drive = (cData >> 3) & 0x03;
+            /* fall through */
         case TF_DATA:
         case TF_ERROR:
         case TF_SECNT:

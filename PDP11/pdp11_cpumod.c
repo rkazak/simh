@@ -1,6 +1,6 @@
 /* pdp11_cpumod.c: PDP-11 CPU model-specific features
 
-   Copyright (c) 2004-2013, Robert M Supnik
+   Copyright (c) 2004-2016, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,8 @@
 
    system       PDP-11 model-specific registers
 
+   04-Mar-16    RMS     Fixed maximum memory sizes to exclude IO page
+   14-Mar-16    RMS     Modified to keep cpu_memsize in sync with MEMSIZE
    06-Jun-13    RMS     Fixed change model to set memory size last
    20-May-08    RMS     Added JCSR default for KDJ11B, KDJ11E
    22-Apr-08    RMS     Fixed write behavior of 11/70 MBRK, LOSIZE, HISIZE
@@ -83,12 +85,8 @@ int32 toy_state = 0;
 uint8 toy_data[TOY_LNT] = { 0 };
 static int32 clk_tps_map[4] = { 60, 60, 50, 800 };
 
-extern uint16 *M;
 extern int32 R[8];
-extern DEVICE cpu_dev;
-extern UNIT cpu_unit;
 extern int32 STKLIM, PIRQ;
-extern uint32 cpu_model, cpu_type, cpu_opt;
 extern int32 clk_fie, clk_fnxm, clk_tps, clk_default;
 
 t_stat CPU24_rd (int32 *data, int32 addr, int32 access);
@@ -123,8 +121,8 @@ t_stat sys_reset (DEVICE *dptr);
 int32 toy_read (void);
 void toy_write (int32 bit);
 uint8 toy_set (int32 val);
-t_stat sys_set_jclk_dflt (UNIT *uptr, int32 val, char *cptr, void *desc);
-t_stat sys_show_jclk_dflt (FILE *st, UNIT *uptr, int32 val, void *desc);
+t_stat sys_set_jclk_dflt (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+t_stat sys_show_jclk_dflt (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 
 extern t_stat PSW_rd (int32 *data, int32 addr, int32 access);
 extern t_stat PSW_wr (int32 data, int32 addr, int32 access);
@@ -247,7 +245,8 @@ CNFTAB cnf_tab[] = {
 static const char *opt_name[] = {
     "Unibus", "Qbus", "EIS", "NOEIS", "FIS", "NOFIS",
     "FPP", "NOFPP", "CIS", "NOCIS", "MMU", "NOMMU",
-    "RH11", "RH70",     "PARITY", "NOPARITY", "Unibus map", "No map", NULL
+    "RH11", "RH70", "PARITY", "NOPARITY", "Unibus map", "No map", 
+    "BEVENT enabled", "BEVENT disabled", NULL
     };
 
 static const char *jcsr_val[4] = {
@@ -1083,7 +1082,7 @@ return SCPE_OK;
 
 /* Set/show CPU model */
 
-t_stat cpu_set_model (UNIT *uptr, int32 val, char *cptr, void *desc)
+t_stat cpu_set_model (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 if (cptr != NULL)
     return SCPE_ARG;
@@ -1103,7 +1102,7 @@ reset_all (0);                                          /* reset world */
 return SCPE_OK;
 }
 
-t_stat cpu_show_model (FILE *st, UNIT *uptr, int32 val, void *desc)
+t_stat cpu_show_model (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
 uint32 i, all_opt;
 
@@ -1119,7 +1118,7 @@ return SCPE_OK;
 
 /* Set/clear CPU option */
 
-t_stat cpu_set_opt (UNIT *uptr, int32 val, char *cptr, void *desc)
+t_stat cpu_set_opt (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 if (cptr)
     return SCPE_ARG;
@@ -1129,7 +1128,7 @@ cpu_opt = cpu_opt | val;
 return SCPE_OK;
 }
 
-t_stat cpu_clr_opt (UNIT *uptr, int32 val, char *cptr, void *desc)
+t_stat cpu_clr_opt (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 if (cptr)
     return SCPE_ARG;
@@ -1141,16 +1140,18 @@ return SCPE_OK;
 
 /* Memory allocation */
 
-t_stat cpu_set_size (UNIT *uptr, int32 val, char *cptr, void *desc)
+t_stat cpu_set_size (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 int32 mc = 0;
 uint32 i, clim;
 uint16 *nM;
 
 if ((val <= 0) ||
-    (val > (int32) cpu_tab[cpu_model].maxm) ||
+    (val > ((int32) cpu_tab[cpu_model].maxm)) ||
     ((val & 07777) != 0))
     return SCPE_ARG;
+if (val > ((int32) (cpu_tab[cpu_model].maxm - IOPAGESIZE)))
+    val = (int32) (cpu_tab[cpu_model].maxm - IOPAGESIZE);
 for (i = val; i < MEMSIZE; i = i + 2)
     mc = mc | M[i >> 1];
 if ((mc != 0) && !get_yn ("Really truncate memory [N]?", FALSE))
@@ -1226,7 +1227,7 @@ return SCPE_OK;
 
 /* Set/show JCLK default values */
 
-t_stat sys_set_jclk_dflt (UNIT *uptr, int32 val, char *cptr, void *desc)
+t_stat sys_set_jclk_dflt (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 uint32 i;
 
@@ -1241,7 +1242,7 @@ if ((CPUT (CPUT_JB|CPUT_JE)) && cptr) {
 return SCPE_ARG;
 }
 
-t_stat sys_show_jclk_dflt (FILE *st, UNIT *uptr, int32 val, void *desc)
+t_stat sys_show_jclk_dflt (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
 if (CPUT (CPUT_JB|CPUT_JE))
     fprintf (st, "JCLK default=%s\n", jcsr_val[CSRJ_LTCSEL (JCSR_dflt)]);

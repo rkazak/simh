@@ -153,9 +153,6 @@
 
 #define RDL_CLK         0100000                         /* 10 Khz clock */
 
-extern uint16 *M;                                       /* memory */
-extern int32 int_req[IPL_HLVL];
-
 uint8 *tmxb = NULL;                                     /* xfer buffer */
 int32 tm_sta = 0;                                       /* status register */
 int32 tm_cmd = 0;                                       /* command register */
@@ -170,14 +167,14 @@ t_stat tm_rd (int32 *data, int32 PA, int32 access);
 t_stat tm_wr (int32 data, int32 PA, int32 access);
 t_stat tm_svc (UNIT *uptr);
 t_stat tm_reset (DEVICE *dptr);
-t_stat tm_attach (UNIT *uptr, char *cptr);
+t_stat tm_attach (UNIT *uptr, CONST char *cptr);
 t_stat tm_detach (UNIT *uptr);
 t_stat tm_boot (int32 unitno, DEVICE *dptr);
 void tm_go (UNIT *uptr);
 int32 tm_updcsta (UNIT *uptr);
 void tm_set_done (void);
 t_stat tm_map_err (UNIT *uptr, t_stat st);
-t_stat tm_vlock (UNIT *uptr, int32 val, char *cptr, void *desc);
+t_stat tm_vlock (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
 t_stat tm_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
 const char *tm_description (DEVICE *dptr);
 
@@ -233,8 +230,8 @@ MTAB tm_mod[] = {
         &tm_vlock, NULL, NULL, "Write enable tape drive" },
     { MTUF_WLK, MTUF_WLK, "write locked",  "LOCKED", 
         &tm_vlock, NULL, NULL, "Write lock tape drive"  },
-    { MTAB_XTD|MTAB_VUN|MTAB_VALR, 0,       "FORMAT", "FORMAT",
-        &sim_tape_set_fmt, &sim_tape_show_fmt, NULL, "Set/Display tape format (SIMH, E11, TPC, P7B)" },
+    { MTAB_XTD|MTAB_VUN|MTAB_VALR, 0, "FORMAT", "FORMAT",
+      &sim_tape_set_fmt, &sim_tape_show_fmt, NULL, "Set/Display tape format (SIMH, E11, TPC, P7B, AWS, TAR)" },
     { MTAB_XTD|MTAB_VUN|MTAB_VALR, 0,       "CAPACITY", "CAPACITY",
         &sim_tape_set_capac, &sim_tape_show_capac, NULL, "Set/Display capacity" },
     { MTAB_XTD|MTAB_VDV|MTAB_VALR, 010, "ADDRESS", "ADDRESS",
@@ -608,7 +605,7 @@ return auto_config (0, 0);
 
 /* Attach routine */
 
-t_stat tm_attach (UNIT *uptr, char *cptr)
+t_stat tm_attach (UNIT *uptr, CONST char *cptr)
 {
 t_stat r;
 int32 u = uptr - tm_dev.units;
@@ -639,7 +636,7 @@ return sim_tape_detach (uptr);
 
 /* Write lock/enable routine */
 
-t_stat tm_vlock (UNIT *uptr, int32 val, char *cptr, void *desc)
+t_stat tm_vlock (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 int32 u = uptr - tm_dev.units;
 
@@ -723,14 +720,14 @@ size_t i;
 sim_tape_rewind (&tm_unit[unitno]);
 if (sim_switches & SWMASK ('O')) {
     for (i = 0; i < BOOT1_LEN; i++)
-        M[(BOOT_START >> 1) + i] = boot1_rom[i];
+        WrMemW (BOOT_START + (2 * i), boot1_rom[i]);
     }
 else {
     for (i = 0; i < BOOT2_LEN; i++)
-        M[(BOOT_START >> 1) + i] = boot2_rom[i];
+        WrMemW (BOOT_START + (2 * i), boot2_rom[i]);
     }
-M[BOOT_UNIT >> 1] = (uint16)unitno;
-M[BOOT_CSR >> 1] = (tm_dib.ba & DMASK) + 06;
+WrMemW (BOOT_UNIT, (uint16)unitno);
+WrMemW (BOOT_CSR, (tm_dib.ba & DMASK) + 06);
 cpu_set_boot (BOOT_ENTRY);
 return SCPE_OK;
 } 

@@ -34,10 +34,6 @@
 
 #include "sim_defs.h"                                   /* simulator defns */
 
-/* Rename of global PC variable to avoid namespace conflicts on some platforms */
-
-#define PC PC_Global
-
 #if defined(USE_INT64) || defined(USE_ADDR64)
 #error "Sigma 32b does not support 64b values!"
 #endif
@@ -97,10 +93,11 @@
 #define CPU_V_S5        0
 #define CPU_V_S6        1
 #define CPU_V_S7        2
-#define CPU_V_S8        3                               /* not supported */
-#define CPU_V_S9        4                               /* not supported */
-#define CPU_V_550       5                               /* not supported */
-#define CPU_V_560       6                               /* not supported */
+#define CPU_V_S7B       3
+#define CPU_V_S8        4                               /* not supported */
+#define CPU_V_S9        5                               /* not supported */
+#define CPU_V_550       6                               /* not supported */
+#define CPU_V_560       7                               /* not supported */
 #define CPU_S5          (1u << CPU_V_S5)
 #define CPU_S6          (1u << CPU_V_S6)
 #define CPU_S7          (1u << CPU_V_S7)
@@ -113,10 +110,10 @@
 #define QCPU_S5         (cpu_model == CPU_V_S5)
 #define QCPU_S9         (cpu_model == CPU_V_S9)
 #define QCPU_5X0        ((1u << cpu_model) & (CPU_550|CPU_560))
-#define QCPU_S567       ((1u << cpu_model) & (CPU_S5|CPU_S6|CPU_S7))
+#define QCPU_S567       ((1u << cpu_model) & (CPU_S5|CPU_S6|CPU_S7|CPU_S7B))
 #define QCPU_S89        ((1u << cpu_model) & (CPU_S8|CPU_S9))
 #define QCPU_S89_5X0    ((1u << cpu_model) & (CPU_S8|CPU_S9|CPU_550|CPU_560))
-#define QCPU_BIGM       ((1u << cpu_model) & (CPU_S9|CPU_550|CPU_560))
+#define QCPU_BIGM       ((1u << cpu_model) & (CPU_S7B|CPU_S9|CPU_550|CPU_560))
 
 #define CPU_MUNIT_SIZE  (1u << 15)                      /* mem unit size */
 
@@ -322,7 +319,7 @@ typedef struct {
 #define MMC_M_CNT       0xFF
 #define MMC_CNT         (MMC_M_CNT << MMC_V_CNT)
 #define MMC_V_CS        9                               /* start of page */
-/*                                                      /* map 1: 2b locks, per model */
+                                                        /* map 1: 2b locks, per model */
 #define MMC_M_CS2       0xFC                            /* map 2: access controls */
 #define MMC_M_CS3       0x7FE                           /* map 3: 4b locks */
 #define MMC_M_CS4       0xFF                            /* map 4: 8b relocation */

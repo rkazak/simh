@@ -191,18 +191,18 @@ static uint g_cpu_ir;        /* instruction register */
 static uint g_cpu_type;
 
 /* used by ops like asr, ror, addq, etc */
-static uint g_3bit_qdata_table[8] = {8, 1, 2, 3, 4, 5, 6, 7};
+static const uint g_3bit_qdata_table[8] = {8, 1, 2, 3, 4, 5, 6, 7};
 
-static uint g_5bit_data_table[32] =
+static const uint g_5bit_data_table[32] =
 {
     32,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14, 15,
     16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31
 };
 
-static char* g_cc[16] =
+static const char* g_cc[16] =
 {"t", "f", "hi", "ls", "cc", "cs", "ne", "eq", "vc", "vs", "pl", "mi", "ge", "lt", "gt", "le"};
 
-static char* g_cpcc[64] =
+static const char* g_cpcc[64] =
 {/* 000    001    010    011    100    101    110    111 */
       "f",  "eq", "ogt", "oge", "olt", "ole", "ogl",  "or", /* 000 */
      "un", "ueq", "ugt", "uge", "ult", "ule",  "ne",   "t", /* 001 */
@@ -313,7 +313,7 @@ static char* make_signed_hex_str_32(uint val)
 /* make string of immediate value */
 static char* get_imm_str_s(uint size)
 {
-    static char str[15];
+    static char str[32];
     if(size == 0)
         sprintf(str, "#%s", make_signed_hex_str_8(read_imm_8()));
     else if(size == 1)
@@ -325,7 +325,7 @@ static char* get_imm_str_s(uint size)
 
 static char* get_imm_str_u(uint size)
 {
-    static char str[15];
+    static char str[32];
     if(size == 0)
         sprintf(str, "#$%x", read_imm_8() & 0xff);
     else if(size == 1)
@@ -1754,8 +1754,8 @@ static void d68000_move_to_usp(void)
 static void d68010_movec(void)
 {
     uint extension;
-    char* reg_name;
-    char* processor;
+    const char* reg_name;
+    const char* processor;
     LIMIT_CPU_TYPES(M68010_PLUS);
     extension = read_imm_16();
 
@@ -3253,7 +3253,7 @@ unsigned int m68k_disassemble(char* str_buff, unsigned int pc, unsigned int cpu_
 
 char* m68ki_disassemble_quick(unsigned int pc, unsigned int cpu_type)
 {
-    static char buff[100];
+    static char buff[200];
     buff[0] = 0;
     m68k_disassemble(buff, pc, cpu_type);
     return buff;
@@ -3288,7 +3288,8 @@ unsigned int m68k_is_valid_instruction(unsigned int instruction, unsigned int cp
             if(g_instruction_table[instruction] == d68010_moves_32)
                 return 0;
             if(g_instruction_table[instruction] == d68010_rtd)
-                return 0;
+                return 0;   /* older models have more invalid instructions */
+            /* fall through */
         case M68K_CPU_TYPE_68010:
             if(g_instruction_table[instruction] == d68020_bcc_32)
                 return 0;
@@ -3410,6 +3411,7 @@ unsigned int m68k_is_valid_instruction(unsigned int instruction, unsigned int cp
                 return 0;
             if(g_instruction_table[instruction] == d68020_unpk_mm)
                 return 0;
+            /* fall through */
         case M68K_CPU_TYPE_68EC020:
         case M68K_CPU_TYPE_68020:
         case M68K_CPU_TYPE_68030:

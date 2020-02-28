@@ -1,6 +1,6 @@
 /* vax_sys.c: VAX simulator interface
 
-   Copyright (c) 1998-2011, Robert M Supnik
+   Copyright (c) 1998-2017, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -23,6 +23,8 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
+   13-Mar-17    RMS     Annotated intentional fall throughs in switch
+                        Fixed certain indirect cases in parse (COVERITY)
    21-Mar-11    RMS     Modified string for STOP_BOOT message
    19-Nov-08    RMS     Moved bad block routine to I/O library
    03-Nov-05    RMS     Added 780 stop codes
@@ -53,25 +55,22 @@
 #define ODC(x)          ((x) << DR_V_USPMASK)
 #endif
 
-extern UNIT cpu_unit;
 extern REG cpu_reg[];
-extern int32 saved_PC;
-extern int32 PSL;
 
 t_stat fprint_sym_m (FILE *of, uint32 addr, t_value *val);
 int32 fprint_sym_qoimm (FILE *of, t_value *val, int32 vp, int32 lnt);
-t_stat parse_char (char *cptr, t_value *val, int32 lnt);
-t_stat parse_sym_m (char *cptr, uint32 addr, t_value *val);
-int32 parse_brdisp (char *cptr, uint32 addr, t_value *val,
+t_stat parse_char (const char *cptr, t_value *val, int32 lnt);
+t_stat parse_sym_m (const char *cptr, uint32 addr, t_value *val);
+int32 parse_brdisp (const char *cptr, uint32 addr, t_value *val,
     int32 vp, int32 lnt, t_stat *r);
-int32 parse_spec (char *cptr, uint32 addr, t_value *val,
+int32 parse_spec (CONST char *cptr, uint32 addr, t_value *val,
     int32 vp, int32 disp, t_stat *r);
-char *parse_rnum (char *cptr, int32 *rn);
+CONST char *parse_rnum (CONST char *cptr, int32 *rn);
 int32 parse_sym_qoimm (int32 *lit, t_value *val, int32 vp,
     int lnt, int32 minus);
 
 extern t_stat fprint_sym_cm (FILE *of, t_addr addr, t_value *bytes, int32 sw);
-extern t_stat parse_sym_cm (char *cptr, t_addr addr, t_value *bytes, int32 sw);
+extern t_stat parse_sym_cm (const char *cptr, t_addr addr, t_value *bytes, int32 sw);
 
 /* SCP data structures and interface routines
 
@@ -102,535 +101,550 @@ const char *sim_stop_messages[] = {
     "Software done",
     "Reboot request failed",
     "Unknown error",
-    "Unknown abort code"
+    "Unknown abort code",
+    "DECtape off reel"
     };
 
 /* Dispatch/decoder table
 
    The first entry contains:
         - FPD legal flag (DR_F)
-        - number of specifiers for decode bits 2:0>
+        - number of specifiers for decode bits <2:0>
         - number of specifiers for unimplemented instructions bits<6:4>
+        - ONLY for simulator instruction history bits 11:8 reflect where 
+          results are recorded from
  */
 
+
 const uint16 drom[NUM_INST][MAX_SPEC + 1] = {
-{0,      0,      0,      0,      0,      0,      0},              /* HALT */
-{0,      0,      0,      0,      0,      0,      0},              /* NOP */
-{0,      0,      0,      0,      0,      0,      0},              /* REI */
-{0,      0,      0,      0,      0,      0,      0},              /* BPT */
-{0,      0,      0,      0,      0,      0,      0},              /* RET */
-{0,      0,      0,      0,      0,      0,      0},              /* RSB */
-{0,      0,      0,      0,      0,      0,      0},              /* LDPCTX */
-{0,      0,      0,      0,      0,      0,      0},              /* SVPCTX */
-{4+DR_F, RW,     AB,     RW,     AB,     0,      0},              /* CVTPS */
-{4+DR_F, RW,     AB,     RW,     AB,     0,      0},              /* CVTSP */
-{6,      RL,     RL,     RL,     RL,     RL,     WL},             /* INDEX */
-{4+DR_F, AB,     RL,     RW,     AB,     0,      0},              /* CRC */
-{3,      RB,     RW,     AB,     0,      0,      0},              /* PROBER */
-{3,      RB,     RW,     AB,     0,      0,      0},              /* PROBEW */
-{2,      AB,     AB,     0,      0,      0,      0},              /* INSQUE */
-{2,      AB,     WL,     0,      0,      0,      0},              /* REMQUE */
-{1,      BB,     0,      0,      0,      0,      0},              /* BSBB */
-{1,      BB,     0,      0,      0,      0,      0},              /* BRB */
-{1,      BB,     0,      0,      0,      0,      0},              /* BNEQ */
-{1,      BB,     0,      0,      0,      0,      0},              /* BEQL */
-{1,      BB,     0,      0,      0,      0,      0},              /* BGTR */
-{1,      BB,     0,      0,      0,      0,      0},              /* BLEQ */
-{1,      AB,     0,      0,      0,      0,      0},              /* JSB */
-{1,      AB,     0,      0,      0,      0,      0},              /* JMP */
-{1,      BB,     0,      0,      0,      0,      0},              /* BGEQ */
-{1,      BB,     0,      0,      0,      0,      0},              /* BLSS */
-{1,      BB,     0,      0,      0,      0,      0},              /* BGTRU */
-{1,      BB,     0,      0,      0,      0,      0},              /* BLEQU */
-{1,      BB,     0,      0,      0,      0,      0},              /* BVC */
-{1,      BB,     0,      0,      0,      0,      0},              /* BVS */
-{1,      BB,     0,      0,      0,      0,      0},              /* BCC */
-{1,      BB,     0,      0,      0,      0,      0},              /* BCS */
-{4+DR_F, RW,     AB,     RW,     AB,     0,      0},              /* ADDP4 */
-{6+DR_F, RW,     AB,     RW,     AB,     RW,     AB},             /* ADDP6 */
-{4+DR_F, RW,     AB,     RW,     AB,     0,      0},              /* SUBP4 */
-{6+DR_F, RW,     AB,     RW,     AB,     RW,     AB},             /* SUBP6 */
-{5+DR_F, RW,     AB,     AB,     RW,     AB,     0},              /* CVTPT */
-{6+DR_F, RW,     AB,     RW,     AB,     RW,     AB},             /* MULP6 */
-{5+DR_F, RW,     AB,     AB,     RW,     AB,     0},              /* CVTTP */
-{6+DR_F, RW,     AB,     RW,     AB,     RW,     AB},             /* DIVP6 */
-{3+DR_F, RW,     AB,     AB,     0,      0,      0},              /* MOVC3 */
-{3+DR_F, RW,     AB,     AB,     0,      0,      0},              /* CMPC3 */
-{4+DR_F, RW,     AB,     AB,     RB,     0,      0},              /* SCANC */
-{4+DR_F, RW,     AB,     AB,     RB,     0,      0},              /* SPANC */
-{5+DR_F, RW,     AB,     RB,     RW,     AB,     0},              /* MOVC5 */
-{5+DR_F, RW,     AB,     RB,     RW,     AB,     0},              /* CMPC5 */
-{6+DR_F, RW,     AB,     RB,     AB,     RW,     AB},             /* MOVTC */
-{6+DR_F, RW,     AB,     RB,     AB,     RW,     AB},             /* MOVTUC */
-{1,      BW,     0,      0,      0,      0,      0},              /* BSBW */
-{1,      BW,     0,      0,      0,      0,      0},              /* BRW */
-{2,      RW,     WL,     0,      0,      0,      0},              /* CVTWL */
-{2,      RW,     WB,     0,      0,      0,      0},              /* CVTWB */
-{3+DR_F, RW,     AB,     AB,     0,      0,      0},              /* MOVP */
-{3+DR_F, RW,     AB,     AB,     0,      0,      0},              /* CMPP3 */
-{3+DR_F, RW,     AB,     WL,     0,      0,      0},              /* CVTPL */
-{4+DR_F, RW,     AB,     RW,     AB,     0,      0},              /* CMPP4 */
-{4+DR_F, RW,     AB,     AB,     AB,     0,      0},              /* EDITPC */
-{4+DR_F, RW,     AB,     RW,     AB,     0,      0},              /* MATCHC */
-{3+DR_F, RB,     RW,     AB,     0,      0,      0},              /* LOCC */
-{3+DR_F, RB,     RW,     AB,     0,      0,      0},              /* SKPC */
-{2,      RW,     WL,     0,      0,      0,      0},              /* MOVZWL */
-{4,      RW,     RW,     MW,     BW,     0,      0},              /* ACBW */
-{2,      AW,     WL,     0,      0,      0,      0},              /* MOVAW */
-{1,      AW,     0,      0,      0,      0,      0},              /* PUSHAW */
-{2,      RF,     ML,     0,      0,      0,      0},              /* ADDF2 */
-{3,      RF,     RF,     WL,     0,      0,      0},              /* ADDF3 */
-{2,      RF,     ML,     0,      0,      0,      0},              /* SUBF2 */
-{3,      RF,     RF,     WL,     0,      0,      0},              /* SUBF3 */
-{2,      RF,     ML,     0,      0,      0,      0},              /* MULF2 */
-{3,      RF,     RF,     WL,     0,      0,      0},              /* MULF3 */
-{2,      RF,     ML,     0,      0,      0,      0},              /* DIVF2 */
-{3,      RF,     RF,     WL,     0,      0,      0},              /* DIVF3 */
-{2,      RF,     WB,     0,      0,      0,      0},              /* CVTFB */
-{2,      RF,     WW,     0,      0,      0,      0},              /* CVTFW */
-{2,      RF,     WL,     0,      0,      0,      0},              /* CVTFL */
-{2,      RF,     WL,     0,      0,      0,      0},              /* CVTRFL */
-{2,      RB,     WL,     0,      0,      0,      0},              /* CVTBF */
-{2,      RW,     WL,     0,      0,      0,      0},              /* CVTWF */
-{2,      RL,     WL,     0,      0,      0,      0},              /* CVTLF */
-{4,      RF,     RF,     ML,     BW,     0,      0},              /* ACBF */
-{2,      RF,     WL,     0,      0,      0,      0},              /* MOVF */
-{2,      RF,     RF,     0,      0,      0,      0},              /* CMPF */
-{2,      RF,     WL,     0,      0,      0,      0},              /* MNEGF */
-{1,      RF,     0,      0,      0,      0,      0},              /* TSTF */
-{5,      RF,     RB,     RF,     WL,     WL,     0},              /* EMODF */
-{3,      RF,     RW,     AB,     0,      0,      0},              /* POLYF */
-{2,      RF,     WQ,     0,      0,      0,      0},              /* CVTFD */
-{0,      0,      0,      0,      0,      0,      0},              /* reserved */
-{2,      RW,     WW,     0,      0,      0,      0},              /* ADAWI */
-{0,      0,      0,      0,      0,      0,      0},              /* reserved */
-{0,      0,      0,      0,      0,      0,      0},              /* reserved */
-{0,      0,      0,      0,      0,      0,      0},              /* reserved */
-{2,      AB,     AQ,     0,      0,      0,      0},              /* INSQHI */
-{2,      AB,     AQ,     0,      0,      0,      0},              /* INSQTI */
-{2,      AQ,     WL,     0,      0,      0,      0},              /* REMQHI */
-{2,      AQ,     WL,     0,      0,      0,      0},              /* REMQTI */
-{2,      RD,     MQ,     0,      0,      0,      0},              /* ADDD2 */
-{3,      RD,     RD,     WQ,     0,      0,      0},              /* ADDD3 */
-{2,      RD,     MQ,     0,      0,      0,      0},              /* SUBD2 */
-{3,      RD,     RD,     WQ,     0,      0,      0},              /* SUBD3 */
-{2,      RD,     MQ,     0,      0,      0,      0},              /* MULD2 */
-{3,      RD,     RD,     WQ,     0,      0,      0},              /* MULD3 */
-{2,      RD,     MQ,     0,      0,      0,      0},              /* DIVD2 */
-{3,      RD,     RD,     WQ,     0,      0,      0},              /* DIVD3 */
-{2,      RD,     WB,     0,      0,      0,      0},              /* CVTDB */
-{2,      RD,     WW,     0,      0,      0,      0},              /* CVTDW */
-{2,      RD,     WL,     0,      0,      0,      0},              /* CVTDL */
-{2,      RD,     WL,     0,      0,      0,      0},              /* CVTRDL */
-{2,      RB,     WQ,     0,      0,      0,      0},              /* CVTBD */
-{2,      RW,     WQ,     0,      0,      0,      0},              /* CVTWD */
-{2,      RL,     WQ,     0,      0,      0,      0},              /* CVTLD */
-{4,      RD,     RD,     MQ,     BW,     0,      0},              /* ACBD */
-{2,      RD,     WQ,     0,      0,      0,      0},              /* MOVD */
-{2,      RD,     RD,     0,      0,      0,      0},              /* CMPD */
-{2,      RD,     WQ,     0,      0,      0,      0},              /* MNEGD */
-{1,      RD,     0,      0,      0,      0,      0},              /* TSTD */
-{5,      RD,     RB,     RD,     WL,     WQ,     0},              /* EMODD */
-{3,      RD,     RW,     AB,     0,      0,      0},              /* POLYD */
-{2,      RD,     WL,     0,      0,      0,      0},              /* CVTDF */
-{0,      0,      0,      0,      0,      0,      0},              /* reserved */
-{3,      RB,     RL,     WL,     0,      0,      0},              /* ASHL */
-{3,      RB,     RQ,     WQ,     0,      0,      0},              /* ASHQ */
-{4,      RL,     RL,     RL,     WQ,     0,      0},              /* EMUL */
-{4,      RL,     RQ,     WL,     WL,     0,      0},              /* EDIV */
-{1,      WQ,     0,      0,      0,      0,      0},              /* CLRQ */
-{2,      RQ,     WQ,     0,      0,      0,      0},              /* MOVQ */
-{2,      AQ,     WL,     0,      0,      0,      0},              /* MOVAQ */
-{1,      AQ,     0,      0,      0,      0,      0},              /* PUSHAQ */
-{2,      RB,     MB,     0,      0,      0,      0},              /* ADDB2 */
-{3,      RB,     RB,     WB,     0,      0,      0},              /* ADDB3 */
-{2,      RB,     MB,     0,      0,      0,      0},              /* SUBB2 */
-{3,      RB,     RB,     WB,     0,      0,      0},              /* SUBB3 */
-{2,      RB,     MB,     0,      0,      0,      0},              /* MULB2 */
-{3,      RB,     RB,     WB,     0,      0,      0},              /* MULB3 */
-{2,      RB,     MB,     0,      0,      0,      0},              /* DIVB2 */
-{3,      RB,     RB,     WB,     0,      0,      0},              /* DIVB3 */
-{2,      RB,     MB,     0,      0,      0,      0},              /* BISB2 */
-{3,      RB,     RB,     WB,     0,      0,      0},              /* BISB3 */
-{2,      RB,     MB,     0,      0,      0,      0},              /* BICB2 */
-{3,      RB,     RB,     WB,     0,      0,      0},              /* BICB3 */
-{2,      RB,     MB,     0,      0,      0,      0},              /* XORB2 */
-{3,      RB,     RB,     WB,     0,      0,      0},              /* XORB3 */
-{2,      RB,     WB,     0,      0,      0,      0},              /* MNEGB */
-{3,      RB,     RB,     RB,     0,      0,      0},              /* CASEB */
-{2,      RB,     WB,     0,      0,      0,      0},              /* MOVB */
-{2,      RB,     RB,     0,      0,      0,      0},              /* CMPB */
-{2,      RB,     WB,     0,      0,      0,      0},              /* MCOMB */
-{2,      RB,     RB,     0,      0,      0,      0},              /* BITB */
-{1,      WB,     0,      0,      0,      0,      0},              /* CLRB */
-{1,      RB,     0,      0,      0,      0,      0},              /* TSTB */
-{1,      MB,     0,      0,      0,      0,      0},              /* INCB */
-{1,      MB,     0,      0,      0,      0,      0},              /* DECB */
-{2,      RB,     WL,     0,      0,      0,      0},              /* CVTBL */
-{2,      RB,     WW,     0,      0,      0,      0},              /* CVTBW */
-{2,      RB,     WL,     0,      0,      0,      0},              /* MOVZBL */
-{2,      RB,     WW,     0,      0,      0,      0},              /* MOVZBW */
-{3,      RB,     RL,     WL,     0,      0,      0},              /* ROTL */
-{4,      RB,     RB,     MB,     BW,     0,      0},              /* ACBB */
-{2,      AB,     WL,     0,      0,      0,      0},              /* MOVAB */
-{1,      AB,     0,      0,      0,      0,      0},              /* PUSHAB */
-{2,      RW,     MW,     0,      0,      0,      0},              /* ADDW2 */
-{3,      RW,     RW,     WW,     0,      0,      0},              /* ADDW3 */
-{2,      RW,     MW,     0,      0,      0,      0},              /* SUBW2 */
-{3,      RW,     RW,     WW,     0,      0,      0},              /* SUBW3 */
-{2,      RW,     MW,     0,      0,      0,      0},              /* MULW2 */
-{3,      RW,     RW,     WW,     0,      0,      0},              /* MULW3 */
-{2,      RW,     MW,     0,      0,      0,      0},              /* DIVW2 */
-{3,      RW,     RW,     WW,     0,      0,      0},              /* DIVW3 */
-{2,      RW,     MW,     0,      0,      0,      0},              /* BISW2 */
-{3,      RW,     RW,     WW,     0,      0,      0},              /* BISW3 */
-{2,      RW,     MW,     0,      0,      0,      0},              /* BICW2 */
-{3,      RW,     RW,     WW,     0,      0,      0},              /* BICW3 */
-{2,      RW,     MW,     0,      0,      0,      0},              /* XORW2 */
-{3,      RW,     RW,     WW,     0,      0,      0},              /* XORW3 */
-{2,      RW,     WW,     0,      0,      0,      0},              /* MNEGW */
-{3,      RW,     RW,     RW,     0,      0,      0},              /* CASEW */
-{2,      RW,     WW,     0,      0,      0,      0},              /* MOVW */
-{2,      RW,     RW,     0,      0,      0,      0},              /* CMPW */
-{2,      RW,     WW,     0,      0,      0,      0},              /* MCOMW */
-{2,      RW,     RW,     0,      0,      0,      0},              /* BITW */
-{1,      WW,     0,      0,      0,      0,      0},              /* CLRW */
-{1,      RW,     0,      0,      0,      0,      0},              /* TSTW */
-{1,      MW,     0,      0,      0,      0,      0},              /* INCW */
-{1,      MW,     0,      0,      0,      0,      0},              /* DECW */
-{1,      RW,     0,      0,      0,      0,      0},              /* BISPSW */
-{1,      RW,     0,      0,      0,      0,      0},              /* BICPSW */
-{1,      RW,     0,      0,      0,      0,      0},              /* POPR */
-{1,      RW,     0,      0,      0,      0,      0},              /* PUSHR */
-{1,      RW,     0,      0,      0,      0,      0},              /* CHMK */
-{1,      RW,     0,      0,      0,      0,      0},              /* CHME */
-{1,      RW,     0,      0,      0,      0,      0},              /* CHMS */
-{1,      RW,     0,      0,      0,      0,      0},              /* CHMU */
-{2,      RL,     ML,     0,      0,      0,      0},              /* ADDL2 */
-{3,      RL,     RL,     WL,     0,      0,      0},              /* ADDL3 */
-{2,      RL,     ML,     0,      0,      0,      0},              /* SUBL2 */
-{3,      RL,     RL,     WL,     0,      0,      0},              /* SUBL3 */
-{2,      RL,     ML,     0,      0,      0,      0},              /* MULL2 */
-{3,      RL,     RL,     WL,     0,      0,      0},              /* MULL3 */
-{2,      RL,     ML,     0,      0,      0,      0},              /* DIVL2 */
-{3,      RL,     RL,     WL,     0,      0,      0},              /* DIVL3 */
-{2,      RL,     ML,     0,      0,      0,      0},              /* BISL2 */
-{3,      RL,     RL,     WL,     0,      0,      0},              /* BISL3 */
-{2,      RL,     ML,     0,      0,      0,      0},              /* BICL2 */
-{3,      RL,     RL,     WL,     0,      0,      0},              /* BICL3 */
-{2,      RL,     ML,     0,      0,      0,      0},              /* XORL2 */
-{3,      RL,     RL,     WL,     0,      0,      0},              /* XORL3 */
-{2,      RL,     WL,     0,      0,      0,      0},              /* MNEGL */
-{3,      RL,     RL,     RL,     0,      0,      0},              /* CASEL */
-{2,      RL,     WL,     0,      0,      0,      0},              /* MOVL */
-{2,      RL,     RL,     0,      0,      0,      0},              /* CMPL */
-{2,      RL,     WL,     0,      0,      0,      0},              /* MCOML */
-{2,      RL,     RL,     0,      0,      0,      0},              /* BITL */
-{1,      WL,     0,      0,      0,      0,      0},              /* CLRL */
-{1,      RL,     0,      0,      0,      0,      0},              /* TSTL */
-{1,      ML,     0,      0,      0,      0,      0},              /* INCL */
-{1,      ML,     0,      0,      0,      0,      0},              /* DECL */
-{2,      RL,     ML,     0,      0,      0,      0},              /* ADWC */
-{2,      RL,     ML,     0,      0,      0,      0},              /* SBWC */
-{2,      RL,     RL,     0,      0,      0,      0},              /* MTPR */
-{2,      RL,     WL,     0,      0,      0,      0},              /* MFPR */
-{1,      WL,     0,      0,      0,      0,      0},              /* MOVPSL */
-{1,      RL,     0,      0,      0,      0,      0},              /* PUSHL */
-{2,      AL,     WL,     0,      0,      0,      0},              /* MOVAL */
-{1,      AL,     0,      0,      0,      0,      0},              /* PUSHAL */
-{3,      RL,     VB,     BB,     0,      0,      0},              /* BBS */
-{3,      RL,     VB,     BB,     0,      0,      0},              /* BBC */
-{3,      RL,     VB,     BB,     0,      0,      0},              /* BBSS */
-{3,      RL,     VB,     BB,     0,      0,      0},              /* BBCS */
-{3,      RL,     VB,     BB,     0,      0,      0},              /* BBSC */
-{3,      RL,     VB,     BB,     0,      0,      0},              /* BBCC */
-{3,      RL,     VB,     BB,     0,      0,      0},              /* BBSSI */
-{3,      RL,     VB,     BB,     0,      0,      0},              /* BBCCI */
-{2,      RL,     BB,     0,      0,      0,      0},              /* BLBS */
-{2,      RL,     BB,     0,      0,      0,      0},              /* BLBC */
-{4,      RL,     RB,     VB,     WL,     0,      0},              /* FFS */
-{4,      RL,     RB,     VB,     WL,     0,      0},              /* FFC */
-{4,      RL,     RB,     VB,     RL,     0,      0},              /* CMPV */
-{4,      RL,     RB,     VB,     RL,     0,      0},              /* CMPZV */
-{4,      RL,     RB,     VB,     WL,     0,      0},              /* EXTV */
-{4,      RL,     RB,     VB,     WL,     0,      0},              /* EXTZV */
-{4,      RL,     RL,     RB,     VB,     0,      0},              /* INSV */
-{4,      RL,     RL,     ML,     BW,     0,      0},              /* ACBL */
-{3,      RL,     ML,     BB,     0,      0,      0},              /* AOBLSS */
-{3,      RL,     ML,     BB,     0,      0,      0},              /* AOBLEQ */
-{2,      ML,     BB,     0,      0,      0,      0},              /* SOBGEQ */
-{2,      ML,     BB,     0,      0,      0,      0},              /* SOBGTR */
-{2,      RL,     WB,     0,      0,      0,      0},              /* CVTLB */
-{2,      RL,     WW,     0,      0,      0,      0},              /* CVTLW */
-{6+DR_F, RB,     RW,     AB,     RB,     RW,     AB},             /* ASHP */
-{3+DR_F, RL,     RW,     AB,     0,      0,      0},              /* CVTLP */
-{2,      AB,     AB,     0,      0,      0,      0},              /* CALLG */
-{2,      RL,     AB,     0,      0,      0,      0},              /* CALLS */
-{0,      0,      0,      0,      0,      0,      0},              /* XFC */
-{0,      0,      0,      0,      0,      0,      0},              /* 0FD */
-{0,      0,      0,      0,      0,      0,      0},              /* 0FE */
-{0,      0,      0,      0,      0,      0,      0},              /* 0FF */
-{0,      0,      0,      0,      0,      0,      0},              /* 100-10F */
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},              /* 110-11F */
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},              /* 120-12F */
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},              /* 130-13F */
-{0,      0,      0,      0,      0,      0,      0},
-{ODC(2), RD,     WO,     0,      0,      0,      0},              /* CVTDH */
-{2,      RG,     WL,     0,      0,      0,      0},              /* CVTGF */
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{2,      RG,     MQ,     0,      0,      0,      0},              /* ADDG2 */
-{3,      RG,     RG,     WQ,     0,      0,      0},              /* ADDG3 */
-{2,      RG,     MQ,     0,      0,      0,      0},              /* SUBG2 */
-{3,      RG,     RG,     WQ,     0,      0,      0},              /* SUBG3 */
-{2,      RG,     MQ,     0,      0,      0,      0},              /* MULG2 */
-{3,      RG,     RG,     WQ,     0,      0,      0},              /* MULG3 */
-{2,      RG,     MQ,     0,      0,      0,      0},              /* DIVG2 */
-{3,      RG,     RG,     WQ,     0,      0,      0},              /* DIVG3 */
-{2,      RG,     WB,     0,      0,      0,      0},              /* CVTGB */
-{2,      RG,     WW,     0,      0,      0,      0},              /* CVTGW */
-{2,      RG,     WL,     0,      0,      0,      0},              /* CVTGL */
-{2,      RG,     WL,     0,      0,      0,      0},              /* CVTRGL */
-{2,      RB,     WQ,     0,      0,      0,      0},              /* CVTBG */
-{2,      RW,     WQ,     0,      0,      0,      0},              /* CVTWG */
-{2,      RL,     WQ,     0,      0,      0,      0},              /* CVTLG */
-{4,      RG,     RG,     MQ,     BW,     0,      0},              /* ACBG */
-{2,      RG,     WQ,     0,      0,      0,      0},              /* MOVG */
-{2,      RG,     RG,     0,      0,      0,      0},              /* CMPG */
-{2,      RG,     WQ,     0,      0,      0,      0},              /* MNEGG */
-{1,      RG,     0,      0,      0,      0,      0},              /* TSTG */
-{5,      RG,     RW,     RG,     WL,     WQ,     0},              /* EMODG */
-{3,      RG,     RW,     AB,     0,      0,      0},              /* POLYG */
-{ODC(2), RG,     WO,     0,      0,      0,      0},              /* CVTGH */
-{0,      0,      0,      0,      0,      0,      0},              /* reserved */
-{0,      0,      0,      0,      0,      0,      0},              /* reserved */
-{0,      0,      0,      0,      0,      0,      0},              /* reserved */
-{0,      0,      0,      0,      0,      0,      0},              /* reserved */
-{0,      0,      0,      0,      0,      0,      0},              /* reserved */
-{0,      0,      0,      0,      0,      0,      0},              /* reserved */
-{0,      0,      0,      0,      0,      0,      0},              /* reserved */
-{0,      0,      0,      0,      0,      0,      0},              /* reserved */
-{0,      0,      0,      0,      0,      0,      0},              /* reserved */
-{ODC(2), RH,     MO,     0,      0,      0,      0},              /* ADDH2 */
-{ODC(3), RH,     RH,     WO,     0,      0,      0},              /* ADDH3 */
-{ODC(2), RH,     MO,     0,      0,      0,      0},              /* SUBH2 */
-{ODC(3), RH,     RH,     WO,     0,      0,      0},              /* SUBH3 */
-{ODC(2), RH,     MO,     0,      0,      0,      0},              /* MULH2 */
-{ODC(3), RH,     RH,     WO,     0,      0,      0},              /* MULH3 */
-{ODC(2), RH,     MO,     0,      0,      0,      0},              /* DIVH2 */
-{ODC(3), RH,     RH,     WO,     0,      0,      0},              /* DIVH3 */
-{ODC(2), RH,     WB,     0,      0,      0,      0},              /* CVTHB */
-{ODC(2), RH,     WW,     0,      0,      0,      0},              /* CVTHW */
-{ODC(2), RH,     WL,     0,      0,      0,      0},              /* CVTHL */
-{ODC(2), RH,     WL,     0,      0,      0,      0},              /* CVTRHL */
-{ODC(2), RB,     WO,     0,      0,      0,      0},              /* CVTBH */
-{ODC(2), RW,     WO,     0,      0,      0,      0},              /* CVTWH */
-{ODC(2), RL,     WO,     0,      0,      0,      0},              /* CVTLH */
-{ODC(4), RH,     RH,     MO,     BW,     0,      0},              /* ACBH */
-{ODC(2), RH,     RO,     0,      0,      0,      0},              /* MOVH */
-{ODC(2), RH,     RH,     0,      0,      0,      0},              /* CMPH */
-{ODC(2), RH,     WO,     0,      0,      0,      0},              /* MNEGH */
-{ODC(1), RH,     0,      0,      0,      0,      0},              /* TSTH */
-{ODC(5), RH,     RW,     RH,     WL,     WO,     0},              /* EMODH */
-{ODC(3), RH,     RW,     AB,     0,      0,      0},              /* POLYH */
-{ODC(2), RH,     WQ,     0,      0,      0,      0},              /* CVTHG */
-{0,      0,      0,      0,      0,      0,      0},              /* reserved */
-{0,      0,      0,      0,      0,      0,      0},              /* reserved */
-{0,      0,      0,      0,      0,      0,      0},              /* reserved */
-{0,      0,      0,      0,      0,      0,      0},              /* reserved */
-{0,      0,      0,      0,      0,      0,      0},              /* reserved */
-{ODC(1), WO,     0,      0,      0,      0,      0},              /* CLRO */
-{ODC(2), RO,     RO,     0,      0,      0,      0},              /* MOVO */
-{ODC(2), AO,     WL,     0,      0,      0,      0},              /* MOVAO*/
-{ODC(1), AO,     0,      0,      0,      0,      0},              /* PUSHAO*/
-{0,      0,      0,      0,      0,      0,      0},              /* 180-18F */
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},              /* 190-19F */
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{ODC(2), RF,     WO,     0,      0,      0,      0},              /* CVTFH */
-{2,      RF,     WQ,     0,      0,      0,      0},              /* CVTFG */
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},              /* 1A0-1AF */
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},              /* 1B0-1BF */
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},              /* 1C0-1CF */
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},              /* 1D0-1DF */
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},              /* 1E0-1EF */
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},              /* 1F0-1FF */
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{ODC(2), RH,     WL,     0,      0,      0,      0},              /* CVTHF */
-{ODC(2), RH,     WQ,     0,      0,      0,      0},              /* CVTHD */
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0},
-{0,      0,      0,      0,      0,      0,      0}
+{0             +IG_BASE,  0,      0,      0,      0,      0,      0},    /* HALT */     /* 000-00F */
+{0             +IG_BASE,  0,      0,      0,      0,      0,      0},    /* NOP */
+{0             +IG_BASE,  0,      0,      0,      0,      0,      0},    /* REI */
+{0             +IG_BASE,  0,      0,      0,      0,      0,      0},    /* BPT */
+{0             +IG_BASE,  0,      0,      0,      0,      0,      0},    /* RET */
+{0             +IG_BASE,  0,      0,      0,      0,      0,      0},    /* RSB */
+{0             +IG_BASE,  0,      0,      0,      0,      0,      0},    /* LDPCTX */
+{0             +IG_BASE,  0,      0,      0,      0,      0,      0},    /* SVPCTX */
+{4+DR_F        +IG_PACKD, RW,     AB,     RW,     AB,     0,      0},    /* CVTPS */
+{4+DR_F        +IG_PACKD, RW,     AB,     RW,     AB,     0,      0},    /* CVTSP */
+{6      +RB_L  +IG_BASE,  RL,     RL,     RL,     RL,     RL,     WL},   /* INDEX */
+{4+DR_F +RB_L  +IG_EMONL, AB,     RL,     RW,     AB,     0,      0},    /* CRC */
+{3             +IG_BASE,  RB,     RW,     AB,     0,      0,      0},    /* PROBER */
+{3             +IG_BASE,  RB,     RW,     AB,     0,      0,      0},    /* PROBEW */
+{2             +IG_BASE,  AB,     AB,     0,      0,      0,      0},    /* INSQUE */
+{2             +IG_BASE,  AB,     WL,     0,      0,      0,      0},    /* REMQUE */
+{1             +IG_BASE,  BB,     0,      0,      0,      0,      0},    /* BSBB */     /* 010-01F */
+{1             +IG_BASE,  BB,     0,      0,      0,      0,      0},    /* BRB */
+{1             +IG_BASE,  BB,     0,      0,      0,      0,      0},    /* BNEQ */
+{1             +IG_BASE,  BB,     0,      0,      0,      0,      0},    /* BEQL */
+{1             +IG_BASE,  BB,     0,      0,      0,      0,      0},    /* BGTR */
+{1             +IG_BASE,  BB,     0,      0,      0,      0,      0},    /* BLEQ */
+{1             +IG_BASE,  AB,     0,      0,      0,      0,      0},    /* JSB */
+{1             +IG_BASE,  AB,     0,      0,      0,      0,      0},    /* JMP */
+{1             +IG_BASE,  BB,     0,      0,      0,      0,      0},    /* BGEQ */
+{1             +IG_BASE,  BB,     0,      0,      0,      0,      0},    /* BLSS */
+{1             +IG_BASE,  BB,     0,      0,      0,      0,      0},    /* BGTRU */
+{1             +IG_BASE,  BB,     0,      0,      0,      0,      0},    /* BLEQU */
+{1             +IG_BASE,  BB,     0,      0,      0,      0,      0},    /* BVC */
+{1             +IG_BASE,  BB,     0,      0,      0,      0,      0},    /* BVS */
+{1             +IG_BASE,  BB,     0,      0,      0,      0,      0},    /* BCC */
+{1             +IG_BASE,  BB,     0,      0,      0,      0,      0},    /* BCS */
+{4+DR_F +RB_R3 +IG_PACKD, RW,     AB,     RW,     AB,     0,      0},    /* ADDP4 */    /* 020-02F */
+{6+DR_F +RB_R5 +IG_PACKD, RW,     AB,     RW,     AB,     RW,     AB},   /* ADDP6 */
+{4+DR_F +RB_R3 +IG_PACKD, RW,     AB,     RW,     AB,     0,      0},    /* SUBP4 */
+{6+DR_F +RB_R5 +IG_PACKD, RW,     AB,     RW,     AB,     RW,     AB},   /* SUBP6 */
+{5+DR_F +RB_R3 +IG_PACKD, RW,     AB,     AB,     RW,     AB,     0},    /* CVTPT */
+{6+DR_F +RB_R5 +IG_PACKD, RW,     AB,     RW,     AB,     RW,     AB},   /* MULP6 */
+{5+DR_F +RB_R3 +IG_PACKD, RW,     AB,     AB,     RW,     AB,     0},    /* CVTTP */
+{6+DR_F +RB_R5 +IG_PACKD, RW,     AB,     RW,     AB,     RW,     AB},   /* DIVP6 */
+{3+DR_F +RB_R5 +IG_BASE,  RW,     AB,     AB,     0,      0,      0},    /* MOVC3 */
+{3+DR_F +RB_R3 +IG_BASE,  RW,     AB,     AB,     0,      0,      0},    /* CMPC3 */
+{4+DR_F +RB_R3 +IG_BASE,  RW,     AB,     AB,     RB,     0,      0},    /* SCANC */
+{4+DR_F +RB_R3 +IG_BASE,  RW,     AB,     AB,     RB,     0,      0},    /* SPANC */
+{5+DR_F +RB_R5 +IG_BASE,  RW,     AB,     RB,     RW,     AB,     0},    /* MOVC5 */
+#if defined (VAX_610)
+{5+DR_F +RB_R3 +IG_EMONL, RW,     AB,     RB,     RW,     AB,     0},    /* CMPC5 */
+#else
+{5+DR_F +RB_R3 +IG_BASE,  RW,     AB,     RB,     RW,     AB,     0},    /* CMPC5 */
+#endif
+{6+DR_F +RB_R5 +IG_EMONL, RW,     AB,     RB,     AB,     RW,     AB},   /* MOVTC */
+{6+DR_F +RB_R3 +IG_EMONL, RW,     AB,     RB,     AB,     RW,     AB},   /* MOVTUC */
+{1             +IG_BASE,  BW,     0,      0,      0,      0,      0},    /* BSBW */    /* 030-03F */
+{1             +IG_BASE,  BW,     0,      0,      0,      0,      0},    /* BRW */
+{2      +RB_L  +IG_BASE,  RW,     WL,     0,      0,      0,      0},    /* CVTWL */
+{2      +RB_B  +IG_BASE,  RW,     WB,     0,      0,      0,      0},    /* CVTWB */
+{3+DR_F +RB_R3 +IG_PACKD, RW,     AB,     AB,     0,      0,      0},    /* MOVP */
+{3+DR_F +RB_R3 +IG_PACKD, RW,     AB,     AB,     0,      0,      0},    /* CMPP3 */
+{3+DR_F +RB_L  +IG_PACKD, RW,     AB,     WL,     0,      0,      0},    /* CVTPL */
+{4+DR_F +RB_R3 +IG_PACKD, RW,     AB,     RW,     AB,     0,      0},    /* CMPP4 */
+{4+DR_F +RB_R5 +IG_EMONL, RW,     AB,     AB,     AB,     0,      0},    /* EDITPC */
+{4+DR_F +RB_R3 +IG_EMONL, RW,     AB,     RW,     AB,     0,      0},    /* MATCHC */
+{3+DR_F +RB_R1 +IG_BASE,  RB,     RW,     AB,     0,      0,      0},    /* LOCC */
+{3+DR_F +RB_R1 +IG_BASE,  RB,     RW,     AB,     0,      0,      0},    /* SKPC */
+{2      +RB_L  +IG_BASE,  RW,     WL,     0,      0,      0,      0},    /* MOVZWL */
+{4             +IG_BASE,  RW,     RW,     MW,     BW,     0,      0},    /* ACBW */
+{2             +IG_BASE,  AW,     WL,     0,      0,      0,      0},    /* MOVAW */
+{1      +RB_SP +IG_BASE,  AW,     0,      0,      0,      0,      0},    /* PUSHAW */
+{2      +RB_L  +IG_BASE,  RF,     ML,     0,      0,      0,      0},    /* ADDF2 */    /* 040-04F */
+{3      +RB_L  +IG_BASE,  RF,     RF,     WL,     0,      0,      0},    /* ADDF3 */
+{2      +RB_L  +IG_BASE,  RF,     ML,     0,      0,      0,      0},    /* SUBF2 */
+{3      +RB_L  +IG_BASE,  RF,     RF,     WL,     0,      0,      0},    /* SUBF3 */
+{2      +RB_L  +IG_BASE,  RF,     ML,     0,      0,      0,      0},    /* MULF2 */
+{3      +RB_L  +IG_BASE,  RF,     RF,     WL,     0,      0,      0},    /* MULF3 */
+{2      +RB_L  +IG_BASE,  RF,     ML,     0,      0,      0,      0},    /* DIVF2 */
+{3      +RB_L  +IG_BASE,  RF,     RF,     WL,     0,      0,      0},    /* DIVF3 */
+{2      +RB_B  +IG_BASE,  RF,     WB,     0,      0,      0,      0},    /* CVTFB */
+{2      +RB_W  +IG_BASE,  RF,     WW,     0,      0,      0,      0},    /* CVTFW */
+{2      +RB_L  +IG_BASE,  RF,     WL,     0,      0,      0,      0},    /* CVTFL */
+{2      +RB_L  +IG_BASE,  RF,     WL,     0,      0,      0,      0},    /* CVTRFL */
+{2      +RB_L  +IG_BASE,  RB,     WL,     0,      0,      0,      0},    /* CVTBF */
+{2      +RB_L  +IG_BASE,  RW,     WL,     0,      0,      0,      0},    /* CVTWF */
+{2      +RB_L  +IG_BASE,  RL,     WL,     0,      0,      0,      0},    /* CVTLF */
+{4             +IG_EMONL, RF,     RF,     ML,     BW,     0,      0},    /* ACBF */
+{2      +RB_L  +IG_BASE,  RF,     WL,     0,      0,      0,      0},    /* MOVF */     /* 050-05F */
+{2             +IG_BASE,  RF,     RF,     0,      0,      0,      0},    /* CMPF */
+{2      +RB_L  +IG_BASE,  RF,     WL,     0,      0,      0,      0},    /* MNEGF */
+{1             +IG_BASE,  RF,     0,      0,      0,      0,      0},    /* TSTF */
+{5             +IG_EMONL, RF,     RB,     RF,     WL,     WL,     0},    /* EMODF */
+{3      +RB_R3 +IG_EMONL, RF,     RW,     AB,     0,      0,      0},    /* POLYF */
+{2      +RB_Q  +IG_BSDFL, RF,     WQ,     0,      0,      0,      0},    /* CVTFD */
+{0             +IG_RSVD,  0,      0,      0,      0,      0,      0},    /* reserved */
+{2      +RB_W  +IG_BASE,  RW,     WW,     0,      0,      0,      0},    /* ADAWI */
+{0             +IG_RSVD,  0,      0,      0,      0,      0,      0},    /* reserved */
+{0             +IG_RSVD,  0,      0,      0,      0,      0,      0},    /* reserved */
+{0             +IG_RSVD,  0,      0,      0,      0,      0,      0},    /* reserved */
+{2             +IG_BASE,  AB,     AQ,     0,      0,      0,      0},    /* INSQHI */
+{2             +IG_BASE,  AB,     AQ,     0,      0,      0,      0},    /* INSQTI */
+{2             +IG_BASE,  AQ,     WL,     0,      0,      0,      0},    /* REMQHI */
+{2             +IG_BASE,  AQ,     WL,     0,      0,      0,      0},    /* REMQTI */
+{2      +RB_Q  +IG_BSDFL, RD,     MQ,     0,      0,      0,      0},    /* ADDD2 */    /* 060-06F */
+{3      +RB_Q  +IG_BSDFL, RD,     RD,     WQ,     0,      0,      0},    /* ADDD3 */
+{2      +RB_Q  +IG_BSDFL, RD,     MQ,     0,      0,      0,      0},    /* SUBD2 */
+{3      +RB_Q  +IG_BSDFL, RD,     RD,     WQ,     0,      0,      0},    /* SUBD3 */
+{2      +RB_Q  +IG_BSDFL, RD,     MQ,     0,      0,      0,      0},    /* MULD2 */
+{3      +RB_Q  +IG_BSDFL, RD,     RD,     WQ,     0,      0,      0},    /* MULD3 */
+{2      +RB_Q  +IG_BSDFL, RD,     MQ,     0,      0,      0,      0},    /* DIVD2 */
+{3      +RB_Q  +IG_BSDFL, RD,     RD,     WQ,     0,      0,      0},    /* DIVD3 */
+{2      +RB_B  +IG_BSDFL, RD,     WB,     0,      0,      0,      0},    /* CVTDB */
+{2      +RB_W  +IG_BSDFL, RD,     WW,     0,      0,      0,      0},    /* CVTDW */
+{2      +RB_L  +IG_BSDFL, RD,     WL,     0,      0,      0,      0},    /* CVTDL */
+{2      +RB_L  +IG_BSDFL, RD,     WL,     0,      0,      0,      0},    /* CVTRDL */
+{2      +RB_Q  +IG_BSDFL, RB,     WQ,     0,      0,      0,      0},    /* CVTBD */
+{2      +RB_Q  +IG_BSDFL, RW,     WQ,     0,      0,      0,      0},    /* CVTWD */
+{2      +RB_Q  +IG_BSDFL, RL,     WQ,     0,      0,      0,      0},    /* CVTLD */
+{4             +IG_EMONL, RD,     RD,     MQ,     BW,     0,      0},    /* ACBD */
+{2      +RB_Q  +IG_BSDFL, RD,     WQ,     0,      0,      0,      0},    /* MOVD */     /* 070-07F */
+{2      +RB_Q  +IG_BSDFL, RD,     RD,     0,      0,      0,      0},    /* CMPD */
+{2      +RB_Q  +IG_BSDFL, RD,     WQ,     0,      0,      0,      0},    /* MNEGD */
+{1             +IG_BSDFL, RD,     0,      0,      0,      0,      0},    /* TSTD */
+{5             +IG_EMONL, RD,     RB,     RD,     WL,     WQ,     0},    /* EMODD */
+{3      +RB_R5 +IG_EMONL, RD,     RW,     AB,     0,      0,      0},    /* POLYD */
+{2      +RB_L  +IG_BSDFL, RD,     WL,     0,      0,      0,      0},    /* CVTDF */
+{0             +IG_RSVD,  0,      0,      0,      0,      0,      0},    /* reserved */
+{3      +RB_L  +IG_BASE,  RB,     RL,     WL,     0,      0,      0},    /* ASHL */
+{3      +RB_Q  +IG_BASE,  RB,     RQ,     WQ,     0,      0,      0},    /* ASHQ */
+{4             +IG_BASE,  RL,     RL,     RL,     WQ,     0,      0},    /* EMUL */
+{4             +IG_BASE,  RL,     RQ,     WL,     WL,     0,      0},    /* EDIV */
+{1      +RB_Q  +IG_BASE,  WQ,     0,      0,      0,      0,      0},    /* CLRQ */
+{2      +RB_Q  +IG_BASE,  RQ,     WQ,     0,      0,      0,      0},    /* MOVQ */
+{2      +RB_L  +IG_BASE,  AQ,     WL,     0,      0,      0,      0},    /* MOVAQ */
+{1      +RB_SP +IG_BASE,  AQ,     0,      0,      0,      0,      0},    /* PUSHAQ */
+{2      +RB_B  +IG_BASE,  RB,     MB,     0,      0,      0,      0},    /* ADDB2 */    /* 080-08F */
+{3      +RB_B  +IG_BASE,  RB,     RB,     WB,     0,      0,      0},    /* ADDB3 */
+{2      +RB_B  +IG_BASE,  RB,     MB,     0,      0,      0,      0},    /* SUBB2 */
+{3      +RB_B  +IG_BASE,  RB,     RB,     WB,     0,      0,      0},    /* SUBB3 */
+{2      +RB_B  +IG_BASE,  RB,     MB,     0,      0,      0,      0},    /* MULB2 */
+{3      +RB_B  +IG_BASE,  RB,     RB,     WB,     0,      0,      0},    /* MULB3 */
+{2      +RB_B  +IG_BASE,  RB,     MB,     0,      0,      0,      0},    /* DIVB2 */
+{3      +RB_B  +IG_BASE,  RB,     RB,     WB,     0,      0,      0},    /* DIVB3 */
+{2      +RB_B  +IG_BASE,  RB,     MB,     0,      0,      0,      0},    /* BISB2 */
+{3      +RB_B  +IG_BASE,  RB,     RB,     WB,     0,      0,      0},    /* BISB3 */
+{2      +RB_B  +IG_BASE,  RB,     MB,     0,      0,      0,      0},    /* BICB2 */
+{3      +RB_B  +IG_BASE,  RB,     RB,     WB,     0,      0,      0},    /* BICB3 */
+{2      +RB_B  +IG_BASE,  RB,     MB,     0,      0,      0,      0},    /* XORB2 */
+{3      +RB_B  +IG_BASE,  RB,     RB,     WB,     0,      0,      0},    /* XORB3 */
+{2      +RB_B  +IG_BASE,  RB,     WB,     0,      0,      0,      0},    /* MNEGB */
+{3             +IG_BASE,  RB,     RB,     RB,     0,      0,      0},    /* CASEB */
+{2      +RB_B  +IG_BASE,  RB,     WB,     0,      0,      0,      0},    /* MOVB */     /* 090-09F */
+{2             +IG_BASE,  RB,     RB,     0,      0,      0,      0},    /* CMPB */
+{2      +RB_B  +IG_BASE,  RB,     WB,     0,      0,      0,      0},    /* MCOMB */
+{2      +RB_B  +IG_BASE,  RB,     RB,     0,      0,      0,      0},    /* BITB */
+{1      +RB_B  +IG_BASE,  WB,     0,      0,      0,      0,      0},    /* CLRB */
+{1             +IG_BASE,  RB,     0,      0,      0,      0,      0},    /* TSTB */
+{1      +RB_B  +IG_BASE,  MB,     0,      0,      0,      0,      0},    /* INCB */
+{1      +RB_B  +IG_BASE,  MB,     0,      0,      0,      0,      0},    /* DECB */
+{2      +RB_L  +IG_BASE,  RB,     WL,     0,      0,      0,      0},    /* CVTBL */
+{2      +RB_W  +IG_BASE,  RB,     WW,     0,      0,      0,      0},    /* CVTBW */
+{2      +RB_L  +IG_BASE,  RB,     WL,     0,      0,      0,      0},    /* MOVZBL */
+{2      +RB_W  +IG_BASE,  RB,     WW,     0,      0,      0,      0},    /* MOVZBW */
+{3      +RB_L  +IG_BASE,  RB,     RL,     WL,     0,      0,      0},    /* ROTL */
+{4             +IG_BASE,  RB,     RB,     MB,     BW,     0,      0},    /* ACBB */
+{2      +RB_L  +IG_BASE,  AB,     WL,     0,      0,      0,      0},    /* MOVAB */
+{1      +RB_SP +IG_BASE,  AB,     0,      0,      0,      0,      0},    /* PUSHAB */
+{2      +RB_W  +IG_BASE,  RW,     MW,     0,      0,      0,      0},    /* ADDW2 */    /* 0A0-0AF */
+{3      +RB_W  +IG_BASE,  RW,     RW,     WW,     0,      0,      0},    /* ADDW3 */
+{2      +RB_W  +IG_BASE,  RW,     MW,     0,      0,      0,      0},    /* SUBW2 */
+{3      +RB_W  +IG_BASE,  RW,     RW,     WW,     0,      0,      0},    /* SUBW3 */
+{2      +RB_W  +IG_BASE,  RW,     MW,     0,      0,      0,      0},    /* MULW2 */
+{3      +RB_W  +IG_BASE,  RW,     RW,     WW,     0,      0,      0},    /* MULW3 */
+{2      +RB_W  +IG_BASE,  RW,     MW,     0,      0,      0,      0},    /* DIVW2 */
+{3      +RB_W  +IG_BASE,  RW,     RW,     WW,     0,      0,      0},    /* DIVW3 */
+{2      +RB_W  +IG_BASE,  RW,     MW,     0,      0,      0,      0},    /* BISW2 */
+{3      +RB_W  +IG_BASE,  RW,     RW,     WW,     0,      0,      0},    /* BISW3 */
+{2      +RB_W  +IG_BASE,  RW,     MW,     0,      0,      0,      0},    /* BICW2 */
+{3      +RB_W  +IG_BASE,  RW,     RW,     WW,     0,      0,      0},    /* BICW3 */
+{2      +RB_W  +IG_BASE,  RW,     MW,     0,      0,      0,      0},    /* XORW2 */
+{3      +RB_W  +IG_BASE,  RW,     RW,     WW,     0,      0,      0},    /* XORW3 */
+{2      +RB_W  +IG_BASE,  RW,     WW,     0,      0,      0,      0},    /* MNEGW */
+{3             +IG_BASE,  RW,     RW,     RW,     0,      0,      0},    /* CASEW */
+{2      +RB_W  +IG_BASE,  RW,     WW,     0,      0,      0,      0},    /* MOVW */     /* 0B0-0BF */
+{2             +IG_BASE,  RW,     RW,     0,      0,      0,      0},    /* CMPW */
+{2      +RB_W  +IG_BASE,  RW,     WW,     0,      0,      0,      0},    /* MCOMW */
+{2             +IG_BASE,  RW,     RW,     0,      0,      0,      0},    /* BITW */
+{1      +RB_W  +IG_BASE,  WW,     0,      0,      0,      0,      0},    /* CLRW */
+{1             +IG_BASE,  RW,     0,      0,      0,      0,      0},    /* TSTW */
+{1      +RB_W  +IG_BASE,  MW,     0,      0,      0,      0,      0},    /* INCW */
+{1      +RB_W  +IG_BASE,  MW,     0,      0,      0,      0,      0},    /* DECW */
+{1             +IG_BASE,  RW,     0,      0,      0,      0,      0},    /* BISPSW */
+{1             +IG_BASE,  RW,     0,      0,      0,      0,      0},    /* BICPSW */
+{1             +IG_BASE,  RW,     0,      0,      0,      0,      0},    /* POPR */
+{1             +IG_BASE,  RW,     0,      0,      0,      0,      0},    /* PUSHR */
+{1             +IG_BASE,  RW,     0,      0,      0,      0,      0},    /* CHMK */
+{1             +IG_BASE,  RW,     0,      0,      0,      0,      0},    /* CHME */
+{1             +IG_BASE,  RW,     0,      0,      0,      0,      0},    /* CHMS */
+{1             +IG_BASE,  RW,     0,      0,      0,      0,      0},    /* CHMU */
+{2      +RB_L  +IG_BASE,  RL,     ML,     0,      0,      0,      0},    /* ADDL2 */    /* 0C0-0CF */
+{3      +RB_L  +IG_BASE,  RL,     RL,     WL,     0,      0,      0},    /* ADDL3 */
+{2      +RB_L  +IG_BASE,  RL,     ML,     0,      0,      0,      0},    /* SUBL2 */
+{3      +RB_L  +IG_BASE,  RL,     RL,     WL,     0,      0,      0},    /* SUBL3 */
+{2      +RB_L  +IG_BASE,  RL,     ML,     0,      0,      0,      0},    /* MULL2 */
+{3      +RB_L  +IG_BASE,  RL,     RL,     WL,     0,      0,      0},    /* MULL3 */
+{2      +RB_L  +IG_BASE,  RL,     ML,     0,      0,      0,      0},    /* DIVL2 */
+{3      +RB_L  +IG_BASE,  RL,     RL,     WL,     0,      0,      0},    /* DIVL3 */
+{2      +RB_L  +IG_BASE,  RL,     ML,     0,      0,      0,      0},    /* BISL2 */
+{3      +RB_L  +IG_BASE,  RL,     RL,     WL,     0,      0,      0},    /* BISL3 */
+{2      +RB_L  +IG_BASE,  RL,     ML,     0,      0,      0,      0},    /* BICL2 */
+{3      +RB_L  +IG_BASE,  RL,     RL,     WL,     0,      0,      0},    /* BICL3 */
+{2      +RB_L  +IG_BASE,  RL,     ML,     0,      0,      0,      0},    /* XORL2 */
+{3      +RB_L  +IG_BASE,  RL,     RL,     WL,     0,      0,      0},    /* XORL3 */
+{2      +RB_L  +IG_BASE,  RL,     WL,     0,      0,      0,      0},    /* MNEGL */
+{3             +IG_BASE,  RL,     RL,     RL,     0,      0,      0},    /* CASEL */
+{2      +RB_L  +IG_BASE,  RL,     WL,     0,      0,      0,      0},    /* MOVL */     /* 0D0-0DF */
+{2             +IG_BASE,  RL,     RL,     0,      0,      0,      0},    /* CMPL */
+{2      +RB_L  +IG_BASE,  RL,     WL,     0,      0,      0,      0},    /* MCOML */
+{2             +IG_BASE,  RL,     RL,     0,      0,      0,      0},    /* BITL */
+{1      +RB_L  +IG_BASE,  WL,     0,      0,      0,      0,      0},    /* CLRL */
+{1             +IG_BASE,  RL,     0,      0,      0,      0,      0},    /* TSTL */
+{1      +RB_L  +IG_BASE,  ML,     0,      0,      0,      0,      0},    /* INCL */
+{1      +RB_L  +IG_BASE,  ML,     0,      0,      0,      0,      0},    /* DECL */
+{2      +RB_L  +IG_BASE,  RL,     ML,     0,      0,      0,      0},    /* ADWC */
+{2      +RB_L  +IG_BASE,  RL,     ML,     0,      0,      0,      0},    /* SBWC */
+{2             +IG_BASE,  RL,     RL,     0,      0,      0,      0},    /* MTPR */
+{2      +RB_L  +IG_BASE,  RL,     WL,     0,      0,      0,      0},    /* MFPR */
+{1      +RB_L  +IG_BASE,  WL,     0,      0,      0,      0,      0},    /* MOVPSL */
+{1      +RB_SP +IG_BASE,  RL,     0,      0,      0,      0,      0},    /* PUSHL */
+{2      +RB_L  +IG_BASE,  AL,     WL,     0,      0,      0,      0},    /* MOVAL */
+{1      +RB_SP +IG_BASE,  AL,     0,      0,      0,      0,      0},    /* PUSHAL */
+{3             +IG_BASE,  RL,     VB,     BB,     0,      0,      0},    /* BBS */      /* 0E0-0EF */
+{3             +IG_BASE,  RL,     VB,     BB,     0,      0,      0},    /* BBC */
+{3             +IG_BASE,  RL,     VB,     BB,     0,      0,      0},    /* BBSS */
+{3             +IG_BASE,  RL,     VB,     BB,     0,      0,      0},    /* BBCS */
+{3             +IG_BASE,  RL,     VB,     BB,     0,      0,      0},    /* BBSC */
+{3             +IG_BASE,  RL,     VB,     BB,     0,      0,      0},    /* BBCC */
+{3             +IG_BASE,  RL,     VB,     BB,     0,      0,      0},    /* BBSSI */
+{3             +IG_BASE,  RL,     VB,     BB,     0,      0,      0},    /* BBCCI */
+{2             +IG_BASE,  RL,     BB,     0,      0,      0,      0},    /* BLBS */
+{2             +IG_BASE,  RL,     BB,     0,      0,      0,      0},    /* BLBC */
+{4      +RB_L  +IG_BASE,  RL,     RB,     VB,     WL,     0,      0},    /* FFS */
+{4      +RB_L  +IG_BASE,  RL,     RB,     VB,     WL,     0,      0},    /* FFC */
+{4             +IG_BASE,  RL,     RB,     VB,     RL,     0,      0},    /* CMPV */
+{4             +IG_BASE,  RL,     RB,     VB,     RL,     0,      0},    /* CMPZV */
+{4      +RB_L  +IG_BASE,  RL,     RB,     VB,     WL,     0,      0},    /* EXTV */
+{4      +RB_L  +IG_BASE,  RL,     RB,     VB,     WL,     0,      0},    /* EXTZV */
+{4             +IG_BASE,  RL,     RL,     RB,     VB,     0,      0},    /* INSV */     /* 0F0-0FF */
+{4             +IG_BASE,  RL,     RL,     ML,     BW,     0,      0},    /* ACBL */
+{3             +IG_BASE,  RL,     ML,     BB,     0,      0,      0},    /* AOBLSS */
+{3             +IG_BASE,  RL,     ML,     BB,     0,      0,      0},    /* AOBLEQ */
+{2             +IG_BASE,  ML,     BB,     0,      0,      0,      0},    /* SOBGEQ */
+{2             +IG_BASE,  ML,     BB,     0,      0,      0,      0},    /* SOBGTR */
+{2      +RB_B  +IG_BASE,  RL,     WB,     0,      0,      0,      0},    /* CVTLB */
+{2      +RB_W  +IG_BASE,  RL,     WW,     0,      0,      0,      0},    /* CVTLW */
+{6+DR_F+RB_R3  +IG_PACKD, RB,     RW,     AB,     RB,     RW,     AB},   /* ASHP */
+{3+DR_F+RB_R3  +IG_PACKD, RL,     RW,     AB,     0,      0,      0},    /* CVTLP */
+{2             +IG_BASE,  AB,     AB,     0,      0,      0,      0},    /* CALLG */
+{2             +IG_BASE,  RL,     AB,     0,      0,      0,      0},    /* CALLS */
+{0             +IG_BASE,  0,      0,      0,      0,      0,      0},    /* XFC */
+{0,                       0,      0,      0,      0,      0,      0},    /* 0FD */
+{0,                       0,      0,      0,      0,      0,      0},    /* 0FE */
+{0,                       0,      0,      0,      0,      0,      0},    /* 0FF */
+{0,                       0,      0,      0,      0,      0,      0},    /* 100-10F */
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},    /* 110-11F */
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},    /* 120-12F */
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},    /* 130-13F */
+{0,                       0,      0,      0,      0,      0,      0},
+{ODC(2) +RB_O  +IG_EXTAC, RD,     WO,     0,      0,      0,      0},    /* CVTDH */
+{2      +RB_L  +IG_BSGFL, RG,     WL,     0,      0,      0,      0},    /* CVTGF */
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{2      +RB_Q +IG_BSGFL,  RG,     MQ,     0,      0,      0,      0},    /* ADDG2 */    /* 140-14F */
+{3      +RB_Q +IG_BSGFL,  RG,     RG,     WQ,     0,      0,      0},    /* ADDG3 */
+{2      +RB_Q +IG_BSGFL,  RG,     MQ,     0,      0,      0,      0},    /* SUBG2 */
+{3      +RB_Q +IG_BSGFL,  RG,     RG,     WQ,     0,      0,      0},    /* SUBG3 */
+{2      +RB_Q +IG_BSGFL,  RG,     MQ,     0,      0,      0,      0},    /* MULG2 */
+{3      +RB_Q +IG_BSGFL,  RG,     RG,     WQ,     0,      0,      0},    /* MULG3 */
+{2      +RB_Q  +IG_BSGFL, RG,     MQ,     0,      0,      0,      0},    /* DIVG2 */
+{3      +RB_Q  +IG_BSGFL, RG,     RG,     WQ,     0,      0,      0},    /* DIVG3 */
+{2      +RB_B  +IG_BSGFL, RG,     WB,     0,      0,      0,      0},    /* CVTGB */
+{2      +RB_W  +IG_BSGFL, RG,     WW,     0,      0,      0,      0},    /* CVTGW */
+{2      +RB_L  +IG_BSGFL, RG,     WL,     0,      0,      0,      0},    /* CVTGL */
+{2      +RB_L  +IG_BSGFL, RG,     WL,     0,      0,      0,      0},    /* CVTRGL */
+{2      +RB_Q  +IG_BSGFL, RB,     WQ,     0,      0,      0,      0},    /* CVTBG */
+{2      +RB_Q  +IG_BSGFL, RW,     WQ,     0,      0,      0,      0},    /* CVTWG */
+{2      +RB_Q  +IG_BSGFL, RL,     WQ,     0,      0,      0,      0},    /* CVTLG */
+{4             +IG_EMONL, RG,     RG,     MQ,     BW,     0,      0},    /* ACBG */
+{2      +RB_Q  +IG_BSGFL, RG,     WQ,     0,      0,      0,      0},    /* MOVG */     /* 150-15F */
+{2             +IG_BSGFL, RG,     RG,     0,      0,      0,      0},    /* CMPG */
+{2      +RB_Q  +IG_BSGFL, RG,     WQ,     0,      0,      0,      0},    /* MNEGG */
+{1             +IG_BSGFL, RG,     0,      0,      0,      0,      0},    /* TSTG */
+{5             +IG_EMONL, RG,     RW,     RG,     WL,     WQ,     0},    /* EMODG */
+{3      +RB_R5 +IG_EMONL, RG,     RW,     AB,     0,      0,      0},    /* POLYG */
+{ODC(2) +RB_O  +IG_EXTAC, RG,     WO,     0,      0,      0,      0},    /* CVTGH */
+{0             +IG_RSVD,  0,      0,      0,      0,      0,      0},    /* reserved */
+{0             +IG_RSVD,  0,      0,      0,      0,      0,      0},    /* reserved */
+{0             +IG_RSVD,  0,      0,      0,      0,      0,      0},    /* reserved */
+{0             +IG_RSVD,  0,      0,      0,      0,      0,      0},    /* reserved */
+{0             +IG_RSVD,  0,      0,      0,      0,      0,      0},    /* reserved */
+{0             +IG_RSVD,  0,      0,      0,      0,      0,      0},    /* reserved */
+{0             +IG_RSVD,  0,      0,      0,      0,      0,      0},    /* reserved */
+{0             +IG_RSVD,  0,      0,      0,      0,      0,      0},    /* reserved */
+{0             +IG_RSVD,  0,      0,      0,      0,      0,      0},    /* reserved */
+{ODC(2) +RB_O  +IG_EXTAC, RH,     MO,     0,      0,      0,      0},    /* ADDH2 */    /* 160-16F */
+{ODC(3) +RB_O  +IG_EXTAC, RH,     RH,     WO,     0,      0,      0},    /* ADDH3 */
+{ODC(2) +RB_O  +IG_EXTAC, RH,     MO,     0,      0,      0,      0},    /* SUBH2 */
+{ODC(3) +RB_O  +IG_EXTAC, RH,     RH,     WO,     0,      0,      0},    /* SUBH3 */
+{ODC(2) +RB_O  +IG_EXTAC, RH,     MO,     0,      0,      0,      0},    /* MULH2 */
+{ODC(3) +RB_O  +IG_EXTAC, RH,     RH,     WO,     0,      0,      0},    /* MULH3 */
+{ODC(2) +RB_O  +IG_EXTAC, RH,     MO,     0,      0,      0,      0},    /* DIVH2 */
+{ODC(3) +RB_O  +IG_EXTAC, RH,     RH,     WO,     0,      0,      0},    /* DIVH3 */
+{ODC(2) +RB_OB +IG_EXTAC, RH,     WB,     0,      0,      0,      0},    /* CVTHB */
+{ODC(2) +RB_OW +IG_EXTAC, RH,     WW,     0,      0,      0,      0},    /* CVTHW */
+{ODC(2) +RB_OL +IG_EXTAC, RH,     WL,     0,      0,      0,      0},    /* CVTHL */
+{ODC(2) +RB_OL +IG_EXTAC, RH,     WL,     0,      0,      0,      0},    /* CVTRHL */
+{ODC(2) +RB_O  +IG_EXTAC, RB,     WO,     0,      0,      0,      0},    /* CVTBH */
+{ODC(2) +RB_O  +IG_EXTAC, RW,     WO,     0,      0,      0,      0},    /* CVTWH */
+{ODC(2) +RB_O  +IG_EXTAC, RL,     WO,     0,      0,      0,      0},    /* CVTLH */
+{ODC(4) +RB_O  +IG_EMONL, RH,     RH,     MO,     BW,     0,      0},    /* ACBH */
+{ODC(2) +RB_O  +IG_EXTAC, RH,     RO,     0,      0,      0,      0},    /* MOVH */     /* 170-17F */
+{ODC(2)        +IG_EXTAC, RH,     RH,     0,      0,      0,      0},    /* CMPH */
+{ODC(2) +RB_O  +IG_EXTAC, RH,     WO,     0,      0,      0,      0},    /* MNEGH */
+{ODC(1)        +IG_EXTAC, RH,     0,      0,      0,      0,      0},    /* TSTH */
+{ODC(5) +RB_O  +IG_EMONL, RH,     RW,     RH,     WL,     WO,     0},    /* EMODH */
+{ODC(3) +RB_R5 +IG_EMONL, RH,     RW,     AB,     0,      0,      0},    /* POLYH */
+{ODC(2) +RB_OQ +IG_EXTAC, RH,     WQ,     0,      0,      0,      0},    /* CVTHG */
+{0             +IG_RSVD,  0,      0,      0,      0,      0,      0},    /* reserved */
+{0             +IG_RSVD,  0,      0,      0,      0,      0,      0},    /* reserved */
+{0             +IG_RSVD,  0,      0,      0,      0,      0,      0},    /* reserved */
+{0             +IG_RSVD,  0,      0,      0,      0,      0,      0},    /* reserved */
+{0             +IG_RSVD,  0,      0,      0,      0,      0,      0},    /* reserved */
+#if defined(VAX_610)
+{1      +RB_O  +IG_EMONL, WO,     0,      0,      0,      0,      0},    /* CLRO */
+{2      +RB_O  +IG_EMONL, RO,     RO,     0,      0,      0,      0},    /* MOVO */
+{2      +RB_OL +IG_EMONL, AO,     WL,     0,      0,      0,      0},    /* MOVAO*/
+{1      +RB_SP +IG_EMONL, AO,     0,      0,      0,      0,      0},    /* PUSHAO*/
+#else
+{ODC(1) +RB_O  +IG_EXTAC, WO,     0,      0,      0,      0,      0},    /* CLRO */
+{ODC(2) +RB_O  +IG_EXTAC, RO,     RO,     0,      0,      0,      0},    /* MOVO */
+{ODC(2) +RB_OL +IG_EXTAC, AO,     WL,     0,      0,      0,      0},    /* MOVAO*/
+{ODC(1) +RB_SP +IG_EXTAC, AO,     0,      0,      0,      0,      0},    /* PUSHAO*/
+#endif
+{0,                       0,      0,      0,      0,      0,      0},    /* 180-18F */
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},    /* 190-19F */
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{ODC(2) +RB_O  +IG_EXTAC, RF,     WO,     0,      0,      0,      0},    /* CVTFH */
+{2      +RB_Q  +IG_BSGFL, RF,     WQ,     0,      0,      0,      0},    /* CVTFG */
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},    /* 1A0-1AF */
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},    /* 1B0-1BF */
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},    /* 1C0-1CF */
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},    /* 1D0-1DF */
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},    /* 1E0-1EF */
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},    /* 1F0-1FF */
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{ODC(2) +RB_OL +IG_EXTAC, RH,     WL,     0,      0,      0,      0},    /* CVTHF */
+{ODC(2) +RB_OQ +IG_EXTAC, RH,     WQ,     0,      0,      0,      0},    /* CVTHD */
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0},
+{0,                       0,      0,      0,      0,      0,      0}
 };
 
 /* Opcode mnemonics table */
 
-const char *opcode[] = {
+char const * const opcode[] = {
 "HALT", "NOP", "REI", "BPT", "RET", "RSB", "LDPCTX", "SVPCTX",
 "CVTPS", "CVTSP", "INDEX", "CRC", "PROBER", "PROBEW", "INSQUE", "REMQUE",
 "BSBB", "BRB", "BNEQ", "BEQL", "BGTR", "BLEQ", "JSB", "JMP",
@@ -729,11 +743,6 @@ const char* regname[] = {
                         if < 0, number of extra bytes retired
 */
 
-/* Use scp.c provided fprintf function */
-#define fprintf Fprintf
-#define fputs(_s,f) Fprintf(f,"%s",_s)
-#define fputc(_c,f) Fprintf(f,"%c",_c)
-
 t_stat fprint_sym (FILE *of, t_addr exta, t_value *val,
     UNIT *uptr, int32 sw)
 {
@@ -764,6 +773,7 @@ else if (sw & SWMASK ('O'))
     rdx = 8;
 else if (sw & SWMASK ('H'))
     rdx = 16;
+else if ((sim_switch_number >= 2) && (sim_switch_number <= 36)) rdx = sim_switch_number;
 else rdx = dptr->dradix;
 if ((sw & SWMASK ('A')) || (sw & SWMASK ('C'))) {       /* char format? */
     for (vp = lnt - 1; vp >= 0; vp--) {
@@ -880,7 +890,8 @@ for (i = 0; i < numspec; i++) {                         /* loop thru spec */
             break;
 
         case BDD:                                       /* @b^d(r),@b^n */
-            fputc ('@', of);
+            fputc ('@', of);                            
+            /* fall through */
         case BDP:                                       /* b^d(r), b^n */
             GETNUM (num, 1);
             if (rn == nPC)
@@ -892,6 +903,7 @@ for (i = 0; i < numspec; i++) {                         /* loop thru spec */
 
         case WDD:                                       /* @w^d(r),@w^n */
             fputc ('@', of);
+            /* fall through */
         case WDP:                                       /* w^d(r), w^n */
             GETNUM (num, 2);
             if (rn == nPC)
@@ -902,7 +914,8 @@ for (i = 0; i < numspec; i++) {                         /* loop thru spec */
             break;
 
         case LDD:                                       /* @l^d(r),@l^n */
-            fputc ('@', of);
+            fputc ('@', of);                            
+            /* fall through */
         case LDP:                                       /* l^d(r),l^n */
             GETNUM (num, 4);
             if (rn == nPC)
@@ -963,7 +976,7 @@ return vp;
                         <= 0  -number of extra words
 */
 
-t_stat parse_sym (char *cptr, t_addr exta, UNIT *uptr, t_value *val, int32 sw)
+t_stat parse_sym (CONST char *cptr, t_addr exta, UNIT *uptr, t_value *val, int32 sw)
 {
 uint32 addr = (uint32) exta;
 int32 k, rdx, lnt, num, vp;
@@ -1030,7 +1043,7 @@ return -(lnt - 1);
                         <= 0  -number of extra words
 */
 
-t_stat parse_char (char *cptr, t_value *val, int32 lnt)
+t_stat parse_char (const char *cptr, t_value *val, int32 lnt)
 {
 int32 vp;
 
@@ -1054,7 +1067,7 @@ return -(vp - 1);                                       /* return # chars */
                         <= 0  -number of extra words
 */
 
-t_stat parse_sym_m (char *cptr, uint32 addr, t_value *val)
+t_stat parse_sym_m (const char *cptr, uint32 addr, t_value *val)
 {
 int32 i, numspec, disp, opc, vp;
 t_stat r;
@@ -1111,7 +1124,7 @@ return -(vp - 1);
         vp      =       updated output pointer
 */
 
-int32 parse_brdisp (char *cptr, uint32 addr, t_value *val, int32 vp,
+int32 parse_brdisp (const char *cptr, uint32 addr, t_value *val, int32 vp,
     int32 lnt, t_stat *r)
 {
 int32 k, dest, num;
@@ -1166,13 +1179,14 @@ return vp;
                             }
 #define SEL_LIM(p,m,u)  ((fl & SP_PLUS)? (p): ((fl & SP_MINUS)? (m): (u)))
 
-int32 parse_spec (char *cptr, uint32 addr, t_value *val, int32 vp, int32 disp, t_stat *r)
+int32 parse_spec (CONST char *cptr, uint32 addr, t_value *val, int32 vp, int32 disp, t_stat *r)
 {
 int32 i, k, litsize, rn, index;
 int32 num, dispsize, mode;
 int32 lit[4] = { 0 };
 int32 fl = 0;
-char c, *tptr;
+char c;
+const char *tptr;
 const char *force[] = { "S^", "I^", "B^", "W^", "L^", NULL };
 
 *r = SCPE_OK;                                           /* assume ok */
@@ -1383,7 +1397,7 @@ switch (fl) {                                           /* case on state */
                 dispsize = 4;
                 }
             }
-        val[vp++] = mode | nPC | ((fl & SP_IND)? 1: 0);
+        val[vp++] = mode | nPC | ((fl & SP_IND)? 0x10: 0);
         PUTNUM (num, dispsize);
         break;
 
@@ -1392,7 +1406,7 @@ switch (fl) {                                           /* case on state */
         num = lit[0] - (addr + vp + 2);
         if ((litsize > 0) || (num > 127) || (num < -128))
             PARSE_LOSE;
-        val[vp++] = nPC | BDP | ((fl & SP_IND)? 1: 0);
+        val[vp++] = nPC | BDP | ((fl & SP_IND)? 0x10: 0);
         PUTNUM (num, 1);
         break;
 
@@ -1401,7 +1415,7 @@ switch (fl) {                                           /* case on state */
         num = lit[0] - (addr + vp + 3);
         if ((litsize > 0) || (num > 32767) || (num < -32768))
             PARSE_LOSE;
-        val[vp++] = nPC | WDP | ((fl & SP_IND)? 1: 0);
+        val[vp++] = nPC | WDP | ((fl & SP_IND)? 0x10: 0);
         PUTNUM (num, 2);
         break;
 
@@ -1410,7 +1424,7 @@ switch (fl) {                                           /* case on state */
         num = lit[0] - (addr + vp + 5);
         if (litsize > 0)
             PARSE_LOSE;
-        val[vp++] = nPC | LDP | ((fl & SP_IND)? 1: 0);
+        val[vp++] = nPC | LDP | ((fl & SP_IND)? 0x10: 0);
         PUTNUM (num, 4);
         break;
 
@@ -1423,11 +1437,11 @@ if (*cptr != 0)                                         /* must be done */
 return vp;
 }
 
-char *parse_rnum (char *cptr, int32 *rn)
+CONST char *parse_rnum (CONST char *cptr, int32 *rn)
 {
 int32 i, lnt;
 t_value regnum;
-char *tptr;
+CONST char *tptr;
 
 *rn = 0;
 for (i = 15; i >= 0; i--) {                             /* chk named reg */
@@ -1439,7 +1453,7 @@ for (i = 15; i >= 0; i--) {                             /* chk named reg */
     }
 if (*cptr++ != 'R')                                     /* look for R */
     return NULL;
-regnum = strtotv (cptr, (const char **)&tptr, 10);                     /* look for reg # */
+regnum = strtotv (cptr, &tptr, 10);                     /* look for reg # */
 if ((cptr == tptr) || (regnum > 15))
     return NULL;
 *rn = (int32) regnum;

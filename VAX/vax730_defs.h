@@ -38,7 +38,11 @@
 */
 
 #ifndef FULL_VAX
-#define FULL_VAX        1
+#define FULL_VAX        1           /* Full Instruction Set Implemented */
+#endif
+
+#ifndef CMPM_VAX
+#define CMPM_VAX        1           /* Compatibility Mode Implemented */
 #endif
 
 #ifndef VAX_730_DEFS_H_
@@ -100,21 +104,25 @@
 
 /* 780 microcode patch 37 - only test LR<23:0> for appropriate length */
 
-#define ML_LR_TEST(r)   if (((uint32)((r) & 0xFFFFFF)) > 0x200000) RSVD_OPND_FAULT
+#define ML_LR_TEST(r)   if (((uint32)((r) & 0xFFFFFF)) > 0x200000) RSVD_OPND_FAULT(ML_LR_TEST)
 
 /* 780 microcode patch 38 - only test PxBR<31>=1, PxBR<30> = 0, and xBR<1:0> = 0 */
 
 #define ML_PXBR_TEST(r) if (((((uint32)(r)) & 0x80000000) == 0) || \
-                            ((((uint32)(r)) & 0x40000003) != 0)) RSVD_OPND_FAULT
-#define ML_SBR_TEST(r)  if ((((uint32)(r)) & 0x00000003) != 0) RSVD_OPND_FAULT
+                            ((((uint32)(r)) & 0x40000003) != 0)) RSVD_OPND_FAULT(ML_PXBR_TEST)
+#define ML_SBR_TEST(r)  if ((((uint32)(r)) & 0x00000003) != 0) RSVD_OPND_FAULT(ML_SBR_TEST)
 
 /* 780 microcode patch 78 - test xCBB<1:0> = 0 */
 
-#define ML_PA_TEST(r)   if ((((uint32)(r)) & 0x00000003) != 0) RSVD_OPND_FAULT
+#define ML_PA_TEST(r)   if ((((uint32)(r)) & 0x00000003) != 0) RSVD_OPND_FAULT(ML_PA_TEST)
 
-#define LP_AST_TEST(r)  if ((r) > AST_MAX) RSVD_OPND_FAULT
-#define LP_MBZ84_TEST(r) if ((((uint32)(r)) & 0xF8C00000) != 0) RSVD_OPND_FAULT
-#define LP_MBZ92_TEST(r) if ((((uint32)(r)) & 0x7FC00000) != 0) RSVD_OPND_FAULT
+#define LP_AST_TEST(r)  if ((r) > AST_MAX) RSVD_OPND_FAULT(LP_AST_TEST)
+#define LP_MBZ84_TEST(r) if ((((uint32)(r)) & 0xF8C00000) != 0) RSVD_OPND_FAULT(LP_MBZ84_TEST)
+#define LP_MBZ92_TEST(r) if ((((uint32)(r)) & 0x7FC00000) != 0) RSVD_OPND_FAULT(LP_MBZ92_TEST)
+
+#define MT_AST_TEST(r)  r = (r) & 07; \
+                        if ((r) > AST_MAX) RSVD_OPND_FAULT(MT_AST_TEST)
+#define IDX_IMM_TEST
 
 /* Memory */
 
@@ -131,10 +139,10 @@
                         { UNIT_MSIZE, (4u << 20), NULL, "4M", &cpu_set_size, NULL, NULL, "Set Memory to 4M bytes" }, \
                         { UNIT_MSIZE, (5u << 20), NULL, "5M", &cpu_set_size, NULL, NULL, "Set Memory to 5M bytes" }, \
                         { MTAB_XTD|MTAB_VDV|MTAB_NMO, 0, "MEMORY", NULL, NULL, &cpu_show_memory, NULL, "Display memory configuration" }
-extern t_stat cpu_show_memory (FILE* st, UNIT* uptr, int32 val, void* desc);
+extern t_stat cpu_show_memory (FILE* st, UNIT* uptr, int32 val, CONST void* desc);
 #define CPU_MODEL_MODIFIERS                                                                     \
                         { MTAB_XTD|MTAB_VDV, 0, "MODEL", NULL,                                  \
-                              NULL, &cpu_show_model, NULL, "Display the simulator CPU Model" }
+                              NULL, &cpu_show_model, NULL, "Display the simulator CPU Model" },
 
 /* Unibus I/O registers */
 
@@ -201,8 +209,7 @@ extern t_stat cpu_show_memory (FILE* st, UNIT* uptr, int32 val, void* desc);
 
 /* I/O system definitions */
 
-#define DZ_MUXES        4                               /* max # of DZV muxes */
-#define DZ_LINES        8                               /* lines per DZV mux */
+#define DZ_MUXES        4                               /* default # of DZV muxes */
 #define VH_MUXES        4                               /* max # of DHQ muxes */
 #define DLX_LINES       16                              /* max # of KL11/DL11's */
 #define DCX_LINES       16                              /* max # of DC11's */
@@ -238,7 +245,17 @@ typedef struct {
     int32               vloc;                           /* locator */
     int32               vec;                            /* value */
     int32               (*ack[VEC_DEVMAX])(void);       /* ack routine */
-    uint32              ulnt;                           /* IO length per unit */
+    uint32              ulnt;                           /* IO length per-device */
+                                                        /* Only need to be populated */
+                                                        /* when numunits != num devices */
+    int32               numc;                           /* Number of controllers */
+                                                        /* this field handles devices */
+                                                        /* where multiple instances are */
+                                                        /* simulated through a single */
+                                                        /* DEVICE structure (e.g., DZ, VH, DL, DC). */
+                                                        /* Populated by auto-configure */
+    DEVICE              *dptr;                          /* back pointer to related device */
+                                                        /* Populated by auto-configure */
     } DIB;
 
 /* Unibus I/O page layout - see pdp11_io_lib.c for address layout details */
@@ -246,6 +263,9 @@ typedef struct {
 #define IOBA_AUTO       (0)                             /* Assigned by Auto Configure */
 
 /* Interrupt assignments; within each level, priority is right to left */
+
+#define INT_V_DTA       0                               /* BR6 */
+#define INT_V_CR        1
 
 #define INT_V_DZRX      0                               /* BR5 */
 #define INT_V_DZTX      1
@@ -261,16 +281,20 @@ typedef struct {
 #define INT_V_DMCTX     11
 #define INT_V_DUPRX     12
 #define INT_V_DUPTX     13
+#define INT_V_RK        14
+#define INT_V_CH        15
 
 #define INT_V_LPT       0                               /* BR4 */
 #define INT_V_PTR       1
 #define INT_V_PTP       2
-#define INT_V_CR        3
+//#define XXXXXXXX        3                             /* Former CR */
 #define INT_V_VHRX      4
 #define INT_V_VHTX      5
 #define INT_V_TDRX      6
 #define INT_V_TDTX      7
 
+#define INT_DTA         (1u << INT_V_DTA)
+#define INT_CR          (1u << INT_V_CR)
 #define INT_DZRX        (1u << INT_V_DZRX)
 #define INT_DZTX        (1u << INT_V_DZTX)
 #define INT_HK          (1u << INT_V_HK)
@@ -286,14 +310,17 @@ typedef struct {
 #define INT_VHTX        (1u << INT_V_VHTX)
 #define INT_PTR         (1u << INT_V_PTR)
 #define INT_PTP         (1u << INT_V_PTP)
-#define INT_CR          (1u << INT_V_CR)
 #define INT_DMCRX       (1u << INT_V_DMCRX)
 #define INT_DMCTX       (1u << INT_V_DMCTX)
 #define INT_DUPRX       (1u << INT_V_DUPRX)
 #define INT_DUPTX       (1u << INT_V_DUPTX)
+#define INT_RK          (1u << INT_V_RK)
 #define INT_TDRX        (1u << INT_V_TDRX)
 #define INT_TDTX        (1u << INT_V_TDTX)
+#define INT_CH          (1u << INT_V_CH)
 
+#define IPL_DTA         (0x16 - IPL_HMIN)
+#define IPL_CR          (0x16 - IPL_HMIN)
 #define IPL_DZRX        (0x15 - IPL_HMIN)
 #define IPL_DZTX        (0x15 - IPL_HMIN)
 #define IPL_HK          (0x15 - IPL_HMIN)
@@ -303,17 +330,18 @@ typedef struct {
 #define IPL_TS          (0x15 - IPL_HMIN)
 #define IPL_RY          (0x15 - IPL_HMIN)
 #define IPL_XU          (0x15 - IPL_HMIN)
+#define IPL_CH          (0x15 - IPL_HMIN)
 #define IPL_RB          (0x15 - IPL_HMIN)
 #define IPL_LPT         (0x14 - IPL_HMIN)
 #define IPL_PTR         (0x14 - IPL_HMIN)
 #define IPL_PTP         (0x14 - IPL_HMIN)
-#define IPL_CR          (0x14 - IPL_HMIN)
 #define IPL_VHRX        (0x14 - IPL_HMIN)
 #define IPL_VHTX        (0x14 - IPL_HMIN)
 #define IPL_DMCRX       (0x15 - IPL_HMIN)
 #define IPL_DMCTX       (0x15 - IPL_HMIN)
 #define IPL_DUPRX       (0x15 - IPL_HMIN)
 #define IPL_DUPTX       (0x15 - IPL_HMIN)
+#define IPL_RK          (0x15 - IPL_HMIN)
 #define IPL_TDRX        (0x14 - IPL_HMIN)
 #define IPL_TDTX        (0x14 - IPL_HMIN)
 
@@ -334,12 +362,6 @@ typedef struct {
 #define CLR_INT(dv)     int_req[IPL_##dv] = int_req[IPL_##dv] & ~(INT_##dv)
 #define IORETURN(f,v)   ((f)? (v): SCPE_OK)             /* cond error return */
 
-/* Logging */
-
-#define LOG_CPU_I       0x1                             /* intexc */
-#define LOG_CPU_R       0x2                             /* REI */
-#define LOG_CPU_P       0x4                             /* context */
-
 /* Boot definitions */
 
 #define BOOT_HK         1                               /* device codes */
@@ -352,10 +374,10 @@ typedef struct {
 
 int32 Map_ReadB (uint32 ba, int32 bc, uint8 *buf);
 int32 Map_ReadW (uint32 ba, int32 bc, uint16 *buf);
-int32 Map_WriteB (uint32 ba, int32 bc, uint8 *buf);
-int32 Map_WriteW (uint32 ba, int32 bc, uint16 *buf);
+int32 Map_WriteB (uint32 ba, int32 bc, const uint8 *buf);
+int32 Map_WriteW (uint32 ba, int32 bc, const uint16 *buf);
 
-t_stat show_nexus (FILE *st, UNIT *uptr, int32 val, void *desc);
+t_stat show_nexus (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 
 void sbi_set_errcnf (void);
 

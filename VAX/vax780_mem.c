@@ -88,8 +88,6 @@ uint32 mcr_c[MCTL_NUM];
 uint32 mcr_d[MCTL_NUM];
 uint32 rom_lw[MCTL_NUM][ROMSIZE >> 2];
 
-extern UNIT cpu_unit;
-
 t_stat mctl_reset (DEVICE *dptr);
 const char *mctl_description (DEVICE *dptr);
 t_stat mctl_rdreg (int32 *val, int32 pa, int32 mode);
@@ -291,18 +289,18 @@ sprintf (buf, "Memory controller %d", (int)(dptr-mctl_dev));
 return buf;
 }
 
-t_stat cpu_show_memory (FILE* st, UNIT* uptr, int32 val, void* desc)
+t_stat cpu_show_memory (FILE* st, UNIT* uptr, int32 val, CONST void* desc)
 {
 struct {
     uint32 capacity;
-    char *option;
+    const char *option;
     } boards[] = {
         { 4096, "MS780-JD M8374 array"},
         { 1024, "MS780-FD M8373 array"},
         {  256, "MS780-C M8210 array"}, 
         {   64, "MS780-C M8211 array"}, 
         {    0, NULL}};
-uint32 i, slot, bd;
+uint32 i, slot, bd = 0;
 
 for (i = 0; i < MCTL_NUM; i++) {
     uint32 baseaddr = ((mcr_b[i] & MCRB_SA) << 1);

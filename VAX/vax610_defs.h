@@ -36,8 +36,16 @@
       2000 2000 - 3FFF FFFF             reserved
 */
 
-#ifdef FULL_VAX                                         /* subset VAX */
+#ifdef FULL_VAX                     /* subset VAX */
 #undef FULL_VAX
+#endif
+
+#ifdef CMPM_VAX
+#undef CMPM_VAX                     /* No Compatibility Mode */
+#endif
+
+#ifndef NOEXS_VAX
+#define NOEXS_VAX       1           /* No Extra String Instructions Implemented */
 #endif
 
 #ifndef VAX_610_DEFS_H_
@@ -46,7 +54,7 @@
 /* Microcode constructs */
 
 #define VAX610_SID      (7 << 24)                       /* system ID */
-#define VAX610_FLOAT    (1 << 16)                       /* floating point type */
+#define VAX610_FLOAT    (1 << 16)                       /* floating point type D=1, G=0 */
 #define VAX610_MREV     (5 << 8)                        /* microcode revision */
 #define VAX610_HWREV    1                               /* hardware revision */
 #define CON_HLTPIN      0x0200                          /* external CPU halt */
@@ -87,8 +95,14 @@
 
 #define CPU_MODEL_MODIFIERS { MTAB_XTD|MTAB_VDV, 0, "LEDS", NULL,                               \
                               NULL, &cpu_show_leds, NULL, "Display the CPU LED values" },       \
-                            { MTAB_XTD|MTAB_VDV, 0, "MODEL", "MODEL={MICROVAX|VAXSTATION}",     \
-                              &cpu_set_model, &cpu_show_model, NULL, "Set/Show the simulator CPU Model" }
+                            { MTAB_XTD|MTAB_VDV, 0, "MODEL", "MODEL={MicroVAX|VAXStation}",     \
+                              &cpu_set_model, &cpu_show_model, NULL, "Set/Show the simulator CPU Model" },
+#define CPU_INSTRUCTION_SET (VAX_BASE | VAX_GFLOAT)
+#define CPU_INST_MODIFIERS  { MTAB_XTD|MTAB_VDV|MTAB_VALR|MTAB_NMO, 0, "INSTRUCTIONS", "INSTRUCTIONS={G-FLOAT|D-FLOAT}", \
+                              &vax610_set_instruction_set, NULL, NULL,                 "Set the CPU Instruction Set" },                    \
+                            { MTAB_XTD|MTAB_VDV, 0, "INSTRUCTIONS", NULL,                                                                    \
+                              NULL,                     &cpu_show_instruction_set, NULL, "Show the CPU Instruction Set (SHOW -V)" },
+t_stat vax610_set_instruction_set (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
 
 /* QVSS memory space */
 
@@ -96,6 +110,10 @@
 #define QVMSIZE         (1u << QVMAWIDTH)               /* QVSS mem length */
 #define QVMAMASK        (QVMSIZE - 1)                   /* QVSS mem addr mask */
 #define QVMBASE         0x3C0000                        /* QVSS mem base */
+#define ADDR_IS_QVM(x)  (vc_buf &&                      \
+                         (((uint32) (x)) >= QVMBASE) && \
+                         (((uint32) (x)) < (QVMBASE + QVMSIZE)))
+extern uint32 *vc_buf;
 
 /* Memory */
 
@@ -115,7 +133,7 @@
                         { UNIT_MSIZE, (1u << 21), NULL, "2M",   &cpu_set_size, NULL, NULL, "Set Memory to 2M bytes" },  \
                         { UNIT_MSIZE, (1u << 22), NULL, "4M",   &cpu_set_size, NULL, NULL, "Set Memory to 4M bytes" },  \
                         { MTAB_XTD|MTAB_VDV|MTAB_NMO, 0, "MEMORY", NULL, NULL, &cpu_show_memory, NULL, "Display memory configuration" }
-extern t_stat cpu_show_memory (FILE* st, UNIT* uptr, int32 val, void* desc);
+extern t_stat cpu_show_memory (FILE* st, UNIT* uptr, int32 val, CONST void* desc);
 
 /* Qbus I/O page */
 
@@ -123,8 +141,9 @@ extern t_stat cpu_show_memory (FILE* st, UNIT* uptr, int32 val, void* desc);
 #define IOPAGESIZE      (1u << IOPAGEAWIDTH)            /* IO page length */
 #define IOPAGEMASK      (IOPAGESIZE - 1)                /* IO addr mask */
 #define IOPAGEBASE      0x20000000                      /* IO page base */
-#define ADDR_IS_IO(x)   ((((uint32) (x)) >= IOPAGEBASE) && \
-                        (((uint32) (x)) < (IOPAGEBASE + IOPAGESIZE)))
+#define ADDR_IS_IO(x)   ((ADDR_IS_QVM (x)) ||               \
+                         ((((uint32) (x)) >= IOPAGEBASE) && \
+                          (((uint32) (x)) < (IOPAGEBASE + IOPAGESIZE))))
 
 /* Other address spaces */
 
@@ -132,7 +151,7 @@ extern t_stat cpu_show_memory (FILE* st, UNIT* uptr, int32 val, void* desc);
 #define ADDR_IS_ROM(x)  (0)
 #define ADDR_IS_NVR(x)  (0)
 
-/* Machine specific reserved operand tests (all NOPs) */
+/* Machine specific reserved operand tests (mostly NOPs) */
 
 #define ML_PA_TEST(r)
 #define ML_LR_TEST(r)
@@ -141,6 +160,9 @@ extern t_stat cpu_show_memory (FILE* st, UNIT* uptr, int32 val, void* desc);
 #define LP_AST_TEST(r)
 #define LP_MBZ84_TEST(r)
 #define LP_MBZ92_TEST(r)
+
+#define MT_AST_TEST(r)  if ((r) > AST_MAX) RSVD_OPND_FAULT(MT_AST_TEST)
+#define IDX_IMM_TEST
 
 /* Qbus I/O modes */
 
@@ -167,8 +189,7 @@ extern t_stat cpu_show_memory (FILE* st, UNIT* uptr, int32 val, void* desc);
 
 /* I/O system definitions */
 
-#define DZ_MUXES        4                               /* max # of DZV muxes */
-#define DZ_LINES        4                               /* lines per DZV mux */
+#define DZ_MUXES        4                               /* default # of DZV muxes */
 #define VH_MUXES        4                               /* max # of DHQ muxes */
 #define MT_MAXFR        (1 << 16)                       /* magtape max rec */
 
@@ -196,7 +217,17 @@ typedef struct {
     int32               vloc;                           /* locator */
     int32               vec;                            /* value */
     int32               (*ack[VEC_DEVMAX])(void);       /* ack routine */
-    uint32              ulnt;                           /* IO length per unit */
+    uint32              ulnt;                           /* IO length per-device */
+                                                        /* Only need to be populated */
+                                                        /* when numunits != num devices */
+    int32               numc;                           /* Number of controllers */
+                                                        /* this field handles devices */
+                                                        /* where multiple instances are */
+                                                        /* simulated through a single */
+                                                        /* DEVICE structure (e.g., DZ, VH, DL, DC). */
+                                                        /* Populated by auto-configure */
+    DEVICE              *dptr;                          /* back pointer to related device */
+                                                        /* Populated by auto-configure */
     } DIB;
 
 /* Qbus I/O page layout - see pdp11_io_lib.c for address layout details */
@@ -317,12 +348,7 @@ typedef struct {
 #define SET_INT(dv)     int_req[IPL_##dv] = int_req[IPL_##dv] | (INT_##dv)
 #define CLR_INT(dv)     int_req[IPL_##dv] = int_req[IPL_##dv] & ~(INT_##dv)
 #define IORETURN(f,v)   ((f)? (v): SCPE_OK)             /* cond error return */
-
-/* Logging */
-
-#define LOG_CPU_I       0x1                             /* intexc */
-#define LOG_CPU_R       0x2                             /* REI */
-#define LOG_CPU_P       0x4                             /* context */
+extern int32 int_req[IPL_HLVL];                         /* intr, IPL 14-17 */
 
 /* System model */
 
@@ -332,8 +358,8 @@ extern int32 sys_model;
 
 int32 Map_ReadB (uint32 ba, int32 bc, uint8 *buf);
 int32 Map_ReadW (uint32 ba, int32 bc, uint16 *buf);
-int32 Map_WriteB (uint32 ba, int32 bc, uint8 *buf);
-int32 Map_WriteW (uint32 ba, int32 bc, uint16 *buf);
+int32 Map_WriteB (uint32 ba, int32 bc, const uint8 *buf);
+int32 Map_WriteW (uint32 ba, int32 bc, const uint16 *buf);
 
 /* Function prototypes for system-specific unaligned support */
 
@@ -342,7 +368,7 @@ int32 ReadRegU (uint32 pa, int32 lnt);
 void WriteIOU (uint32 pa, int32 val, int32 lnt);
 void WriteRegU (uint32 pa, int32 val, int32 lnt);
 
-t_stat cpu_show_leds (FILE *st, UNIT *uptr, int32 val, void *desc);
+t_stat cpu_show_leds (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 
 #include "pdp11_io_lib.h"
 

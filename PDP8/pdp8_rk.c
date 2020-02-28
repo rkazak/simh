@@ -138,11 +138,11 @@ int32 rk_ma = 0;                                        /* memory address */
 int32 rk_swait = 10, rk_rwait = 10;                     /* seek, rotate wait */
 int32 rk_stopioe = 1;                                   /* stop on error */
 
-DEVICE rk_dev;
 int32 rk (int32 IR, int32 AC);
 t_stat rk_svc (UNIT *uptr);
 t_stat rk_reset (DEVICE *dptr);
 t_stat rk_boot (int32 unitno, DEVICE *dptr);
+const char *rk_description (DEVICE *dptr);
 void rk_go (int32 function, int32 cylinder);
 
 /* RK-8E data structures
@@ -167,15 +167,15 @@ UNIT rk_unit[] = {
     };
 
 REG rk_reg[] = {
-    { ORDATA (RKSTA, rk_sta, 12) },
-    { ORDATA (RKCMD, rk_cmd, 12) },
-    { ORDATA (RKDA, rk_da, 12) },
-    { ORDATA (RKMA, rk_ma, 12) },
-    { FLDATA (BUSY, rk_busy, 0) },
-    { FLDATA (INT, int_req, INT_V_RK) },
-    { DRDATA (STIME, rk_swait, 24), PV_LEFT },
-    { DRDATA (RTIME, rk_rwait, 24), PV_LEFT },
-    { FLDATA (STOP_IOE, rk_stopioe, 0) },
+    { ORDATAD (RKSTA, rk_sta, 12, "status") },
+    { ORDATAD (RKCMD, rk_cmd, 12, "disk command") },
+    { ORDATAD (RKDA, rk_da, 12, "disk address") },
+    { ORDATAD (RKMA, rk_ma, 12, "current memory address") },
+    { FLDATAD (BUSY, rk_busy, 0, "control busy flag") },
+    { FLDATAD (INT, int_req, INT_V_RK, "interrupt pending flag") },
+    { DRDATAD (STIME, rk_swait, 24, "seek time, per cylinder"), PV_LEFT },
+    { DRDATAD (RTIME, rk_rwait, 24, "rotational delay"), PV_LEFT },
+    { FLDATAD (STOP_IOE, rk_stopioe, 0, "stop on I/O error") },
     { ORDATA (DEVNUM, rk_dib.dev, 6), REG_HRO },
     { NULL }
     };
@@ -193,7 +193,9 @@ DEVICE rk_dev = {
     RK_NUMDR, 8, 24, 1, 8, 12,
     NULL, NULL, &rk_reset,
     &rk_boot, NULL, NULL,
-    &rk_dib, DEV_DISABLE
+    &rk_dib, DEV_DISABLE, 0,
+    NULL, NULL, NULL, NULL, NULL, NULL,
+    &rk_description
     };
 
 /* IOT routine */
@@ -461,4 +463,9 @@ for (i = 0; i < BOOT_LEN; i++)
 M[BOOT_UNIT] = (unitno & RK_M_NUMDR) << 1;
 cpu_set_bootpc (BOOT_START);
 return SCPE_OK;
+}
+
+const char *rk_description (DEVICE *dptr)
+{
+return "RK8E/RK05 cartridge disk";
 }

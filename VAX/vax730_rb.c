@@ -197,8 +197,6 @@
 #define DBG_RD          0x0004                          /* disk reads */
 #define DBG_WR          0x0008                          /* disk writes */
 
-extern int32 int_req[IPL_HLVL];
-
 uint16 *rbxb = NULL;                                     /* xfer buffer */
 int32 rbcs = 0;                                         /* control/status */
 int32 rbba = 0;                                         /* memory address */
@@ -217,9 +215,9 @@ t_stat rb_svc (UNIT *uptr);
 t_stat rb_reset (DEVICE *dptr);
 const char *rb_description (DEVICE *dptr);
 void rb_set_done (int32 error);
-t_stat rb_attach (UNIT *uptr, char *cptr);
-t_stat rb_set_size (UNIT *uptr, int32 val, char *cptr, void *desc);
-t_stat rb_set_bad (UNIT *uptr, int32 val, char *cptr, void *desc);
+t_stat rb_attach (UNIT *uptr, CONST char *cptr);
+t_stat rb_set_size (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+t_stat rb_set_bad (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
 
 /* RB730 data structures
 
@@ -233,7 +231,7 @@ t_stat rb_set_bad (UNIT *uptr, int32 val, char *cptr, void *desc);
 
 DIB rb_dib = {
     IOBA_AUTO, IOLN_RB, &rb_rd16, &rb_wr16,
-    1, IVCL (RB), VEC_AUTO, { NULL } };
+    1, IVCL (RB), VEC_AUTO, { NULL }, IOLN_RB };
 
 UNIT rb_unit[] = {
     { UDATA (&rb_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+
@@ -646,7 +644,7 @@ return "RB730 disk controller";
 
 /* Attach routine */
 
-t_stat rb_attach (UNIT *uptr, char *cptr)
+t_stat rb_attach (UNIT *uptr, CONST char *cptr)
 {
 uint32 p;
 t_stat r;
@@ -668,7 +666,7 @@ return SCPE_OK;
 
 /* Set size routine */
 
-t_stat rb_set_size (UNIT *uptr, int32 val, char *cptr, void *desc)
+t_stat rb_set_size (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 if (uptr->flags & UNIT_ATT)
     return SCPE_ALATT;
@@ -678,7 +676,7 @@ return SCPE_OK;
 
 /* Set bad block routine */
 
-t_stat rb_set_bad (UNIT *uptr, int32 val, char *cptr, void *desc)
+t_stat rb_set_bad (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 return pdp11_bad_block (uptr, RB_NUMSC(uptr), RB_NUMWD(uptr));
 }

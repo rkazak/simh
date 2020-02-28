@@ -45,7 +45,6 @@
 -------------------------------------------------------------------------------
 */
 #include "altairz80_defs.h"
-#include <assert.h>
 
 /**  Typedefs & Defines  **************************************/
 #define HDSK_SECTOR_SIZE        256             /* size of sector */
@@ -89,7 +88,7 @@ extern t_stat install_bootrom(const int32 bootrom[], const int32 size, const int
 #define CMD_INITIALIZE  14
 #define CMD_MAX         (CMD_INITIALIZE + 1)
 
-static char* commandMessage[CMD_MAX] = {
+static const char* commandMessage[CMD_MAX] = {
     "Seek",                     //  CMD_SEEK        0
     "Undefined 1",              //                  1
     "Write Sector",             //  CMD_WRITE_SEC   2
@@ -162,9 +161,10 @@ static int32 hdAdata(const int32 port, const int32 io, const int32 data);
 static void doRead(const int32 port, const int32 data, const uint32 command);
 static void doWrite(const int32 port, const int32 data, const uint32 command);
 static t_stat dsk_reset(DEVICE *dptr);
-static char* cmdTranslate(const int32 cmd);
+static const char* cmdTranslate(const int32 cmd);
 extern uint32 sim_map_resource(uint32 baseaddr, uint32 size, uint32 resource_type,
                                int32 (*routine)(const int32, const int32, const int32), uint8 unmap);
+static const char* mhdsk_description(DEVICE *dptr);
 
 /* 88DSK Standard I/O Data Structures */
 
@@ -178,7 +178,11 @@ static UNIT dsk_unit[] = {
     { UDATA (NULL, UNIT_FIX + UNIT_ATTABLE + UNIT_DISABLE + UNIT_ROABLE, HDSK_CAPACITY) },
     { UDATA (NULL, UNIT_FIX + UNIT_ATTABLE + UNIT_DISABLE + UNIT_ROABLE, HDSK_CAPACITY) }};
 
-#define MHDSK_NAME  "MITS Hard Disk MHDSK"
+#define MHDSK_NAME  "MITS Hard Disk"
+
+static const char* mhdsk_description(DEVICE *dptr) {
+    return MHDSK_NAME;
+}
 
 static MTAB dsk_mod[] = {
     { UNIT_DSK_WLK,     0,                  "WRTENB",    "WRTENB",  NULL, NULL, NULL,
@@ -202,7 +206,7 @@ DEVICE mhdsk_dev = {
     NULL, NULL, &dsk_reset,
     &mhdsk_boot, NULL, NULL,
     NULL, (DEV_DISABLE | DEV_DEBUG), 0,
-    mhdsk_dt, NULL, MHDSK_NAME
+    mhdsk_dt, NULL, NULL, NULL, NULL, NULL, &mhdsk_description
 };
 
 static int32 bootrom_mhdsk[BOOTROM_SIZE_MHDSK] = {
@@ -243,12 +247,12 @@ static int32 bootrom_mhdsk[BOOTROM_SIZE_MHDSK] = {
 static t_stat mhdsk_boot(int32 unitno, DEVICE *dptr) {
     const t_bool installSuccessful = (install_bootrom(bootrom_mhdsk, BOOTROM_SIZE_MHDSK,
                                                       MHDSK_BOOT_ADDRESS, FALSE) == SCPE_OK);
-    assert(installSuccessful);
+    ASSURE(installSuccessful);
     *((int32 *) sim_PC -> loc) = MHDSK_BOOT_ADDRESS;
     return SCPE_OK;
 }
 
-static char* cmdTranslate(const int32 cmd) {
+static const char* cmdTranslate(const int32 cmd) {
     static char result[128];
     if ((0 <= cmd) && (cmd < CMD_MAX))
         return commandMessage[cmd];

@@ -46,16 +46,6 @@
 
 #include "vax_defs.h"
 
-#if defined (FULL_VAX)
-
-extern int32 R[16];
-extern int32 PSL;
-extern int32 trpirq;
-extern int32 p1;
-extern jmp_buf save_env;
-
-extern int32 Test (uint32 va, int32 acc, int32 *status);
-
 #define WORDSWAP(x)     ((((x) & WMASK) << 16) | (((x) >> 16) & WMASK))
 
 typedef struct {
@@ -91,11 +81,11 @@ int32 op_mulh (int32 *opnd, int32 *hf);
 int32 op_divh (int32 *opnd, int32 *hf);
 int32 op_emodh (int32 *opnd, int32 *hflt, int32 *intgr, int32 *flg);
 void op_polyh (int32 *opnd, int32 acc);
-void h_write_b (int32 spec, int32 va, int32 val, int32 acc);
-void h_write_w (int32 spec, int32 va, int32 val, int32 acc);
-void h_write_l (int32 spec, int32 va, int32 val, int32 acc);
-void h_write_q (int32 spec, int32 va, int32 vl, int32 vh, int32 acc);
-void h_write_o (int32 spec, int32 va, int32 *val, int32 acc);
+void h_write_b (int32 spec, int32 va, int32 val, int32 acc, InstHistory *hst);
+void h_write_w (int32 spec, int32 va, int32 val, int32 acc, InstHistory *hst);
+void h_write_l (int32 spec, int32 va, int32 val, int32 acc, InstHistory *hst);
+void h_write_q (int32 spec, int32 va, int32 vl, int32 vh, int32 acc, InstHistory *hst);
+void h_write_o (int32 spec, int32 va, int32 *val, int32 acc, InstHistory *hst);
 void vax_hadd (UFPH *a, UFPH *b, uint32 mlo);
 void vax_hmul (UFPH *a, UFPH *b, uint32 mlo);
 void vax_hmod (UFPH *a, int32 *intgr, int32 *flg);
@@ -120,10 +110,15 @@ static int32 z_octa[4] = { 0, 0, 0, 0 };
 
 /* Octaword instructions */
 
-int32 op_octa (int32 *opnd, int32 cc, int32 opc, int32 acc, int32 spec, int32 va)
+int32 op_octa (int32 *opnd, int32 cc, int32 opc, int32 acc, int32 spec, int32 va, InstHistory *hst)
 {
 int32 r, rh, temp, flg;
 int32 r_octa[4];
+
+if ((cpu_instruction_set & VAX_EXTAC) == 0) {      /* Implemented? */
+    RSVD_INST_FAULT(opc);
+    return cc;
+    }
 
 switch (opc) {
 
@@ -147,7 +142,7 @@ switch (opc) {
 */
 
     case MOVAO:
-        h_write_l (spec, va, opnd[0], acc);             /* write operand */
+        h_write_l (spec, va, opnd[0], acc, hst);        /* write operand */
         CC_IIZP_L (opnd[0]);                            /* set cc's */
         break;
 
@@ -159,7 +154,7 @@ switch (opc) {
 */
 
     case CLRO:
-        h_write_o (spec, va, z_octa, acc);              /* write 0's */
+        h_write_o (spec, va, z_octa, acc, hst);         /* write 0's */
         CC_ZZ1P;                                        /* set cc's */
         break;
 
@@ -182,17 +177,17 @@ switch (opc) {
 */
 
     case MOVO:
-        h_write_o (spec, va, opnd, acc);                /* write src */
+        h_write_o (spec, va, opnd, acc, hst);           /* write src */
         CC_IIZP_O (opnd[0], opnd[1], opnd[2], opnd[3]); /* set cc's */
         break;
 
     case MOVH:
         if ((r = op_tsth (opnd[0]))) {                  /* test for 0 */
-            h_write_o (spec, va, opnd, acc);            /* nz, write result */
+            h_write_o (spec, va, opnd, acc, hst);       /* nz, write result */
             CC_IIZP_FP (r);                             /* set cc's */
             }
         else {                                          /* zero */
-            h_write_o (spec, va, z_octa, acc);          /* write 0 */
+            h_write_o (spec, va, z_octa, acc, hst);     /* write 0 */
             cc = (cc & CC_C) | CC_Z;                    /* set cc's */
             }
         break;
@@ -200,11 +195,11 @@ switch (opc) {
     case MNEGH:
         if ((r = op_tsth (opnd[0]))) {                  /* test for 0 */
             opnd[0] = opnd[0] ^ FPSIGN;                 /* nz, invert sign */
-            h_write_o (spec, va, opnd, acc);            /* write result */
+            h_write_o (spec, va, opnd, acc, hst);       /* write result */
             CC_IIZZ_FP (opnd[0]);                       /* set cc's */
             }
         else {                                          /* zero */
-            h_write_o (spec, va, z_octa, acc);          /* write 0 */
+            h_write_o (spec, va, z_octa, acc, hst);     /* write 0 */
             cc = CC_Z;                                  /* set cc's */
             }
         break;
@@ -229,19 +224,19 @@ switch (opc) {
 
     case CVTBH:
         r = op_cvtih (SXTB (opnd[0]), r_octa);          /* convert */
-        h_write_o (spec, va, r_octa, acc);              /* write reslt */
+        h_write_o (spec, va, r_octa, acc, hst);         /* write reslt */
         CC_IIZZ_FP (r);                                 /* set cc's */
         break;
 
     case CVTWH:
         r = op_cvtih (SXTW (opnd[0]), r_octa);          /* convert */
-        h_write_o (spec, va, r_octa, acc);              /* write result */
+        h_write_o (spec, va, r_octa, acc, hst);         /* write result */
         CC_IIZZ_FP (r);                                 /* set cc's */
         break;
 
     case CVTLH:
         r = op_cvtih (opnd[0], r_octa);                 /* convert */
-        h_write_o (spec, va, r_octa, acc);              /* write result */
+        h_write_o (spec, va, r_octa, acc, hst);         /* write result */
         CC_IIZZ_FP (r);                                 /* set cc's */
         break;
 
@@ -255,7 +250,7 @@ switch (opc) {
 
     case CVTHB:
         r = op_cvthi (opnd, &flg, opc) & BMASK;         /* convert */
-        h_write_b (spec, va, r, acc);                   /* write result */
+        h_write_b (spec, va, r, acc, hst);              /* write result */
         CC_IIZZ_B (r);                                  /* set cc's */
         if (flg) {
             V_INTOV;
@@ -264,7 +259,7 @@ switch (opc) {
 
     case CVTHW:
         r = op_cvthi (opnd, &flg, opc) & WMASK;         /* convert */
-        h_write_w (spec, va, r, acc);                   /* write result */
+        h_write_w (spec, va, r, acc, hst);              /* write result */
         CC_IIZZ_W (r);                                  /* set cc's */
         if (flg) {
             V_INTOV;
@@ -273,7 +268,7 @@ switch (opc) {
 
     case CVTHL: case CVTRHL:
         r = op_cvthi (opnd, &flg, opc) & LMASK;         /* convert */
-        h_write_l (spec, va, r, acc);                   /* write result */
+        h_write_l (spec, va, r, acc, hst);              /* write result */
         CC_IIZZ_L (r);                                  /* set cc's */
         if (flg) {
             V_INTOV;
@@ -290,7 +285,7 @@ switch (opc) {
 
     case CVTFH:
         r = op_cvtfdh (opnd[0], 0, r_octa);             /* convert */
-        h_write_o (spec, va, r_octa, acc);              /* write result */
+        h_write_o (spec, va, r_octa, acc, hst);         /* write result */
         CC_IIZZ_FP (r);                                 /* set cc's */
         break;
 
@@ -304,13 +299,13 @@ switch (opc) {
 
     case CVTDH:
         r = op_cvtfdh (opnd[0], opnd[1], r_octa);       /* convert */
-        h_write_o (spec, va, r_octa, acc);              /* write result */
+        h_write_o (spec, va, r_octa, acc, hst);         /* write result */
         CC_IIZZ_FP (r);                                 /* set cc's */
         break;
 
     case CVTGH:
         r = op_cvtgh (opnd[0], opnd[1], r_octa);        /* convert */
-        h_write_o (spec, va, r_octa, acc);              /* write result */
+        h_write_o (spec, va, r_octa, acc, hst);         /* write result */
         CC_IIZZ_FP (r);                                 /* set cc's */
         break;
 
@@ -324,19 +319,19 @@ switch (opc) {
 
     case CVTHF:
         r = op_cvthfd (opnd, NULL);                     /* convert */
-        h_write_l (spec, va, r, acc);                   /* write result */
+        h_write_l (spec, va, r, acc, hst);              /* write result */
         CC_IIZZ_FP (r);                                 /* set cc's */
         break;
 
     case CVTHD:
         r = op_cvthfd (opnd, &rh);                      /* convert */
-        h_write_q (spec, va, r, rh, acc);               /* write result */
+        h_write_q (spec, va, r, rh, acc, hst);          /* write result */
         CC_IIZZ_FP (r);                                 /* set cc's */
         break;
 
     case CVTHG:
         r = op_cvthg (opnd, &rh);                       /* convert */
-        h_write_q (spec, va, r, rh, acc);               /* write result */
+        h_write_q (spec, va, r, rh, acc, hst);          /* write result */
         CC_IIZZ_FP (r);                                 /* set cc's */
         break;
 
@@ -359,25 +354,25 @@ switch (opc) {
 
     case ADDH2: case ADDH3:
         r = op_addh (opnd, r_octa, FALSE);              /* add */
-        h_write_o (spec, va, r_octa, acc);              /* write result */
+        h_write_o (spec, va, r_octa, acc, hst);         /* write result */
         CC_IIZZ_FP (r);                                 /* set cc's */
         break;
 
     case SUBH2: case SUBH3:
         r = op_addh (opnd, r_octa, TRUE);               /* subtract */
-        h_write_o (spec, va, r_octa, acc);              /* write result */
+        h_write_o (spec, va, r_octa, acc, hst);         /* write result */
         CC_IIZZ_FP (r);                                 /* set cc's */
         break;
 
     case MULH2: case MULH3:
         r = op_mulh (opnd, r_octa);                     /* multiply */
-        h_write_o (spec, va, r_octa, acc);              /* write result */
+        h_write_o (spec, va, r_octa, acc, hst);         /* write result */
         CC_IIZZ_FP (r);                                 /* set cc's */
         break;
 
     case DIVH2: case DIVH3:
         r = op_divh (opnd, r_octa);                     /* divide */
-        h_write_o (spec, va, r_octa, acc);              /* write result */
+        h_write_o (spec, va, r_octa, acc, hst);         /* write result */
         CC_IIZZ_FP (r);                                 /* set cc's */
         break;
 
@@ -395,7 +390,7 @@ switch (opc) {
         r = op_addh (opnd + 4, r_octa, FALSE);          /* add + index */
         CC_IIZP_FP (r);                                 /* set cc's */
         temp = op_cmph (r_octa, opnd);                  /* result : limit */
-        h_write_o (spec, va, r_octa, acc);              /* write 2nd */
+        h_write_o (spec, va, r_octa, acc, hst);         /* write 2nd */
         if ((temp & CC_Z) || ((opnd[4] & FPSIGN)?       /* test br cond */
             !(temp & CC_N): (temp & CC_N)))
             cc = cc | LSIGN;                            /* hack for branch */
@@ -433,7 +428,7 @@ switch (opc) {
         if (opnd[9] >= 0)                               /* store 1st */
             R[opnd[9]] = temp;
         else Write (opnd[10], temp, L_LONG, WA);
-        h_write_o (spec, va, r_octa, acc);              /* write 2nd */
+        h_write_o (spec, va, r_octa, acc, hst);         /* write 2nd */
         CC_IIZZ_FP (r);                                 /* set cc's */
         if (flg) {
             V_INTOV;
@@ -441,7 +436,7 @@ switch (opc) {
         break;
 
     default:
-        RSVD_INST_FAULT;
+        RSVD_INST_FAULT(opc);
         }
 
 return cc;
@@ -457,7 +452,7 @@ int32 op_tsth (int32 val)
 if (val & H_EXP)                                        /* non-zero? */
     return val;
 if (val & FPSIGN)                                       /* reserved? */
-    RSVD_OPND_FAULT;
+    RSVD_OPND_FAULT(op_tsth);
 return 0;                                               /* clean 0 */
 }
 
@@ -628,7 +623,7 @@ int32 ptr = opnd[5];
 int32 i, wd[4], res[4];
 
 if (deg > 31)                                           /* deg > 31? fault */
-    RSVD_OPND_FAULT;
+    RSVD_OPND_FAULT(op_polyh);
 h_unpackh (&opnd[0], &a);                               /* unpack arg */
 wd[0] = Read (ptr, L_LONG, RD);                         /* get C0 */
 wd[1] = Read (ptr + 4, L_LONG, RD);
@@ -1021,7 +1016,7 @@ r->exp = FD_GETEXP (hi);                                /* get exponent */
 r->frac.f0 = r->frac.f1 = 0;                            /* low bits 0 */
 if (r->exp == 0) {                                      /* exp = 0? */
     if (r->sign)                                        /* if -, rsvd op */
-        RSVD_OPND_FAULT;
+        RSVD_OPND_FAULT(h_unpackfd);
     r->frac.f2 = r->frac.f3 = 0;                        /* else 0 */
     return;
     }
@@ -1038,7 +1033,7 @@ r->exp = G_GETEXP (hi);                                 /* get exponent */
 r->frac.f0 = r->frac.f1 = 0;                            /* low bits 0 */
 if (r->exp == 0) {                                      /* exp = 0? */
     if (r->sign)                                        /* if -, rsvd op */
-        RSVD_OPND_FAULT;
+        RSVD_OPND_FAULT(h_unpackg);
     r->frac.f2 = r->frac.f3 = 0;                        /* else 0 */
     return;
     }
@@ -1050,16 +1045,19 @@ return;
 
 void h_unpackh (int32 *hflt, UFPH *r)
 {
+int32 thflt0;
+
 r->sign = hflt[0] & FPSIGN;                             /* get sign */
 r->exp = H_GETEXP (hflt[0]);                            /* get exponent */
 if (r->exp == 0) {                                      /* exp = 0? */
     if (r->sign)                                        /* if -, rsvd op */
-        RSVD_OPND_FAULT;
+        RSVD_OPND_FAULT(h_unpackh);
     r->frac.f0 = r->frac.f1 = 0;                        /* else 0 */
     r->frac.f2 = r->frac.f3 = 0;
     return;
     }
-r->frac.f3 = WORDSWAP ((hflt[0] & ~(FPSIGN | H_EXP)) | H_HB);
+thflt0 = ((hflt[0] & ~(FPSIGN | H_EXP)) | H_HB);
+r->frac.f3 = WORDSWAP (thflt0);
 r->frac.f2 = WORDSWAP (hflt[1]);
 r->frac.f1 = WORDSWAP (hflt[2]);
 r->frac.f0 = WORDSWAP (hflt[3]);
@@ -1171,10 +1169,12 @@ hflt[3] = WORDSWAP (r->frac.f0);
 return hflt[0];
 }
 
-void h_write_b (int32 spec, int32 va, int32 val, int32 acc)
+void h_write_b (int32 spec, int32 va, int32 val, int32 acc, InstHistory *hst)
 {
 int32 rn;
 
+if (hst)
+    hst->res[0] = val;
 if (spec > (GRN | nPC))
     Write (va, val, L_BYTE, WA);
 else {
@@ -1184,10 +1184,12 @@ else {
 return;
 }
 
-void h_write_w (int32 spec, int32 va, int32 val, int32 acc)
+void h_write_w (int32 spec, int32 va, int32 val, int32 acc, InstHistory *hst)
 {
 int32 rn;
 
+if (hst)
+    hst->res[0] = val;
 if (spec > (GRN | nPC))
     Write (va, val, L_WORD, WA);
 else {
@@ -1197,18 +1199,24 @@ else {
 return;
 }
 
-void h_write_l (int32 spec, int32 va, int32 val, int32 acc)
+void h_write_l (int32 spec, int32 va, int32 val, int32 acc, InstHistory *hst)
 {
+if (hst)
+    hst->res[0] = val;
 if (spec > (GRN | nPC))
     Write (va, val, L_LONG, WA);
 else R[spec & 0xF] = val;
 return;
 }
 
-void h_write_q (int32 spec, int32 va, int32 vl, int32 vh, int32 acc)
+void h_write_q (int32 spec, int32 va, int32 vl, int32 vh, int32 acc, InstHistory *hst)
 {
 int32 rn, mstat;
 
+if (hst) {
+    hst->res[0] = vl;
+    hst->res[1] = vh;
+    }
 if (spec > (GRN | nPC)) {
     if ((Test (va + 7, WA, &mstat) >= 0) ||
         (Test (va, WA, &mstat) < 0))
@@ -1225,10 +1233,16 @@ else {
 return;
 }
 
-void h_write_o (int32 spec, int32 va, int32 *val, int32 acc)
+void h_write_o (int32 spec, int32 va, int32 *val, int32 acc, InstHistory *hst)
 {
 int32 rn, mstat;
 
+if (hst) {
+    hst->res[0] = val[0];
+    hst->res[1] = val[0];
+    hst->res[2] = val[0];
+    hst->res[3] = val[0];
+    }
 if (spec > (GRN | nPC)) {
     if ((Test (va + 15, WA, &mstat) >= 0) ||
         (Test (va, WA, &mstat) < 0))
@@ -1248,15 +1262,3 @@ else {
     }
 return;
 }
-
-#else
-
-extern jmp_buf save_env;
-
-int32 op_octa (int32 *opnd, int32 cc, int32 opc, int32 acc, int32 spec, int32 va)
-{
-RSVD_INST_FAULT;
-return cc;
-}
-
-#endif

@@ -102,19 +102,19 @@ UNIT disk_unit [16] = {
 };
 
 REG disk_reg[] = {
-    { "КУС_0",      &controller[0].op,      8, 24, 0, 1 },
-    { "УСТР_0",     &controller[0].dev,     8, 3,  0, 1 },
-    { "ЗОНА_0",     &controller[0].zone,    8, 10, 0, 1 },
-    { "ДОРОЖКА_0",  &controller[0].track,   8, 2,  0, 1 },
-    { "МОЗУ_0",     &controller[0].memory,  8, 20, 0, 1 },
-    { "РС_0",       &controller[0].status,  8, 24, 0, 1 },
-    { "КУС_1",      &controller[1].op,      8, 24, 0, 1 },
-    { "УСТР_1",     &controller[1].dev,     8, 3,  0, 1 },
-    { "ЗОНА_1",     &controller[1].zone,    8, 10, 0, 1 },
-    { "ДОРОЖКА_1",  &controller[1].track,   8, 2,  0, 1 },
-    { "МОЗУ_1",     &controller[1].memory,  8, 20, 0, 1 },
-    { "РС_1",       &controller[1].status,  8, 24, 0, 1 },
-    { "ОШ",         &disk_fail,             8, 6,  0, 1 },
+    { ORDATA   ( "КУС_0",      controller[0].op,      24) },
+    { ORDATA   ( "УСТР_0",     controller[0].dev,      3) },
+    { ORDATA   ( "ЗОНА_0",     controller[0].zone,    10) },
+    { ORDATA   ( "ДОРОЖКА_0",  controller[0].track,    2) },
+    { ORDATA   ( "МОЗУ_0",     controller[0].memory,  20) },
+    { ORDATA   ( "РС_0",       controller[0].status,  24) },
+    { ORDATA   ( "КУС_1",      controller[1].op,      24) },
+    { ORDATA   ( "УСТР_1",     controller[1].dev,      3) },
+    { ORDATA   ( "ЗОНА_1",     controller[1].zone,    10) },
+    { ORDATA   ( "ДОРОЖКА_1",  controller[1].track,    2) },
+    { ORDATA   ( "МОЗУ_1",     controller[1].memory,  20) },
+    { ORDATA   ( "РС_1",       controller[1].status,  24) },
+    { ORDATA   ( "ОШ",         disk_fail,              6) },
     { 0 }
 };
 
@@ -123,7 +123,7 @@ MTAB disk_mod[] = {
 };
 
 t_stat disk_reset (DEVICE *dptr);
-t_stat disk_attach (UNIT *uptr, char *cptr);
+t_stat disk_attach (UNIT *uptr, CONST char *cptr);
 t_stat disk_detach (UNIT *uptr);
 
 DEVICE disk_dev = {
@@ -163,7 +163,7 @@ t_stat disk_reset (DEVICE *dptr)
     return SCPE_OK;
 }
 
-t_stat disk_attach (UNIT *u, char *cptr)
+t_stat disk_attach (UNIT *u, CONST char *cptr)
 {
     t_stat s;
     int32 saved_switches = sim_switches;
@@ -174,7 +174,7 @@ t_stat disk_attach (UNIT *u, char *cptr)
         if ((s == SCPE_OK) && (sim_switches & SWMASK ('N'))) {
             t_value control[4];  /* block (zone) number, key, userid, checksum */
             int diskno, blkno, word;
-            char *pos;
+            const char *pos;
             /* Using the rightmost sequence of digits within the filename
              * as a volume number, e.g. "/var/tmp/besm6/2052.bin" -> 2052
              */
@@ -287,9 +287,10 @@ void disk_write (UNIT *u)
     if (disk_dev.dctrl)
         besm6_debug ("::: запись МД %o зона %04o память %05o-%05o",
                      c->dev, c->zone, c->memory, c->memory + 1023);
-    fseek (u->fileref, ZONE_SIZE * c->zone * 8, SEEK_SET);
-    sim_fwrite (c->sysdata, 8, 8, u->fileref);
-    sim_fwrite (&memory [c->memory], 8, 1024, u->fileref);
+    if (fseek (u->fileref, ZONE_SIZE * c->zone * 8, SEEK_SET) == 0) {
+        sim_fwrite (c->sysdata, 8, 8, u->fileref);
+        sim_fwrite (&memory [c->memory], 8, 1024, u->fileref);
+    }
     if (ferror (u->fileref))
         longjmp (cpu_halt, SCPE_IOERR);
 }
@@ -301,11 +302,14 @@ void disk_write_track (UNIT *u)
     if (disk_dev.dctrl)
         besm6_debug ("::: запись МД %o полузона %04o.%d память %05o-%05o",
                      c->dev, c->zone, c->track, c->memory, c->memory + 511);
-    fseek (u->fileref, (ZONE_SIZE*c->zone + 4*c->track) * 8, SEEK_SET);
-    sim_fwrite (c->sysdata + 4*c->track, 8, 4, u->fileref);
-    fseek (u->fileref, (8 + ZONE_SIZE*c->zone + 512*c->track) * 8,
-           SEEK_SET);
-    sim_fwrite (&memory [c->memory], 8, 512, u->fileref);
+    if (fseek (u->fileref, (ZONE_SIZE*c->zone + 4*c->track) * 8,
+               SEEK_SET) == 0) {
+        sim_fwrite (c->sysdata + 4*c->track, 8, 4, u->fileref);
+        if (fseek (u->fileref, (8 + ZONE_SIZE*c->zone + 512*c->track) * 8,
+                   SEEK_SET) == 0) {
+            sim_fwrite (&memory [c->memory], 8, 512, u->fileref);
+        }
+    }
     if (ferror (u->fileref))
         longjmp (cpu_halt, SCPE_IOERR);
 }
@@ -358,8 +362,8 @@ void disk_read (UNIT *u)
                      "::: чтение МД %o зона %04o служебные слова" :
                      "::: чтение МД %o зона %04o память %05o-%05o",
                      c->dev, c->zone, c->memory, c->memory + 1023);
-    fseek (u->fileref, ZONE_SIZE * c->zone * 8, SEEK_SET);
-    if (sim_fread (c->sysdata, 8, 8, u->fileref) != 8) {
+    if (fseek (u->fileref, ZONE_SIZE * c->zone * 8, SEEK_SET) != 0 ||
+        sim_fread (c->sysdata, 8, 8, u->fileref) != 8) {
         /* Чтение неинициализированного диска */
         disk_fail |= c->mask_fail;
         return;
@@ -395,16 +399,16 @@ void disk_read_track (UNIT *u)
                      "::: чтение МД %o полузона %04o.%d служебные слова" :
                      "::: чтение МД %o полузона %04o.%d память %05o-%05o",
                      c->dev, c->zone, c->track, c->memory, c->memory + 511);
-    fseek (u->fileref, (ZONE_SIZE*c->zone + 4*c->track) * 8, SEEK_SET);
-    if (sim_fread (c->sysdata + 4*c->track, 8, 4, u->fileref) != 4) {
+    if (fseek (u->fileref, (ZONE_SIZE*c->zone + 4*c->track) * 8, SEEK_SET) != 0 ||
+        sim_fread (c->sysdata + 4*c->track, 8, 4, u->fileref) != 4) {
         /* Чтение неинициализированного диска */
         disk_fail |= c->mask_fail;
         return;
     }
     if (! (c->op & DISK_READ_SYSDATA)) {
-        fseek (u->fileref, (8 + ZONE_SIZE*c->zone + 512*c->track) * 8,
-               SEEK_SET);
-        if (sim_fread (&memory [c->memory], 8, 512, u->fileref) != 512) {
+        if (fseek (u->fileref, (8 + ZONE_SIZE*c->zone + 512*c->track) * 8,
+                   SEEK_SET) != 0 ||
+            sim_fread (&memory [c->memory], 8, 512, u->fileref) != 512) {
             /* Чтение неинициализированного диска */
             disk_fail |= c->mask_fail;
             return;

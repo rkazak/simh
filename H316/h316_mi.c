@@ -187,10 +187,10 @@ int32 mi5_io (int32 inst, int32 fnc, int32 dat, int32 dev);
 t_stat mi_rx_service (UNIT *uptr);
 void mi_rx_local (uint16 line, uint16 txnext, uint16 txcount);
 t_stat mi_reset (DEVICE *dptr);
-t_stat mi_attach (UNIT *uptr, char *cptr);
+t_stat mi_attach (UNIT *uptr, CONST char *cptr);
 t_stat mi_detach (UNIT *uptr);
-t_stat mi_set_loopback (UNIT *uptr, int32 val, char *cptr, void *desc);
-t_stat mi_show_loopback (FILE *st, UNIT *uptr, int32 val, void *desc);
+t_stat mi_set_loopback (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+t_stat mi_show_loopback (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 
 
 
@@ -367,7 +367,7 @@ void mi_link_error (uint16 line)
   //   Any physical I/O error, either for the UDP link or a COM port, prints a
   // message and detaches the modem.  It's up to the user to decide what to do
   // after that...
-  fprintf(stderr,"MI%d - UNRECOVERABLE I/O ERROR!\n", line);
+  sim_printf("MI%d - UNRECOVERABLE I/O ERROR!\n", line);
   mi_reset_rx(line);  mi_reset_tx(line);
   sim_cancel(PUNIT(line));  mi_detach(PUNIT(line));
   PMIDB(line)->link = NOLINK;
@@ -630,6 +630,13 @@ int32 mi_io (uint16 line, int32 inst, int32 fnc, int32 dat, int32 dev)
   return IOBADFNC(dat);
 }
 
+
+
+////////////////////////////////////////////////////////////////////////////////
+///////////////////   H O S T   E V E N T   S E R V I C E   ////////////////////
+////////////////////////////////////////////////////////////////////////////////
+
+
 // Receiver service ...
 t_stat mi_rx_service (UNIT *uptr)
 {
@@ -678,7 +685,7 @@ t_stat mi_reset (DEVICE *dptr)
 }
 
 // Attach device ...
-t_stat mi_attach (UNIT *uptr, char *cptr)
+t_stat mi_attach (UNIT *uptr, CONST char *cptr)
 {
   //   simh calls this routine for (what else?) the ATTACH command.  There are
   // three distinct formats for ATTACH -
@@ -693,10 +700,8 @@ t_stat mi_attach (UNIT *uptr, char *cptr)
   if ((uptr->flags & UNIT_ATT) != 0) detach_unit(uptr);
 
   // The physical (COM port) attach isn't implemented yet ...
-  if (fport) {
-    fprintf(stderr,"MI%d - physical COM support is not yet implemented\n", line);
-    return SCPE_ARG;
-  }
+  if (fport)
+    return sim_messagef(SCPE_ARG,"MI%d - physical COM support is not yet implemented\n", line);
 
   //   Make a copy of the "file name" argument.  udp_create() actually modifies
   // the string buffer we give it, so we make a copy now so we'll have something
@@ -730,7 +735,7 @@ t_stat mi_detach (UNIT *uptr)
   return mi_reset(PDEVICE(line));
 }
 
-t_stat mi_set_loopback (UNIT *uptr, int32 val, char *cptr, void *desc)
+t_stat mi_set_loopback (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
   t_stat ret = SCPE_OK; uint16 line = uptr->mline;
 
@@ -752,7 +757,7 @@ t_stat mi_set_loopback (UNIT *uptr, int32 val, char *cptr, void *desc)
   return ret;
 }
 
-t_stat mi_show_loopback (FILE *st, UNIT *uptr, int32 val, void *desc)
+t_stat mi_show_loopback (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
   uint16 line = uptr->mline;
 

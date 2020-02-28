@@ -131,7 +131,6 @@
 */
 
 #include "altairz80_defs.h"
-#include <assert.h>
 
 /* Debug flags */
 #define IN_MSG              (1 << 0)
@@ -163,7 +162,8 @@ int32 dsk11(const int32 port, const int32 io, const int32 data);
 int32 dsk12(const int32 port, const int32 io, const int32 data);
 static t_stat dsk_boot(int32 unitno, DEVICE *dptr);
 static t_stat dsk_reset(DEVICE *dptr);
-static t_stat dsk_attach(UNIT *uptr, char *cptr);
+static t_stat dsk_attach(UNIT *uptr, CONST char *cptr);
+static const char* dsk_description(DEVICE *dptr);
 
 extern UNIT cpu_unit;
 extern uint32 PCX;
@@ -303,7 +303,7 @@ static REG dsk_reg[] = {
     { BRDATAD (CURSECTOR,   current_sector,     10, 32, NUM_OF_DSK,
                "Selected sector register array"), REG_CIRC + REG_RO                         },
     { BRDATAD (CURBYTE, current_byte,           10, 32, NUM_OF_DSK,
-               "Current byte register arrayr"), REG_CIRC + REG_RO                           },
+               "Current byte register array"), REG_CIRC + REG_RO                           },
     { BRDATAD (CURFLAG, current_flag,           10, 32, NUM_OF_DSK,
                "Current flag register array"), REG_CIRC + REG_RO                            },
     { BRDATAD (TRACKS,      tracks,             10, 8,  NUM_OF_DSK,
@@ -333,7 +333,11 @@ static REG dsk_reg[] = {
     { NULL }
 };
 
-#define DSK_NAME    "Altair Floppy Disk DSK"
+#define DSK_NAME    "Altair Floppy Disk"
+
+static const char* dsk_description(DEVICE *dptr) {
+    return DSK_NAME;
+}
 
 static MTAB dsk_mod[] = {
     { UNIT_DSK_WLK,     0,                  "WRTENB",    "WRTENB",  NULL, NULL, NULL,
@@ -361,10 +365,10 @@ DEVICE dsk_dev = {
     NULL, NULL, &dsk_reset,
     &dsk_boot, &dsk_attach, NULL,
     NULL, (DEV_DISABLE | DEV_DEBUG), 0,
-    dsk_dt, NULL, DSK_NAME
+    dsk_dt, NULL, NULL, NULL, NULL, NULL, &dsk_description
 };
 
-static char* selectInOut(const int32 io) {
+static const char* selectInOut(const int32 io) {
     return io == 0 ? "IN" : "OUT";
 }
 
@@ -394,20 +398,20 @@ static t_stat dsk_reset(DEVICE *dptr) {
 }
 /* dsk_attach - determine type of drive attached based on disk image size */
 
-static t_stat dsk_attach(UNIT *uptr, char *cptr) {
+static t_stat dsk_attach(UNIT *uptr, CONST char *cptr) {
     int32 thisUnitIndex;
     int32 imageSize;
     const t_stat r = attach_unit(uptr, cptr);           /* attach unit  */
     if (r != SCPE_OK)                                   /* error?       */
         return r;
-    
-    assert(uptr != NULL);
+
+    ASSURE(uptr != NULL);
     thisUnitIndex = find_unit_index(uptr);
-    assert((0 <= thisUnitIndex) && (thisUnitIndex < NUM_OF_DSK));
-    
+    ASSURE((0 <= thisUnitIndex) && (thisUnitIndex < NUM_OF_DSK));
+
     /*  If the file size is close to the mini-disk image size, set the number of
      tracks to 16, otherwise, 32 sectors per track. */
-    
+
     imageSize = sim_fsize(uptr -> fileref);
     sectors_per_track[thisUnitIndex] = (((MINI_DISK_SIZE - MINI_DISK_DELTA < imageSize) &&
                                          (imageSize < MINI_DISK_SIZE + MINI_DISK_DELTA)) ?
@@ -418,7 +422,7 @@ static t_stat dsk_attach(UNIT *uptr, char *cptr) {
 void install_ALTAIRbootROM(void) {
     const t_bool result = (install_bootrom(bootrom_dsk, BOOTROM_SIZE_DSK, ALTAIR_ROM_LOW, TRUE) ==
                            SCPE_OK);
-    assert(result);
+    ASSURE(result);
 }
 
 /*  The boot routine modifies the boot ROM in such a way that subsequently
@@ -429,7 +433,7 @@ static t_stat dsk_boot(int32 unitno, DEVICE *dptr) {
         if (sectors_per_track[unitno] == MINI_DISK_SECT) {
             const t_bool result = (install_bootrom(alt_bootrom_dsk, BOOTROM_SIZE_DSK,
                                                    ALTAIR_ROM_LOW, TRUE) == SCPE_OK);
-            assert(result);
+            ASSURE(result);
         } else {
         /* check whether we are really modifying an LD A,<> instruction */
             if ((bootrom_dsk[UNIT_NO_OFFSET_1 - 1] == LDA_INSTRUCTION) &&

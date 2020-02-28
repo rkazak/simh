@@ -51,8 +51,6 @@
 #define LPTCSR_IMP      (CSR_ERR + CSR_DONE + CSR_IE)   /* implemented */
 #define LPTCSR_RW       (CSR_IE)                        /* read/write */
 
-extern int32 int_req[IPL_HLVL];
-
 int32 lpt_csr = 0;                                      /* control/status */
 int32 lpt_stopioe = 0;                                  /* stop on error */
 
@@ -60,7 +58,7 @@ t_stat lpt_rd (int32 *data, int32 PA, int32 access);
 t_stat lpt_wr (int32 data, int32 PA, int32 access);
 t_stat lpt_svc (UNIT *uptr);
 t_stat lpt_reset (DEVICE *dptr);
-t_stat lpt_attach (UNIT *uptr, char *ptr);
+t_stat lpt_attach (UNIT *uptr, CONST char *ptr);
 t_stat lpt_detach (UNIT *uptr);
 t_stat lpt_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
 const char *lpt_description (DEVICE *dptr);
@@ -186,7 +184,7 @@ sim_cancel (&lpt_unit);                                 /* deactivate unit */
 return SCPE_OK;
 }
 
-t_stat lpt_attach (UNIT *uptr, char *cptr)
+t_stat lpt_attach (UNIT *uptr, CONST char *cptr)
 {
 t_stat reason;
 

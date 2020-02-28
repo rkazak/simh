@@ -1,6 +1,6 @@
 /* pdp10_ksio.c: PDP-10 KS10 I/O subsystem simulator
 
-   Copyright (c) 1993-2008, Robert M Supnik
+   Copyright (c) 1993-2017, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,7 @@
 
    uba          Unibus adapters
 
+   7-Mar-17     RMS     Added BR level to vector display
    22-Sep-05    RMS     Fixed declarations (from Sterling Garwood)
    25-Jan-04    RMS     Added stub floating address routine
    12-Mar-03    RMS     Added logical name support
@@ -72,7 +73,6 @@
 
 #include "pdp10_defs.h"
 #include <setjmp.h>
-#include <assert.h>
 #include <ctype.h>
 #include "sim_sock.h"
 #include "sim_tmxr.h"
@@ -121,6 +121,9 @@ static const int32 ubabr76[UBANUM] = {
 static const int32 ubabr54[UBANUM] = {
     INT_UB1 & (INT_IPL5 | INT_IPL4), INT_UB3 & (INT_IPL5 | INT_IPL4)
     };
+static const uint32 iplmask[4] = {
+    INT_IPL4, INT_IPL5, INT_IPL6, INT_IPL7
+    };
 
 /* Masks for Unibus quantities */
 #define M_BYTE   (0xFF)
@@ -148,14 +151,6 @@ static const int32 ubabr54[UBANUM] = {
 
 #define M_WORD0 (~INT64_C (0777777000000)) /* Clear word 0 + XX */
 #define M_WORD1 (~INT64_C (0000000777777)) /* Clear word 1 + XX */
-
-extern d10 *M;                                          /* main memory */
-extern d10 *ac_cur;
-extern d10 pager_word;
-extern int32 flags;
-extern const int32 pi_l2bit[8];
-extern UNIT cpu_unit;
-extern jmp_buf save_env;
 
 extern int32 pi_eval (void);
 
@@ -194,9 +189,9 @@ UNIT uba_unit[] = {
     };
 
 REG uba_reg[] = {
-    { ORDATA (INTREQ, int_req, 32), REG_RO },
-    { ORDATA (UB1CS, ubcs[0], 18) },
-    { ORDATA (UB3CS, ubcs[1], 18) },
+    { ORDATAD (INTREQ, int_req, 32, "interrupt request"), REG_RO },
+    { ORDATAD (UB1CS, ubcs[0], 18, "Unibus adapter 1 control/status") },
+    { ORDATAD (UB3CS, ubcs[1], 18, "Unibus adapter 3 control/status") },
     { NULL }
     };
 
@@ -668,7 +663,7 @@ if (seg) {                                              /* Unaligned head */
         --seg;
         break;
     default:
-        assert (FALSE);
+        ASSURE (FALSE);
         }
     if (bc == 0) {
         uba_debug_dma_out (dpy_ba, dpy_pa10, pa10);
@@ -681,7 +676,7 @@ ea = ba + bc;
 seg = bc - (ea & 3);
 
 if (seg > 0) { /* Body: Whole PDP-10 words, 4 bytes */
-    assert (((seg & 3) == 0) && (bc >= seg));
+    ASSURE (((seg & 3) == 0) && (bc >= seg));
     dpy_ba = ba;
     bc -= seg;
     for ( ; seg; seg -= 4, ba += 4) {           /* aligned longwords */
@@ -710,9 +705,9 @@ if (seg > 0) { /* Body: Whole PDP-10 words, 4 bytes */
     } /* Body */
 
  /* Tail: partial -10 word, must be aligned. 1-3 bytes */
-assert ((bc >= 0) && ((ba & 3) == 0));
+ASSURE ((bc >= 0) && ((ba & 3) == 0));
 if (bc) {
-    assert (bc <= 3);
+    ASSURE (bc <= 3);
     np = UBMPAGE (ba);                          /* Only one word, last possible page crossing */
     if (np != cp) {                             /* New (or first) page? */
         uba_debug_dma_out (dpy_ba, dpy_pa10, pa10);
@@ -734,7 +729,7 @@ if (bc) {
         buf[0] = (uint8) ((m >> V_BYTE0) & M_BYTE);
         break;
     default:
-        assert (FALSE);
+        ASSURE (FALSE);
         }
     }
 
@@ -781,7 +776,7 @@ cp = ~ba;
 seg = (4 - (ba & 3)) & 3;
 
 if (seg) {                                      /* Unaligned head, can only be WORD1 */
-    assert ((ba & 2) && (seg == 2));
+    ASSURE ((ba & 2) && (seg == 2));
     if (seg > bc)
         seg = bc;
     cp = UBMPAGE (ba);                          /* Only one word, can't cross page */
@@ -804,7 +799,7 @@ ea = ba + bc;
 seg = bc - (ea & 3);
 
 if (seg > 0) {
-    assert (((seg & 3) == 0) && (bc >= seg));
+    ASSURE (((seg & 3) == 0) && (bc >= seg));
     bc -= seg;
     for ( ; seg; seg -= 4, ba += 4) {           /* aligned longwords */
         np = UBMPAGE (ba);
@@ -828,9 +823,9 @@ if (seg > 0) {
     } /* Body */
 
 /* Tail: partial word, must be aligned, can only be WORD0 */
-assert ((bc >= 0) && ((ba & 3) == 0));
+ASSURE ((bc >= 0) && ((ba & 3) == 0));
 if (bc) {
-    assert (bc == 2);
+    ASSURE (bc == 2);
     np = UBMPAGE (ba);                          /* Only one word, last possible page crossing */
     if (np != cp) {                             /* New (or first) page? */
         uba_debug_dma_out (dpy_ba, dpy_pa10, pa10);
@@ -894,7 +889,7 @@ cp = ~ba;
 seg = (4 - (ba & 3)) & 3;
 
 if (seg) {                                      /* Unaligned head */
-    assert ((ba & 2) && (seg == 2));
+    ASSURE ((ba & 2) && (seg == 2));
     if (seg > bc)
         seg = bc;
     cp = UBMPAGE (ba);                          /* Only one word, can't cross page */
@@ -917,7 +912,7 @@ ea = ba + bc;
 seg = bc - (ea & 3);
 
 if (seg > 0) {
-    assert (((seg & 3) == 0) && (bc >= seg));
+    ASSURE (((seg & 3) == 0) && (bc >= seg));
     bc -= seg;
     for ( ; seg; seg -= 4, ba += 4) {           /* aligned longwords */
         np = UBMPAGE (ba);
@@ -941,9 +936,9 @@ if (seg > 0) {
     } /* Body */
 
 /* Tail: partial word, must be aligned */
-assert ((bc >= 0) && ((ba & 3) == 0));
+ASSURE ((bc >= 0) && ((ba & 3) == 0));
 if (bc) {
-    assert (bc == 2);
+    ASSURE (bc == 2);
     np = UBMPAGE (ba);                          /* Only one word, last possible page crossing */
     if (np != cp) {                             /* New (or first) page? */
         uba_debug_dma_out (dpy_ba, dpy_pa10, pa10);
@@ -1010,7 +1005,7 @@ ea = ba + bc;
 seg = bc - (ea & 3);
 
 if (seg > 0) {
-    assert (((seg & 3) == 0) && (bc >= seg));
+    ASSURE (((seg & 3) == 0) && (bc >= seg));
     bc -= seg;
     for ( ; seg; seg -= 4, ba += 4) {           /* aligned longwords */
         np = UBMPAGE (ba);
@@ -1036,7 +1031,7 @@ return 0;
 
 /* Byte-mode writes */
 
-int32 Map_WriteB (uint32 ba, int32 bc, uint8 *buf)
+int32 Map_WriteB (uint32 ba, int32 bc, const uint8 *buf)
 {
 uint32 ea, ofs, cp, np;
 int32 seg, ubm = 0;
@@ -1094,7 +1089,7 @@ if (seg) {                                      /* Unaligned head */
         --seg;
         break;
     default:
-        assert (FALSE);
+        ASSURE (FALSE);
         }
     M[pa10++] = m;
     if (bc == 0) {
@@ -1107,7 +1102,7 @@ ea = ba + bc;
 seg = bc - (ea & 3);
 
 if (seg > 0) {
-    assert (((seg & 3) == 0) && (bc >= seg));
+    ASSURE (((seg & 3) == 0) && (bc >= seg));
     bc -= seg;
     for ( ; seg; seg -= 4, ba += 4) {           /* aligned longwords */
         np = UBMPAGE (ba);
@@ -1130,9 +1125,9 @@ if (seg > 0) {
 
 /* Tail: partial word, must be aligned */
 
-assert ((bc >= 0) && ((ba & 3) == 0));
+ASSURE ((bc >= 0) && ((ba & 3) == 0));
 if (bc) {
-    assert (bc <= 3);
+    ASSURE (bc <= 3);
     np = UBMPAGE (ba);                          /* Only one word, last possible page crossing */
     if (np != cp) {                             /* New (or first) page? */
         uba_debug_dma_in (dpy_ba, dpy_pa10, pa10);
@@ -1155,7 +1150,7 @@ if (bc) {
             m = (m & M_BYTE0) | (((d10) (buf[0])) << V_BYTE0);
             break;
         default:
-            assert (FALSE);
+            ASSURE (FALSE);
             }
         }
     else {
@@ -1171,7 +1166,7 @@ if (bc) {
             m = ((d10) (buf[0])) << V_BYTE0;
             break;
         default:
-            assert (FALSE);
+            ASSURE (FALSE);
             }
         }
     M[pa10++] = m;
@@ -1183,7 +1178,7 @@ return 0;
 
 /* Word mode writes; 16-bit data */
 
-int32 Map_WriteW (uint32 ba, int32 bc, uint16 *buf)
+int32 Map_WriteW (uint32 ba, int32 bc, const uint16 *buf)
 {
 uint32 ea, cp, np;
 int32 seg, ubm = 0;
@@ -1219,7 +1214,7 @@ cp = ~ba;
 seg = (4 - (ba & 3)) & 3;
 
 if (seg) {                                      /* Unaligned head */
-    assert ((ba & 2) && (seg == 2));
+    ASSURE ((ba & 2) && (seg == 2));
     if (seg > bc)
         seg = bc;
     cp = UBMPAGE (ba);                          /* Only one word, can't cross page */
@@ -1244,7 +1239,7 @@ ea = ba + bc;
 seg = bc - (ea & 3);
 
 if (seg > 0) {
-    assert (((seg & 3) == 0) && (bc >= seg));
+    ASSURE (((seg & 3) == 0) && (bc >= seg));
     bc -= seg;
     for ( ; seg; seg -= 4, ba += 4) {           /* aligned longwords */
         np = UBMPAGE (ba);
@@ -1267,9 +1262,9 @@ if (seg > 0) {
     } /* Body */
 
 /* Tail: partial word, must be aligned, can only be WORD0 */
-assert ((bc >= 0) && ((ba & 3) == 0));
+ASSURE ((bc >= 0) && ((ba & 3) == 0));
 if (bc) {
-    assert (bc == 2);
+    ASSURE (bc == 2);
     np = UBMPAGE (ba);                          /* Only one word, last possible page crossing */
     if (np != cp) {                             /* New (or first) page? */
         uba_debug_dma_in (dpy_ba, dpy_pa10, pa10);
@@ -1295,7 +1290,7 @@ return 0;
 
 /* Word mode writes; 18-bit data */
 
-int32 Map_WriteW18 (uint32 ba, int32 bc, uint32 *buf)
+int32 Map_WriteW18 (uint32 ba, int32 bc, const uint32 *buf)
 {
 uint32 ea, cp, np;
 int32 seg, ubm = 0;
@@ -1331,7 +1326,7 @@ cp = ~ba;
 seg = (4 - (ba & 3)) & 3;
 
 if (seg) {                                      /* Unaligned head */
-    assert ((ba & 2) && (seg == 2));
+    ASSURE ((ba & 2) && (seg == 2));
     if (seg > bc)
         seg = bc;
     cp = UBMPAGE (ba);                          /* Only one word, can't cross page */
@@ -1356,7 +1351,7 @@ ea = ba + bc;
 seg = bc - (ea & 3);
 
 if (seg > 0) {
-    assert (((seg & 3) == 0) && (bc >= seg));
+    ASSURE (((seg & 3) == 0) && (bc >= seg));
     bc -= seg;
     for ( ; seg; seg -= 4, ba += 4) {           /* aligned longwords */
         np = UBMPAGE (ba);
@@ -1377,9 +1372,9 @@ if (seg > 0) {
     } /* Body */
 
 /* Tail: partial word, must be aligned */
-assert ((bc >= 0) && ((ba & 3) == 0));
+ASSURE ((bc >= 0) && ((ba & 3) == 0));
 if (bc) {
-    assert (bc == 2);
+    ASSURE (bc == 2);
     np = UBMPAGE (ba);                          /* Only one word, last possible page crossing */
     if (np != cp) {                             /* New (or first) page? */
         uba_debug_dma_in (dpy_ba, dpy_pa10, pa10);
@@ -1404,7 +1399,7 @@ return 0;
 
 /* Word mode writes; 36-bit data */
 
-int32 Map_WriteW36 (uint32 ba, int32 bc, a10 *buf)
+int32 Map_WriteW36 (uint32 ba, int32 bc, const a10 *buf)
 {
 uint32 ea, cp, np;
 int32 seg, ubm = 0;
@@ -1443,7 +1438,7 @@ ea = ba + bc;
 seg = bc - (ea & 3);
 
 if (seg > 0) {
-    assert (((seg & 3) == 0) && (bc >= seg));
+    ASSURE (((seg & 3) == 0) && (bc >= seg));
     bc -= seg;
     for ( ; seg; seg -= 4, ba += 4) {           /* aligned longwords */
         np = UBMPAGE (ba);
@@ -1699,7 +1694,7 @@ return SCPE_OK;
 
 /* Change device address */
 
-t_stat set_addr (UNIT *uptr, int32 val, char *cptr, void *desc)
+t_stat set_addr (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 DEVICE *dptr;
 DIB *dibp;
@@ -1730,7 +1725,7 @@ return SCPE_OK;
 
 /* Show device address */
 
-t_stat show_addr (FILE *st, UNIT *uptr, int32 val, void *desc)
+t_stat show_addr (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
 DEVICE *dptr;
 DIB *dibp;
@@ -1756,7 +1751,7 @@ return SCPE_OK;
 
 /* Change device vector */
 
-t_stat set_vec (UNIT *uptr, int32 arg, char *cptr, void *desc)
+t_stat set_vec (UNIT *uptr, int32 arg, CONST char *cptr, void *desc)
 {
 DEVICE *dptr;
 DIB *dibp;
@@ -1785,11 +1780,11 @@ return SCPE_OK;
 
 /* Show device vector */
 
-t_stat show_vec (FILE *st, UNIT *uptr, int32 arg, void *desc)
+t_stat show_vec (FILE *st, UNIT *uptr, int32 arg, CONST void *desc)
 {
 DEVICE *dptr;
 DIB *dibp;
-uint32 vec, numvec;
+uint32 i, j, vec, numvec, br_bit;
 
 if (uptr == NULL)
     return SCPE_IERR;
@@ -1812,14 +1807,22 @@ else {
     }
 if (vec >= AUTO_VECBASE)
     fprintf (st, "*");
+br_bit = 1u << dibp->vloc;
+for (i = 0, j = 4; i < 4; i++) {
+    if ((br_bit & iplmask[i]) != 0)
+        j = i;
+    }
+if (j >= 4)
+    fprintf (st, ", invalid BR level");
+else fprintf (st, ", BR%d", j + 4);
 return SCPE_OK;
 }
 
 /* Show vector for terminal multiplexor */
 
-t_stat show_vec_mux (FILE *st, UNIT *uptr, int32 arg, void *desc)
+t_stat show_vec_mux (FILE *st, UNIT *uptr, int32 arg, CONST void *desc)
 {
-TMXR *mp = (TMXR *) desc;
+const TMXR *mp = (const TMXR *) desc;
 
 if ((mp == NULL) || (arg == 0))
     return SCPE_IERR;
@@ -1904,7 +1907,7 @@ return SCPE_OK;
 
 /* Show dib_tab */
 
-t_stat show_iospace (FILE *st, UNIT *uptr, int32 val, void *desc)
+t_stat show_iospace (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
 int32 i, j, done = 0;
 DEVICE *dptr;
@@ -1938,7 +1941,8 @@ for (i = 0; dib_tab[i] != NULL; i++) {                  /* print table */
     else {
         fprintf (st, "%03o", dib_tab[i]->vec);
         if (dib_tab[i]->vnum > 1)
-            fprintf (st, "-%03o", dib_tab[i]->vec + (4 * (dib_tab[i]->vnum - 1)));
+            fprintf(st, "-%03o", dib_tab[i]->vec + 4 * ((dib_tab[i]->vnum * 
+                                  dib_tab[i]->lnt / dib_tab[i]->ulnt) - 1));
         else
             fprintf (st, "    ");
         fprintf (st, "%1s", (dib_tab[i]->vnum >= AUTO_VECBASE)? "*": " ");
@@ -1949,8 +1953,8 @@ for (i = 0; dib_tab[i] != NULL; i++) {                  /* print table */
                             (dib_tab[i]->vloc<=19)? 5: 4);
     else
         fprintf (st, "   ");
-    fprintf (st, " %2u %s\n", (dib_tab[i]->ulnt? dib_tab[i]->lnt/dib_tab[i]->ulnt:
-                               (dptr? dptr->numunits: 1)), dptr? sim_dname (dptr): "CPU");
+    fprintf (st, " %2u %s\n", (dib_tab[i]->ulnt? dib_tab[i]->lnt/dib_tab[i]->ulnt: 1),
+                                dptr? sim_dname (dptr): "CPU");
     }
 return SCPE_OK;
 }
@@ -1976,7 +1980,7 @@ return SCPE_OK;
 
 
 typedef struct {
-    char        *dnam[AUTO_MAXC];
+    const char  *dnam[AUTO_MAXC];
     int32       numc;
     int32       numv;
     uint32      amod;
@@ -2005,6 +2009,8 @@ AUTO_CON auto_tab[] = {/*c  #v  am vm  fxa   fxv */
         {0000540}, {0540} },                             /* KMC11-A comm IOP-DUP ucode - fx CSR, fx VEC */
     { { "DMR" },         1,  2,  0, 0, 
         {0004000}, {0610} },                             /* DMR11 comm - fx CSR, fx VEC */
+    { { "CH" },          1,  1,  0, 0, 
+        {04140}, {0270} },                               /* CH11 - CHAOS Net - fx CSR, fx VEC */
 #else
     { { "QBA" },         1,  0,  0, 0, 
         {017500} },                                     /* doorbell - fx CSR, no VEC */
@@ -2281,7 +2287,7 @@ return SCPE_OK;
 
 /* Set address floating */
 
-t_stat set_addr_flt (UNIT *uptr, int32 val, char *cptr, void *desc)
+t_stat set_addr_flt (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 DEVICE *dptr;
 

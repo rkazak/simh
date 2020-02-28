@@ -43,11 +43,6 @@
 /*#define DBG_MSG */
 
 #include "altairz80_defs.h"
-
-#if defined (_WIN32)
-#include <windows.h>
-#endif
-
 #include <time.h>
 
 #ifdef DBG_MSG
@@ -74,8 +69,8 @@ typedef struct {
 
 static SS1_INFO ss1_info_data = { { 0x0, 0, 0x50, 16 } };
 
-extern t_stat set_iobase(UNIT *uptr, int32 val, char *cptr, void *desc);
-extern t_stat show_iobase(FILE *st, UNIT *uptr, int32 val, void *desc);
+extern t_stat set_iobase(UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+extern t_stat show_iobase(FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 extern uint32 sim_map_resource(uint32 baseaddr, uint32 size, uint32 resource_type,
         int32 (*routine)(const int32, const int32, const int32), uint8 unmap);
 extern uint32 PCX;
@@ -86,6 +81,7 @@ static uint8 SS1_Read(const uint32 Addr);
 static uint8 SS1_Write(const uint32 Addr, uint8 cData);
 static int32 ss1dev(const int32 port, const int32 io, const int32 data);
 void raise_ss1_interrupt(uint8 isr_index);
+static const char* ss1_description(DEVICE *dptr);
 
 /* SS1 Interrupt Controller notes:
  *
@@ -202,6 +198,10 @@ static REG ss1_reg[] = {
     { NULL }
 };
 
+static const char* ss1_description(DEVICE *dptr) {
+    return "Compupro System Support 1";
+}
+
 static MTAB ss1_mod[] = {
     { MTAB_XTD|MTAB_VDV,    0,              "IOBASE",   "IOBASE",
         &set_iobase, &show_iobase, NULL, "Sets system support module base address" },
@@ -227,7 +227,7 @@ DEVICE ss1_dev = {
     NULL, NULL, &ss1_reset,
     NULL, NULL, NULL,
     &ss1_info_data, (DEV_DISABLE | DEV_DIS | DEV_DEBUG), ERROR_MSG,
-    ss1_dt, NULL, "Compupro System Support 1 SS1"
+    ss1_dt, NULL, NULL, NULL, NULL, NULL, &ss1_description
 };
 
 /* Reset routine */
@@ -300,6 +300,7 @@ static uint8 SS1_Read(const uint32 Addr)
     switch(Addr & 0x0F) {
         case SS1_S8259_L:
             sel_pic = SLAVE_PIC;
+            /* fall through */
         case SS1_M8259_L:
             if((ss1_pic[sel_pic].OCW3 & 0x03) == 0x03) {
                 cData = ss1_pic[sel_pic].ISR;
@@ -315,6 +316,7 @@ static uint8 SS1_Read(const uint32 Addr)
             break;
         case SS1_S8259_H:
             sel_pic = SLAVE_PIC;
+            /* fall through */
         case SS1_M8259_H:
             cData = ss1_pic[sel_pic].IMR;
             sim_debug(PIC_MSG, &ss1_dev, "SS1: " ADDRESS_FORMAT
@@ -432,7 +434,7 @@ static uint8 SS1_Write(const uint32 Addr, uint8 cData)
 
     switch(Addr & 0x0F) {
         case SS1_S8259_L:
-            sel_pic = SLAVE_PIC;
+            sel_pic = SLAVE_PIC;    /* intentional falltrough */
         case SS1_M8259_L:
             if(cData & 0x10) {
                 sim_debug(PIC_MSG, &ss1_dev, "SS1: " ADDRESS_FORMAT
@@ -453,6 +455,7 @@ static uint8 SS1_Write(const uint32 Addr, uint8 cData)
             break;
         case SS1_S8259_H:
             sel_pic = SLAVE_PIC;
+            /* fall through */
         case SS1_M8259_H:
             if(ss1_pic[sel_pic].config_cnt == 0) {
                 sim_debug(PIC_MSG, &ss1_dev, "SS1: " ADDRESS_FORMAT " WR: %s PIC IMR=0x%02x.\n", PCX, (sel_pic ? "Slave " : "Master"), cData);

@@ -1,6 +1,6 @@
 /* pdp10_tu.c - PDP-10 RH11/TM03/TU45 magnetic tape simulator
 
-   Copyright (c) 1993-2008, Robert M Supnik
+   Copyright (c) 1993-2018, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,7 +25,11 @@
 
    tu           RH11/TM03/TU45 magtape
 
-   29-Apr-07    RMS     Fixed bug in setting FCE on TMK (found by Naoki Hamada)
+   12-Jan-18    RMS     Fixed missing () in logical test (Mark Pizzolato)
+   29-Dec-17    RMS     Read tape mark must set Massbus EXC (TRE)
+   28-Mar-17    RMS     Documented switch fall through case (COVERITY)
+   17-Mar-13    RMS     Fixed bug in read/write check reverse (Dave Bryan)
+   29-Apr-07    RMS     Fixed bug in setting FCE on TMK (Naoki Hamada)
    16-Feb-06    RMS     Added tape capacity checking
    16-Aug-05    RMS     Fixed C++ declaration and cast problems
    07-Jul-05    RMS     Removed extraneous externs
@@ -42,8 +46,8 @@
    28-Mar-03    RMS     Added multiformat support
    28-Feb-03    RMS     Revised for magtape library
    27-Jan-03    RMS     Changed to dynamically allocate buffer
-   21-Nov-02    RMS     Fixed bug in bootstrap (reported by Michael Thompson)
-                        Fixed bug in read (reported by Harris Newman)
+   21-Nov-02    RMS     Fixed bug in bootstrap (Michael Thompson)
+                        Fixed bug in read (Harris Newman)
    29-Sep-02    RMS     Added variable vector support
                         New data structures
    28-Aug-02    RMS     Added end of medium support
@@ -92,7 +96,6 @@
 
 #include "pdp10_defs.h"
 #include "sim_tape.h"
-#include <assert.h>
 
 #define TU_NUMFM        1                               /* #formatters */
 #define TU_NUMDR        8                               /* #drives */
@@ -296,11 +299,8 @@
                             break; \
                             }
 
-extern d10 *M;                                          /* memory */
-extern int32 int_req;
 extern int32 ubmap[UBANUM][UMAP_MEMSIZE];               /* Unibus map */
 extern int32 ubcs[UBANUM];
-extern UNIT cpu_unit;
 
 int32 tucs1 = 0;                                        /* control/status 1 */
 int32 tuwc = 0;                                         /* word count */
@@ -328,7 +328,7 @@ int32 reg_in_fmtr1[32] = {                              /* rmr if write + go */
 int32 fmt_test[16] = {                                  /* fmt bytes/10 wd */
     5, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
     };
-static char *tu_fname[CS1_N_FNC] = {
+static const char *tu_fname[CS1_N_FNC] = {
     "NOP", "UNLD", "2", "REW", "FCLR", "5", "6", "7",
     "RIP", "11", "ERASE", "WREOF", "SPCF", "SPCR", "16", "17",
     "20", "21", "22", "23", "WRCHKF", "25", "26", "WRCHKR",
@@ -341,7 +341,7 @@ t_stat tu_wr (int32 data, int32 PA, int32 access);
 int32 tu_inta (void);
 t_stat tu_svc (UNIT *uptr);
 t_stat tu_reset (DEVICE *dptr);
-t_stat tu_attach (UNIT *uptr, char *cptr);
+t_stat tu_attach (UNIT *uptr, CONST char *cptr);
 t_stat tu_detach (UNIT *uptr);
 t_stat tu_boot (int32 unitno, DEVICE *dptr);
 void tu_go (int32 drv);
@@ -374,26 +374,26 @@ UNIT tu_unit[] = {
     };
 
 REG tu_reg[] = {
-    { ORDATA (MTCS1, tucs1, 16) },
-    { ORDATA (MTWC, tuwc, 16) },
-    { ORDATA (MTBA, tuba, 16) },
-    { ORDATA (MTFC, tufc, 16) },
-    { ORDATA (MTCS2, tucs2, 16) },
-    { ORDATA (MTFS, tufs, 16) },
-    { ORDATA (MTER, tuer, 16) },
-    { ORDATA (MTCC, tucc, 16) },
-    { ORDATA (MTDB, tudb, 16) },
-    { ORDATA (MTMR, tumr, 16) },
-    { ORDATA (MTTC, tutc, 16) },
-    { FLDATA (IFF, tuiff, 0) },
-    { FLDATA (INT, int_req, INT_V_TU) },
-    { FLDATA (DONE, tucs1, CSR_V_DONE) },
-    { FLDATA (IE, tucs1, CSR_V_IE) },
-    { FLDATA (STOP_IOE, tu_stopioe, 0) },
-    { DRDATA (TIME, tu_time, 24), PV_LEFT },
-    { URDATA (UST, tu_unit[0].USTAT, 8, 17, 0, TU_NUMDR, 0) },
-    { URDATA (POS, tu_unit[0].pos, 10, T_ADDR_W, 0,
-              TU_NUMDR, PV_LEFT | REG_RO) },
+    { ORDATAD (MTCS1, tucs1, 16, "control/status 1") },
+    { ORDATAD (MTWC, tuwc, 16, "word count") },
+    { ORDATAD (MTBA, tuba, 16, "memory address") },
+    { ORDATAD (MTFC, tufc, 16, "frame count") },
+    { ORDATAD (MTCS2, tucs2, 1, "control/status 2") },
+    { ORDATAD (MTFS, tufs, 16, "formatter status") },
+    { ORDATAD (MTER, tuer, 16, "error status") },
+    { ORDATAD (MTCC, tucc, 16, "check character") },
+    { ORDATAD (MTDB, tudb, 16, "data buffer") },
+    { ORDATAD (MTMR, tumr, 16, "maintenance register") },
+    { ORDATAD (MTTC, tutc, 16, "tape control register") },
+    { FLDATAD (IFF, tuiff, 0, "interrupt flip/flop") },
+    { FLDATAD (INT, int_req, INT_V_TU, "interrupt pending") },
+    { FLDATAD (DONE, tucs1, CSR_V_DONE, "device done flag") },
+    { FLDATAD (IE, tucs1, CSR_V_IE, "interrupt enable flag") },
+    { FLDATAD (STOP_IOE, tu_stopioe, 0, "stop on I/O error") },
+    { DRDATAD (TIME, tu_time, 24, "delay"), PV_LEFT },
+    { URDATAD (UST, tu_unit[0].USTAT, 8, 17, 0, TU_NUMDR, 0, "unit status, units 0 to 7") },
+    { URDATAD (POS, tu_unit[0].pos, 10, T_ADDR_W, 0,
+              TU_NUMDR, PV_LEFT | REG_RO, "position, units 0 to 7") },
     { ORDATA (LOG, tu_log, 8), REG_HIDDEN },
     { NULL }
     };
@@ -672,6 +672,7 @@ switch (fnc) {                                          /* case on function */
         if (!(uptr->TU_STATEFLAGS & TUS_ATTPENDING))
             sim_cancel (uptr);                          /* stop motion, not on-line delay */
         uptr->USTAT = 0;
+        /* fall through */
     case FNC_NOP:
         tucs1 = tucs1 & ~CS1_GO;                        /* no operation */
         return;
@@ -818,6 +819,7 @@ t_stat st, r = SCPE_OK;
 drv = (int32) (uptr - tu_dev.units);                    /* get drive # */
 
 /* Set MOL for a delayed attach */
+
 if (uptr->TU_STATEFLAGS & TUS_ATTPENDING) {
     uptr->TU_STATEFLAGS &= ~TUS_ATTPENDING;             /* Allow transition to on-line */
     tufs = tufs | FS_ATA | FS_SSC;                      /* set attention */
@@ -856,7 +858,7 @@ switch (fnc) {                                          /* case on function */
                 break;
                 }
             } while ((tufc != 0) && !sim_tape_eot (uptr));
-        if (tufc)
+        if (tufc != 0)
             set_tuer (ER_FCE);
         else tutc = tutc & ~TC_FCS;
         tufs = tufs | FS_ATA;
@@ -870,7 +872,7 @@ switch (fnc) {                                          /* case on function */
                 break;
                 }
             } while (tufc != 0);
-        if (tufc)
+        if (tufc != 0)
             set_tuer (ER_FCE);
         else tutc = tutc & ~TC_FCS;
         tufs = tufs | FS_ATA;
@@ -908,8 +910,6 @@ switch (fnc) {                                          /* case on function */
             tufs = tufs | FS_ID;                        /* PE BOT? ID burst */
         TXFR (ba, wc, 0);                               /* validate transfer */
         if ((st = sim_tape_rdrecf (uptr, xbuf, &tbc, MT_MAXFR))) {/* read fwd */
-            if (st == MTSE_TMK)                         /* TMK also sets FCE */
-                set_tuer (ER_FCE);
             r = tu_map_err (uptr, st, 1);               /* map error */
             break;                                      /* done */
             }
@@ -970,8 +970,6 @@ switch (fnc) {                                          /* case on function */
         tufc = 0;                                       /* clear frame count */
         TXFR (ba, wc, 1);                               /* validate xfer rev */
         if ((st = sim_tape_rdrecr (uptr, xbuf + 4, &tbc, MT_MAXFR))) {/* read rev */
-            if (st == MTSE_TMK)                         /* TMK also sets FCE */
-                set_tuer (ER_FCE);
             r = tu_map_err (uptr, st, 1);               /* map error */
             break;                                      /* done */
             }
@@ -1084,7 +1082,9 @@ tuiff = 0;                                              /* clear CSTB INTR */
 return VEC_TU;                                          /* acknowledge */
 }
 
-/* Map tape error status */
+/* Map tape error status
+
+   Note that tape mark on a data transfer sets FCE and Massbus EXC */
 
 t_stat tu_map_err (UNIT *uptr, t_stat st, t_bool qdt)
 {
@@ -1100,6 +1100,10 @@ switch (st) {
 
     case MTSE_TMK:                                      /* end of file */
         tufs = tufs | FS_TMK;
+        if (qdt) {                                      /* data transfer? */
+            set_tuer (ER_FCE);                          /* set FCE */
+            tucs1 = tucs1 | CS1_TRE;
+            }
         break;
 
     case MTSE_IOERR:                                    /* IO error */
@@ -1163,11 +1167,12 @@ int_req = int_req & ~INT_TU;                            /* clear interrupt */
 for (u = 0; u < TU_NUMDR; u++) {                        /* loop thru units */
     uptr = tu_dev.units + u;
     sim_tape_reset (uptr);                              /* clear pos flag */
-    if (!uptr->TU_STATEFLAGS & TUS_ATTPENDING)          /* Delayed on-line must survive massbus clear */
+    if (!(uptr->TU_STATEFLAGS & TUS_ATTPENDING))        /* delayed on-line must survive massbus clear */
         sim_cancel (uptr);                              /* cancel activity */
-    else if (!sim_is_active(uptr) )
-        sim_activate_after(uptr, SPINUPDLY);
-
+    else {
+        if (!sim_is_active(uptr) )
+            sim_activate_after(uptr, SPINUPDLY);
+        }
     uptr->USTAT = 0;
     }
 if (xbuf == NULL)
@@ -1179,7 +1184,7 @@ return SCPE_OK;
 
 /* Attach routine */
 
-t_stat tu_attach (UNIT *uptr, char *cptr)
+t_stat tu_attach (UNIT *uptr, CONST char *cptr)
 {
 int32 drv = uptr - tu_dev.units;
 t_stat r;
@@ -1377,7 +1382,7 @@ if (!(uptr->flags & UNIT_ATT))
 M[FE_RHBASE] = tu_dib.ba;
 M[FE_UNIT] = 0;                             /* Only one formatter in this implementation */
 
-assert (sizeof(boot_rom_dec) == sizeof(boot_rom_its));
+ASSURE (sizeof(boot_rom_dec) == sizeof(boot_rom_its));
 
 M[FE_MTFMT] = (unitno & TC_M_UNIT) | (TC_1600 << TC_V_DEN) | (TC_10C << TC_V_FMT);
 tu_unit[unitno].pos = 0;

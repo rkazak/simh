@@ -38,7 +38,6 @@
 #define UNIT_V_PCH      (UNIT_V_UF + 0)                 /* output conv */
 #define UNIT_PCH        (1 << UNIT_V_PCH)
 
-extern volatile int32 stop_cpu;
 extern uint8 M[];
 extern int32 BS, iochk, ind[64];
 extern UNIT cpu_unit;
@@ -48,7 +47,7 @@ int32 inq_char = 033;                                   /* request inq */
 t_stat inq_svc (UNIT *uptr);
 t_stat inq_reset (DEVICE *dptr);
 
-void inq_puts (char *cptr);
+void inq_puts (const char *cptr);
 
 /* INQ data structures
 
@@ -94,8 +93,8 @@ ind[IN_INC] = 0;                                        /* clear inq clear */
 switch (mod) {                                          /* case on mod */
 
     case BCD_R:                                         /* input */
-/*      if (ind[IN_INR] == 0)                         */
-/*          return SCPE_OK;                           *//* return if no req */
+//      if (ind[IN_INR] == 0)
+//          return SCPE_OK;                             /* return if no req */
         ind[IN_INR] = 0;                                /* clear req */
         inq_puts ("[Enter]\r\n");                       /* prompt */
         for (i = 0; M[BS] != (BCD_GRPMRK + WM); i++) {  /* until GM + WM */
@@ -180,7 +179,7 @@ return SCPE_OK;
 
 /* Output multiple characters */
 
-void inq_puts (char *cptr)
+void inq_puts (const char *cptr)
 {
 if (cptr == NULL)
     return;

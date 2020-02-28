@@ -1,6 +1,6 @@
 /* pdp8_dt.c: PDP-8 DECtape simulator
 
-   Copyright (c) 1993-2013, Robert M Supnik
+   Copyright (c) 1993-2017, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,7 @@
 
    dt           TC08/TU56 DECtape
 
+   15-Mar-17    RMS     Fixed dt_seterr to clear successor states
    17-Sep-13    RMS     Changed to use central set_bootpc routine
    23-Jun-06    RMS     Fixed switch conflict in ATTACH
    07-Jan-06    RMS     Fixed unaligned register access bug (Doug Carman)
@@ -276,12 +277,12 @@ int32 dt_substate = 0;
 int32 dt_logblk = 0;
 int32 dt_stopoffr = 0;
 
-DEVICE dt_dev;
 int32 dt76 (int32 IR, int32 AC);
 int32 dt77 (int32 IR, int32 AC);
 t_stat dt_svc (UNIT *uptr);
 t_stat dt_reset (DEVICE *dptr);
-t_stat dt_attach (UNIT *uptr, char *cptr);
+t_stat dt_attach (UNIT *uptr, CONST char *cptr);
+const char *dt_description (DEVICE *dptr);
 void dt_flush (UNIT *uptr);
 t_stat dt_detach (UNIT *uptr);
 t_stat dt_boot (int32 unitno, DEVICE *dptr);
@@ -325,25 +326,25 @@ UNIT dt_unit[] = {
     };
 
 REG dt_reg[] = {
-    { ORDATA (DTSA, dtsa, 12) },
-    { ORDATA (DTSB, dtsb, 12) },
-    { FLDATA (INT, int_req, INT_V_DTA) },
-    { FLDATA (ENB, dtsa, DTA_V_ENB) },
-    { FLDATA (DTF, dtsb, DTB_V_DTF) },
-    { FLDATA (ERF, dtsb, DTB_V_ERF) },
-    { ORDATA (WC, M[DT_WC], 12), REG_FIT },
-    { ORDATA (CA, M[DT_CA], 12), REG_FIT },
-    { DRDATA (LTIME, dt_ltime, 24), REG_NZ | PV_LEFT },
-    { DRDATA (DCTIME, dt_dctime, 24), REG_NZ | PV_LEFT },
-    { ORDATA (SUBSTATE, dt_substate, 2) },
+    { ORDATAD (DTSA, dtsa, 12, "status register A") },
+    { ORDATAD (DTSB, dtsb, 12, "status register B") },
+    { FLDATAD (INT, int_req, INT_V_DTA, "interrupt pending flag") },
+    { FLDATAD (ENB, dtsa, DTA_V_ENB, "interrupt enable flag") },
+    { FLDATAD (DTF, dtsb, DTB_V_DTF, "DECtape flag") },
+    { FLDATAD (ERF, dtsb, DTB_V_ERF, "error flag") },
+    { ORDATAD (WC, M[DT_WC], 12, "word count (memory location 7755)"), REG_FIT },
+    { ORDATAD (CA, M[DT_CA], 12, "current address (memory location 7754)"), REG_FIT },
+    { DRDATAD (LTIME, dt_ltime, 24, "time between lines"), REG_NZ | PV_LEFT },
+    { DRDATAD (DCTIME, dt_dctime, 24, "time to decelerate to a full stop"), REG_NZ | PV_LEFT },
+    { ORDATAD (SUBSTATE, dt_substate, 2, "read/write command substate") },
     { DRDATA (LBLK, dt_logblk, 12), REG_HIDDEN },
-    { URDATA (POS, dt_unit[0].pos, 10, T_ADDR_W, 0,
-              DT_NUMDR, PV_LEFT | REG_RO) },
-    { URDATA (STATT, dt_unit[0].STATE, 8, 18, 0,
-              DT_NUMDR, REG_RO) },
+    { URDATAD (POS, dt_unit[0].pos, 10, T_ADDR_W, 0,
+              DT_NUMDR, PV_LEFT | REG_RO, "position, in lines, units 0 to 7") },
+    { URDATAD (STATT, dt_unit[0].STATE, 8, 18, 0,
+              DT_NUMDR, REG_RO, "unit state, units 0 to 7") },
     { URDATA (LASTT, dt_unit[0].LASTT, 10, 32, 0,
               DT_NUMDR, REG_HRO) },
-    { FLDATA (STOP_OFFR, dt_stopoffr, 0) },
+    { FLDATAD (STOP_OFFR, dt_stopoffr, 0, "stop on off-reel error") },
     { ORDATA (DEVNUM, dt_dib.dev, 6), REG_HRO },
     { NULL }
     };
@@ -372,7 +373,8 @@ DEVICE dt_dev = {
     NULL, NULL, &dt_reset,
     &dt_boot, &dt_attach, &dt_detach,
     &dt_dib, DEV_DISABLE | DEV_DEBUG, 0,
-    dt_deb, NULL, NULL
+    dt_deb, NULL, NULL, NULL, NULL, NULL,
+    &dt_description
     };
 
 /* IOT routines */
@@ -647,7 +649,7 @@ t_bool dt_setpos (UNIT *uptr)
 {
 uint32 new_time, ut, ulin, udelt;
 int32 mot = DTS_GETMOT (uptr->STATE);
-int32 unum, delta;
+int32 unum, delta = 0;
 
 new_time = sim_grtime ();                               /* current time */
 ut = new_time - uptr->LASTT;                            /* elapsed time */
@@ -798,11 +800,12 @@ switch (fnc) {                                          /* at speed, check fnc *
                 return SCPE_OK;
                 }
             if (DEBUG_PRI (dt_dev, LOG_RW) ||
-               (DEBUG_PRI (dt_dev, LOG_BL) && (blk == dt_logblk)))
+           (DEBUG_PRI (dt_dev, LOG_BL) && (blk == dt_logblk)))
                 fprintf (sim_deb, ">>DT%d: reading block %d %s%s\n",
                     unum, blk, (dir? "backward": "forward"),
                     ((dtsa & DTA_MODE)? " continuous": " "));
-            dt_substate = 0;                            /* fall through */
+            dt_substate = 0;
+            /* fall through */
         case 0:                                         /* normal read */
             M[DT_WC] = (M[DT_WC] + 1) & 07777;          /* incr WC, CA */
             M[DT_CA] = (M[DT_CA] + 1) & 07777;
@@ -815,6 +818,7 @@ switch (fnc) {                                          /* at speed, check fnc *
                 M[ma] = dat;
             if (M[DT_WC] == 0)                          /* wc ovf? */
                 dt_substate = DTO_WCO;
+            /* fall through */
         case DTO_WCO:                                   /* wc ovf, not sob */
             if (wrd != (dir? 0: DTU_BSIZE (uptr) - 1))  /* not last? */
                 sim_activate (uptr, DT_WSIZE * dt_ltime);
@@ -861,10 +865,12 @@ switch (fnc) {                                          /* at speed, check fnc *
                 fprintf (sim_deb, ">>DT%d: writing block %d %s%s\n", unum, blk,
                     (dir? "backward": "forward"),
                     ((dtsa & DTA_MODE)? " continuous": " "));
-            dt_substate = 0;                            /* fall through */
+            dt_substate = 0;
+            /* fall through */
         case 0:                                         /* normal write */
             M[DT_WC] = (M[DT_WC] + 1) & 07777;          /* incr WC, CA */
             M[DT_CA] = (M[DT_CA] + 1) & 07777;
+            /* fall through */
         case DTO_WCO:                                   /* wc ovflo */
             ma = DTB_GETMEX (dtsb) | M[DT_CA];          /* get mem addr */
             ba = (blk * DTU_BSIZE (uptr)) + wrd;        /* buffer ptr */
@@ -1074,6 +1080,7 @@ if (mot >= DTS_ACCF) {                                  /* ~stopped or stopping?
     sim_activate (uptr, dt_dctime);                     /* sched decel */
     DTS_SETSTA (DTS_DECF | (mot & DTS_DIR), 0);         /* state = decel */
     }
+else DTS_SETSTA (mot, 0);                               /* clear 2nd, 3rd */
 DT_UPDINT;
 return;
 }
@@ -1202,7 +1209,7 @@ return SCPE_OK;
    If 12b, read data into buffer
 */
 
-t_stat dt_attach (UNIT *uptr, char *cptr)
+t_stat dt_attach (UNIT *uptr, CONST char *cptr)
 {
 uint32 pdp18b[D18_NBSIZE];
 uint16 pdp11b[D18_NBSIZE], *fbuf;
@@ -1341,4 +1348,9 @@ uptr->filebuf = NULL;                                   /* clear buf ptr */
 uptr->flags = (uptr->flags | UNIT_8FMT) & ~UNIT_11FMT;  /* default fmt */
 uptr->capac = DT_CAPAC;                                 /* default size */
 return detach_unit (uptr);
+}
+
+const char *dt_description (DEVICE *dptr)
+{
+return "TC08/TU56 DECtape";
 }

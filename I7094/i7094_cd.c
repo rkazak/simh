@@ -1,6 +1,6 @@
 /* i7094_cd.c: IBM 711/721 card reader/punch
 
-   Copyright (c) 2003-2012, Robert M. Supnik
+   Copyright (c) 2003-2017, Robert M. Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -26,6 +26,7 @@
    cdr          711 card reader
    cdp          721 card punch
 
+   13-Mar-17    RMS     Annotated fall through in switch
    19-Mar-12    RMS     Fixed declaration of sim_switches (Mark Pizzolato)
    19-Jan-07    RMS     Added UNIT_TEXT
    13-Jul-06    RMS     Fixed problem with 80 column full cards
@@ -84,18 +85,10 @@ t_stat cdp_chwr (uint32 ch, t_uint64 val, uint32 flags);
 t_stat cdp_reset (DEVICE *dptr);
 t_stat cdp_svc (UNIT *uptr);
 t_stat cdp_card_end (UNIT *uptr);
-t_stat cd_attach (UNIT *uptr, char *cptr);
-t_stat cd_set_mode (UNIT *uptr, int32 val, char *cptr, void *desc);
+t_stat cd_attach (UNIT *uptr, CONST char *cptr);
+t_stat cd_set_mode (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
 char colbin_to_bcd (uint32 cb);
 
-extern uint32 PC;
-extern uint32 ind_ioc;
-extern char bcd_to_ascii_a[64];
-extern char bcd_to_ascii_h[64];
-extern uint32 bcd_to_colbin[64];
-extern char ascii_to_bcd[128];
-extern t_uint64 bit_masks[36];
-extern uint32 col_masks[12];
 
 /* Card reader data structures
 
@@ -222,8 +215,8 @@ switch (cdr_sta) {                                      /* case on state */
             cdr_cbuf[i] = ' ';
         cdr_sta = CDS_DATA;                             /* data state */
         cdr_bptr = 0;                                   /* init buf ptr */
-        fgets (cdr_cbuf, (uptr->flags & UNIT_CBN)? (2 * CD_CHRLNT) + 2: CD_CHRLNT + 2,
-            uptr->fileref);                             /* read card */
+        if (fgets (cdr_cbuf, (uptr->flags & UNIT_CBN)? (2 * CD_CHRLNT) + 2: CD_CHRLNT + 2,
+            uptr->fileref)) {};                         /* read card */
         if (feof (uptr->fileref))                       /* eof? */
             return ch6_err_disc (CH_A, U_CDR, CHF_EOF); /* set EOF, disc */
         if (ferror (uptr->fileref)) {                   /* error? */
@@ -246,7 +239,7 @@ switch (cdr_sta) {                                      /* case on state */
                     cdr_bbuf[bufw] |= dat;
                 }
             }
-
+        /* fall through */
     case CDS_DATA:                                      /* data state */
         dat = cdr_bbuf[cdr_bptr++];                     /* get next word */
         if (cdr_bptr >= CD_BINLNT) {                    /* last word? */
@@ -311,7 +304,7 @@ return SCPE_OK;
 
 /* Reader/punch attach */
 
-t_stat cd_attach (UNIT *uptr, char *cptr)
+t_stat cd_attach (UNIT *uptr, CONST char *cptr)
 {
 t_stat r;
 
@@ -331,7 +324,7 @@ return SCPE_OK;
 
 /* Reader/punch set mode - valid only if not attached */
 
-t_stat cd_set_mode (UNIT *uptr, int32 val, char *cptr, void *desc)
+t_stat cd_set_mode (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 return (uptr->flags & UNIT_ATT)? SCPE_NOFNC: SCPE_OK;
 }
@@ -422,7 +415,8 @@ return SCPE_OK;
 t_stat cdp_card_end (UNIT *uptr)
 {
 uint32 i, col, row, bufw, colbin;
-char *pch, bcd, cdp_cbuf[(2 * CD_CHRLNT) + 2];
+const char *pch;
+char bcd, cdp_cbuf[(2 * CD_CHRLNT) + 2];
 t_uint64 dat;
 
 if ((uptr->flags & UNIT_ATT) == 0)                      /* not attached? */

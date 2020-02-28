@@ -175,7 +175,6 @@ static DSTR Dstr0 = { 0, {0, 0, 0, 0} };
 extern int32 isenable, dsenable;
 extern int32 N, Z, V, C, fpd, ipl;
 extern int32 R[8], trap_req;
-extern uint32 cpu_type;
 
 int32 ReadDstr (int32 *dscr, DSTR *dec, int32 flag);
 void WriteDstr (int32 *dscr, DSTR *dec, int32 flag);
@@ -1371,11 +1370,11 @@ return cy;
 void SubDstr (DSTR *s1, DSTR *s2, DSTR *ds)
 {
 int32 i;
-DSTR compl;
+DSTR complX;
 
 for (i = 0; i < DSTRLNT; i++)
-    compl.val[i] = 0x99999999 - s1->val[i];
-AddDstr (&compl, s2, ds, 1);                            /* s1 + ~s2 + 1 */
+    complX.val[i] = 0x99999999 - s1->val[i];
+AddDstr (&complX, s2, ds, 1);                           /* s1 + ~s2 + 1 */
 return;
 }
 

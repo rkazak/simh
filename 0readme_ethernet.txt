@@ -86,6 +86,11 @@ Linux (Fedora Core 18, 20, CentOS, RedHat, etc.):
     yum install libpcap-devel
     yum install uml-utilities
 
+Linux (Centos 6.x):
+    yum install gcc
+    yum install libpcap-devel
+    yum install uml_utilities
+    
 OpenBSD (OpenBSD 4.6)
 
     /sbin/ifconfig tun0 create
@@ -213,9 +218,11 @@ Note: As mentioned above, NAT networking is specifically capable of providing
 -------------------------------------------------------------------------------
 
 Windows notes:
- 1. The Windows-specific code uses the WinPCAP 4.x package from
-    http://www.winpcap.org. This package for windows simulates the libpcap
-    package that is freely available for un*x systems.
+ 1. The Windows-specific code uses the WinPCAP 4.1.3 package from
+    https://www.winpcap.org/install/bin/WinPcap_4_1_3.exe. This package 
+    for windows simulates the libpcap package that is freely available for 
+    un*x systems.  The Npcap package does not currently allow simulators
+    to exchange packets with the host system while WinPcap does.  
 
  2. You must *install* the WinPCAP runtime package.
 

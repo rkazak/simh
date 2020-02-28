@@ -1,31 +1,41 @@
-/* hp2100_cpu2.c: HP 2100/1000 FP/DMS/EIG/IOP instructions
+/* hp2100_cpu2.c: HP 1000 DMS and EIG microcode simulator
 
-   Copyright (c) 2005-2014, Robert M. Supnik
+   Copyright (c) 2005-2016, Robert M. Supnik
+   Copyright (c) 2017-2018, J. David Bryan
 
-   Permission is hereby granted, free of charge, to any person obtaining a
-   copy of this software and associated documentation files (the "Software"),
-   to deal in the Software without restriction, including without limitation
-   the rights to use, copy, modify, merge, publish, distribute, sublicense,
-   and/or sell copies of the Software, and to permit persons to whom the
-   Software is furnished to do so, subject to the following conditions:
+   Permission is hereby granted, free of charge, to any person obtaining a copy
+   of this software and associated documentation files (the "Software"), to deal
+   in the Software without restriction, including without limitation the rights
+   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+   copies of the Software, and to permit persons to whom the Software is
+   furnished to do so, subject to the following conditions:
 
    The above copyright notice and this permission notice shall be included in
    all copies or substantial portions of the Software.
 
    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
-   ROBERT M SUPNIK BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
-   IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
-   CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
+   AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+   ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+   WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-   Except as contained in this notice, the name of Robert M Supnik shall not be
+   Except as contained in this notice, the names of the authors shall not be
    used in advertising or otherwise to promote the sale, use or other dealings
-   in this Software without prior written authorization from Robert M Supnik.
+   in this Software without prior written authorization from the authors.
 
-   CPU2         Floating-point, dynamic mapping, extended, and I/O processor
-                instructions
+   CPU2         Dynamic Mapping System and Extended Instruction Set instructions
 
+   02-Oct-18    JDB     Replaced DMASK with D16_MASK or R_MASK as appropriate
+   02-Aug-18    JDB     Moved FP and IOP dispatchers to hp2100_cpu1.c
+   30-Jul-18    JDB     Renamed "dms_[rw]map" to "meu_read_map", "meu_write_map"
+   24-Jul-18    JDB     Removed unneeded "iotrap" parameter from "cpu_iog" routine
+   07-Sep-17    JDB     Removed unnecessary "uint16" casts
+   10-Jul-17    JDB     Renamed the global routine "iogrp" to "cpu_iog"
+   26-Jun-17    JDB     Replaced SEXT with SEXT16
+   22-Mar-17    JDB     Corrected comments regarding IR bit 11 selecting A/B
+   25-Jan-17    JDB     Set mp_mem_changed whenever MEM registers are changed
+   05-Aug-16    JDB     Renamed the P register from "PC" to "PR"
    24-Dec-14    JDB     Added casts for explicit downward conversions
    09-May-12    JDB     Separated assignments from conditional expressions
    11-Sep-08    JDB     Moved microcode function prototypes to hp2100_cpu1.h
@@ -42,127 +52,27 @@
    15-Jan-05    RMS     Cloned from hp2100_cpu.c
 
    Primary references:
-   - HP 1000 M/E/F-Series Computers Technical Reference Handbook
-        (5955-0282, Mar-1980)
-   - HP 1000 M/E/F-Series Computers Engineering and Reference Documentation
-        (92851-90001, Mar-1981)
-   - Macro/1000 Reference Manual (92059-90001, Dec-1992)
+     - HP 1000 M/E/F-Series Computers Technical Reference Handbook
+         (5955-0282, March 1980)
+     - HP 1000 M/E/F-Series Computers Engineering and Reference Documentation
+         (92851-90001, March 1981)
+     - Macro/1000 Reference Manual
+         (92059-90001, December 1992)
 
    Additional references are listed with the associated firmware
    implementations, as are the HP option model numbers pertaining to the
    applicable CPUs.
 */
 
+
+
 #include "hp2100_defs.h"
 #include "hp2100_cpu.h"
-#include "hp2100_cpu1.h"
-
-#if !defined (HAVE_INT64)                               /* int64 support unavailable */
-
-#include "hp2100_fp.h"
+#include "hp2100_cpu_dmm.h"
 
 
-/* Single-Precision Floating Point Instructions
 
-   The 2100 and 1000 CPUs share the single-precision (two word) floating-point
-   instruction codes.  Floating-point firmware was an option on the 2100 and was
-   standard on the 1000-M and E.  The 1000-F had a standard hardware Floating
-   Point Processor that executed these six instructions and added extended- and
-   double-precision floating- point instructions, as well as double-integer
-   instructions (the FPP is simulated separately).
-
-   Option implementation by CPU was as follows:
-
-      2114    2115    2116    2100   1000-M  1000-E  1000-F
-     ------  ------  ------  ------  ------  ------  ------
-      N/A     N/A     N/A    12901A   std     std     N/A
-
-   The instruction codes for the 2100 and 1000-M/E systems are mapped to
-   routines as follows:
-
-     Instr.  2100/1000-M/E   Description
-     ------  -------------  -----------------------------------
-     105000       FAD       Single real add
-     105020       FSB       Single real subtract
-     105040       FMP       Single real multiply
-     105060       FDV       Single real divide
-     105100       FIX       Single integer to single real fix
-     105120       FLT       Single real to single integer float
-
-   Bits 3-0 are not decoded by these instructions, so FAD (e.g.) would be
-   executed by any instruction in the range 105000-105017.
-
-   Implementation note: rather than have two simulators that each executes the
-   single-precision FP instruction set, we compile conditionally, based on the
-   availability of 64-bit integer support in the host compiler.  64-bit integers
-   are required for the FPP, so if they are available, then the FPP is used to
-   handle the six single-precision instructions for the 2100 and M/E-Series, and
-   this function is omitted.  If support is unavailable, this function is used
-   instead.
-
-   Implementation note: the operands to FAD, etc. are floating-point values, so
-   OP_F would normally be used.  However, the firmware FP support routines want
-   floating-point operands as 32-bit integer values, so OP_D is used to achieve
-   this.
-*/
-
-static const OP_PAT op_fp[8] = {
-  OP_D,    OP_D,    OP_D,    OP_D,                      /*  FAD    FSB    FMP    FDV  */
-  OP_N,    OP_N,    OP_N,    OP_N                       /*  FIX    FLT    ---    ---  */
-  };
-
-t_stat cpu_fp (uint32 IR, uint32 intrq)
-{
-t_stat reason = SCPE_OK;
-OPS op;
-uint32 entry;
-
-entry = (IR >> 4) & 017;                                /* mask to entry point */
-
-if (op_fp [entry] != OP_N) {
-    reason = cpu_ops (op_fp [entry], op, intrq);        /* get instruction operands */
-
-    if (reason != SCPE_OK)                              /* evaluation failed? */
-        return reason;                                  /* return reason for failure */
-    }
-
-switch (entry) {                                        /* decode IR<7:4> */
-
-    case 000:                                           /* FAD 105000 (OP_D) */
-        O = f_as (op[0].dword, 0);                      /* add, upd ovflo */
-        break;
-
-    case 001:                                           /* FSB 105020 (OP_D) */
-        O = f_as (op[0].dword, 1);                      /* sub, upd ovflo */
-        break;
-
-    case 002:                                           /* FMP 105040 (OP_D) */
-        O = f_mul (op[0].dword);                        /* mul, upd ovflo */
-        break;
-
-    case 003:                                           /* FDV 105060 (OP_D) */
-        O = f_div (op[0].dword);                        /* div, upd ovflo */
-        break;
-
-    case 004:                                           /* FIX 105100 (OP_N) */
-        O = f_fix ();                                   /* fix, upd ovflo */
-        break;
-
-    case 005:                                           /* FLT 105120 (OP_N) */
-        O = f_flt ();                                   /* float, upd ovflo */
-        break;
-
-    default:                                            /* should be impossible */
-        return SCPE_IERR;
-        }
-
-return reason;
-}
-
-#endif                                                  /* int64 support unavailable */
-
-
-/* Dynamic Mapping System
+/* Dynamic Mapping System.
 
    The 1000 Dynamic Mapping System (DMS) consisted of the 12731A Memory
    Expansion Module (MEM) card and 38 instructions to expand the basic 32K
@@ -201,11 +111,12 @@ return reason;
      10x716  [nop]    [nop]     10x736    UJP      UJP
      10x717  [nop]    [nop]     10x737    UJS      UJS
 
-   Instructions that use IR bit 9 to select the A or B register are designated
+   Instructions that use IR bit 11 to select the A or B register are designated
    with a * above (e.g., 101710 is SYA, and 105710 is SYB).  For those that do
    not use this feature, either the 101xxx or 105xxx code will execute the
    corresponding instruction, although the 105xxx form is the documented
    instruction code.
+
 
    Implementation notes:
 
@@ -220,8 +131,8 @@ return reason;
        - load map and CTL5 set (XMM, XMS, XM*, SY*, US*, PA*, PB*)
        - load state or fence and UMAP set (JRS, DJP, DJS, SJP, SJS, UJP, UJS, LF*)
 
-    4. The 1000 manual is incorrect in stating that M*I, M*W, XS* are
-       privileged.
+    4. DM (write) violations for the use of the MBI, MWI, MBW, MWW, XSA, and XSB
+       instructions in protected mode are generated by the mem_write routine.
 
     5. The protected memory lower bound for the DJP, SJP, UJP, and JRS
        instructions is 2.
@@ -238,18 +149,21 @@ static const OP_PAT op_dms[32] = {
   OP_A,    OP_A,    OP_A,    OP_A                       /* SJP    SJS    UJP    UJS   */
   };
 
-t_stat cpu_dms (uint32 IR, uint32 intrq)
+t_stat cpu_dms (uint32 intrq)
 {
 t_stat reason = SCPE_OK;
 OPS op;
-uint32 entry, absel;
-uint32 i, t, mapi, mapj;
+uint8 byte;
+uint32 entry, absel, i;
+HP_WORD t;
+MEU_STATE operation;
+MEU_MAP_SELECTOR mapi, mapj;
 
-absel = (IR & I_AB)? 1: 0;                              /* get A/B select */
+absel = AB_SELECT (IR);                                 /* get the A/B register selector */
 entry = IR & 037;                                       /* mask to entry point */
 
 if (op_dms [entry] != OP_N) {
-    reason = cpu_ops (op_dms [entry], op, intrq);       /* get instruction operands */
+    reason = cpu_ops (op_dms [entry], op);              /* get instruction operands */
 
     if (reason != SCPE_OK)                              /* evaluation failed? */
         return reason;                                  /* return reason for failure */
@@ -263,7 +177,7 @@ switch (entry) {                                        /* decode IR<3:0> */
         goto XMM;                                       /* decodes as XMM */
 
     case 001:                                           /* [self test] 105701 (OP_N) */
-        if (UNIT_CPU_MODEL != UNIT_1000_M)              /* executes as NOP on 1000-M */
+        if (!(cpu_configuration & CPU_1000_M))          /* executes as NOP on 1000-M */
             ABREG[absel] = ~ABREG[absel];               /* CMA or CMB */
         break;
 
@@ -271,13 +185,13 @@ switch (entry) {                                        /* decode IR<3:0> */
         AR = AR & ~1;                                   /* force A, B even */
         BR = BR & ~1;
         while (XR != 0) {                               /* loop */
-            t = ReadB (AR);                             /* read curr */
-            WriteBA (BR, t);                            /* write alt */
-            AR = (AR + 1) & DMASK;                      /* incr ptrs */
-            BR = (BR + 1) & DMASK;
-            XR = (XR - 1) & DMASK;
+            byte = ReadB (AR);                          /* read curr */
+            WriteBA (BR, byte);                         /* write alt */
+            AR = (AR + 1) & R_MASK;                     /* incr ptrs */
+            BR = (BR + 1) & R_MASK;
+            XR = (XR - 1) & R_MASK;
             if (XR && intrq && !(AR & 1)) {             /* more, int, even? */
-                PC = err_PC;                            /* stop for now */
+                PR = err_PR;                            /* stop for now */
                 break;
                 }
             }
@@ -287,13 +201,13 @@ switch (entry) {                                        /* decode IR<3:0> */
         AR = AR & ~1;                                   /* force A, B even */
         BR = BR & ~1;
         while (XR != 0) {                               /* loop */
-            t = ReadBA (AR);                            /* read alt */
-            WriteB (BR, t);                             /* write curr */
-            AR = (AR + 1) & DMASK;                      /* incr ptrs */
-            BR = (BR + 1) & DMASK;
-            XR = (XR - 1) & DMASK;
+            byte = ReadBA (AR);                         /* read alt */
+            WriteB (BR, byte);                          /* write curr */
+            AR = (AR + 1) & R_MASK;                     /* incr ptrs */
+            BR = (BR + 1) & R_MASK;
+            XR = (XR - 1) & R_MASK;
             if (XR && intrq && !(AR & 1)) {             /* more, int, even? */
-                PC = err_PC;                            /* stop for now */
+                PR = err_PR;                            /* stop for now */
                 break;
                 }
             }
@@ -303,13 +217,13 @@ switch (entry) {                                        /* decode IR<3:0> */
         AR = AR & ~1;                                   /* force A, B even */
         BR = BR & ~1;
         while (XR != 0) {                               /* loop */
-            t = ReadBA (AR);                            /* read alt */
-            WriteBA (BR, t);                            /* write alt */
-            AR = (AR + 1) & DMASK;                      /* incr ptrs */
-            BR = (BR + 1) & DMASK;
-            XR = (XR - 1) & DMASK;
+            byte = ReadBA (AR);                         /* read alt */
+            WriteBA (BR, byte);                         /* write alt */
+            AR = (AR + 1) & R_MASK;                     /* incr ptrs */
+            BR = (BR + 1) & R_MASK;
+            XR = (XR - 1) & R_MASK;
             if (XR && intrq && !(AR & 1)) {             /* more, int, even? */
-                PC = err_PC;                            /* stop for now */
+                PR = err_PR;                            /* stop for now */
                 break;
                 }
             }
@@ -317,13 +231,13 @@ switch (entry) {                                        /* decode IR<3:0> */
 
     case 005:                                           /* MWI 105705 (OP_N) */
         while (XR != 0) {                               /* loop */
-            t = ReadW (AR & VAMASK);                    /* read curr */
-            WriteWA (BR & VAMASK, t);                   /* write alt */
-            AR = (AR + 1) & DMASK;                      /* incr ptrs */
-            BR = (BR + 1) & DMASK;
-            XR = (XR - 1) & DMASK;
+            t = ReadW (AR & LA_MASK);                   /* read curr */
+            WriteWA (BR & LA_MASK, t);                  /* write alt */
+            AR = (AR + 1) & R_MASK;                     /* incr ptrs */
+            BR = (BR + 1) & R_MASK;
+            XR = (XR - 1) & R_MASK;
             if (XR && intrq) {                          /* more and intr? */
-                PC = err_PC;                            /* stop for now */
+                PR = err_PR;                            /* stop for now */
                 break;
                 }
             }
@@ -331,13 +245,13 @@ switch (entry) {                                        /* decode IR<3:0> */
 
     case 006:                                           /* MWF 105706 (OP_N) */
         while (XR != 0) {                               /* loop */
-            t = ReadWA (AR & VAMASK);                   /* read alt */
-            WriteW (BR & VAMASK, t);                    /* write curr */
-            AR = (AR + 1) & DMASK;                      /* incr ptrs */
-            BR = (BR + 1) & DMASK;
-            XR = (XR - 1) & DMASK;
+            t = ReadWA (AR & LA_MASK);                  /* read alt */
+            WriteW (BR & LA_MASK, t);                   /* write curr */
+            AR = (AR + 1) & R_MASK;                     /* incr ptrs */
+            BR = (BR + 1) & R_MASK;
+            XR = (XR - 1) & R_MASK;
             if (XR && intrq) {                          /* more and intr? */
-                PC = err_PC;                            /* stop for now */
+                PR = err_PR;                            /* stop for now */
                 break;
                 }
             }
@@ -345,13 +259,13 @@ switch (entry) {                                        /* decode IR<3:0> */
 
     case 007:                                           /* MWW 105707 (OP_N) */
         while (XR != 0) {                               /* loop */
-            t = ReadWA (AR & VAMASK);                   /* read alt */
-            WriteWA (BR & VAMASK, t);                   /* write alt */
-            AR = (AR + 1) & DMASK;                      /* incr ptrs */
-            BR = (BR + 1) & DMASK;
-            XR = (XR - 1) & DMASK;
+            t = ReadWA (AR & LA_MASK);                  /* read alt */
+            WriteWA (BR & LA_MASK, t);                  /* write alt */
+            AR = (AR + 1) & R_MASK;                     /* incr ptrs */
+            BR = (BR + 1) & R_MASK;
+            XR = (XR - 1) & R_MASK;
             if (XR && intrq) {                          /* more and intr? */
-                PC = err_PC;                            /* stop for now */
+                PR = err_PR;                            /* stop for now */
                 break;
                 }
             }
@@ -361,39 +275,44 @@ switch (entry) {                                        /* decode IR<3:0> */
     case 011:                                           /* USA, USB 10x711 (OP_N) */
     case 012:                                           /* PAA, PAB 10x712 (OP_N) */
     case 013:                                           /* PBA, PBB 10x713 (OP_N) */
-        mapi = (IR & 03) << VA_N_PAG;                   /* map base */
-        if (ABREG[absel] & SIGN) {                      /* store? */
-            for (i = 0; i < MAP_LNT; i++) {
-                t = dms_rmap (mapi + i);                /* map to memory */
-                WriteW ((ABREG[absel] + i) & VAMASK, t);
+        mapi = TO_MAP_SELECTOR (IR);                    /* map base */
+        if (ABREG[absel] & D16_SIGN) {                  /* store? */
+            for (i = 0; i < MEU_REG_COUNT; i++) {
+                t = meu_read_map (mapi, i);             /* map to memory */
+                WriteW ((ABREG[absel] + i) & LA_MASK, t);
                 }
             }
         else {                                          /* load */
-            dms_viol (err_PC, MVI_PRV);                 /* priv if PRO */
-            for (i = 0; i < MAP_LNT; i++) {
-                t = ReadW ((ABREG[absel] + i) & VAMASK);
-                dms_wmap (mapi + i, t);                 /* mem to map */
+            meu_privileged (Always);                    /* priv if PRO */
+            for (i = 0; i < MEU_REG_COUNT; i++) {
+                t = ReadW ((ABREG[absel] + i) & LA_MASK);
+                meu_write_map (mapi, i, t);             /* mem to map */
                 }
             }
-        ABREG[absel] = (ABREG[absel] + MAP_LNT) & DMASK;
+        ABREG[absel] = (ABREG[absel] + MEU_REG_COUNT) & R_MASK;
         break;
 
     case 014:                                           /* SSM 105714 (OP_A) */
-        WriteW (op[0].word, dms_upd_sr ());             /* store stat */
+        WriteW (op[0].word, meu_update_status ());      /* store stat */
         break;
 
     case 015:                                           /* JRS 105715 (OP_KA) */
-        if (dms_ump) dms_viol (err_PC, MVI_PRV);        /* priv viol if prot */
-        dms_enb = 0;                                    /* assume off */
-        dms_ump = SMAP;
-        if (op[0].word & 0100000) {                     /* set enable? */
-            dms_enb = 1;
-            if (op[0].word & 0040000) dms_ump = UMAP;   /* set/clr usr */
-            }
-        mp_dms_jmp (op[1].word, 2);                     /* mpck jmp target */
-        PCQ_ENTRY;                                      /* save old PC */
-        PC = op[1].word;                                /* jump */
-        ion_defer = 1;                                  /* defer intr */
+        meu_privileged (If_User_Map);                   /* priv viol if prot */
+
+        if (op[0].word & 0100000)                       /* bit 15 0/1 = disable/enable MEM */
+            operation = ME_Enabled;
+        else
+            operation = ME_Disabled;
+
+        if (op[0].word & 0040000)                       /* if bit 14 is set */
+            meu_set_state (operation, User_Map);        /*   then select the user map */
+        else                                            /* otherwise */
+            meu_set_state (operation, System_Map);      /*   select the system map */
+
+        mp_check_jmp (op[1].word, 2);                   /* mpck jmp target */
+        PCQ_ENTRY;                                      /* save old P */
+        PR = op[1].word;                                /* jump */
+        cpu_interrupt_enable = CLEAR;                   /* disable interrupts */
         break;
 
 /* DMS module 2 */
@@ -402,50 +321,57 @@ switch (entry) {                                        /* decode IR<3:0> */
     XMM:
         if (XR == 0) break;                             /* nop? */
         while (XR != 0) {                               /* loop */
-            if (XR & SIGN) {                            /* store? */
-                t = dms_rmap (AR);                      /* map to mem */
-                WriteW (BR & VAMASK, t);
-                XR = (XR + 1) & DMASK;
+            if (XR & D16_SIGN) {                        /* store? */
+                t = meu_read_map (Linear_Map, AR);      /* map to mem */
+                WriteW (BR & LA_MASK, t);
+                XR = (XR + 1) & R_MASK;
                 }
             else {                                      /* load */
-                dms_viol (err_PC, MVI_PRV);             /* priv viol if prot */
-                t = ReadW (BR & VAMASK);                /* mem to map */
-                dms_wmap (AR, t);
-                XR = (XR - 1) & DMASK;
+                meu_privileged (Always);                /* priv viol if prot */
+                t = ReadW (BR & LA_MASK);               /* mem to map */
+                meu_write_map (Linear_Map, AR, t);
+                XR = (XR - 1) & R_MASK;
                 }
-            AR = (AR + 1) & DMASK;
-            BR = (BR + 1) & DMASK;
+            AR = (AR + 1) & R_MASK;
+            BR = (BR + 1) & R_MASK;
             if (intrq && ((XR & 017) == 017)) {         /* intr, grp of 16? */
-                PC = err_PC;                            /* stop for now */
+                PR = err_PR;                            /* stop for now */
                 break;
                 }
             }
         break;
 
     case 021:                                           /* XMS 105721 (OP_N) */
-        if ((XR & SIGN) || (XR == 0)) break;            /* nop? */
-        dms_viol (err_PC, MVI_PRV);                     /* priv viol if prot */
+        if ((XR & D16_SIGN) || (XR == 0)) break;        /* nop? */
+        meu_privileged (Always);                        /* priv viol if prot */
         while (XR != 0) {
-            dms_wmap (AR, BR);                          /* AR to map */
-            XR = (XR - 1) & DMASK;
-            AR = (AR + 1) & DMASK;
-            BR = (BR + 1) & DMASK;
+            meu_write_map (Linear_Map, AR, BR);         /* AR to map */
+            XR = (XR - 1) & R_MASK;
+            AR = (AR + 1) & R_MASK;
+            BR = (BR + 1) & R_MASK;
             if (intrq && ((XR & 017) == 017)) {         /* intr, grp of 16? */
-                PC = err_PC;
+                PR = err_PR;
                 break;
                 }
             }
         break;
 
     case 022:                                           /* XMA, XMB 10x722 (OP_N) */
-        dms_viol (err_PC, MVI_PRV);                     /* priv viol if prot */
-        if (ABREG[absel] & 0100000) mapi = UMAP;
-        else mapi = SMAP;
-        if (ABREG[absel] & 0000001) mapj = PBMAP;
-        else mapj = PAMAP;
-        for (i = 0; i < MAP_LNT; i++) {
-            t = dms_rmap (mapi + i);                    /* read map */
-            dms_wmap (mapj + i, t);                     /* write map */
+        meu_privileged (Always);                        /* priv viol if prot */
+
+        if (ABREG [absel] & 0100000)
+            mapi = User_Map;
+        else
+            mapi = System_Map;
+
+        if (ABREG [absel] & 0000001)
+            mapj = Port_B_Map;
+        else
+            mapj = Port_A_Map;
+
+        for (i = 0; i < MEU_REG_COUNT; i++) {
+            t = meu_read_map (mapi, i);                 /* read map */
+            meu_write_map (mapj, i, t);                 /* write map */
             }
         break;
 
@@ -459,83 +385,76 @@ switch (entry) {                                        /* decode IR<3:0> */
 
     case 026:                                           /* XCA, XCB 10x726 (OP_A) */
         if (ABREG[absel] != ReadWA (op[0].word))        /* compare alt */
-            PC = (PC + 1) & VAMASK;
+            PR = (PR + 1) & LA_MASK;
         break;
 
     case 027:                                           /* LFA, LFB 10x727 (OP_N) */
-        if (dms_ump) dms_viol (err_PC, MVI_PRV);        /* priv viol if prot */
-        dms_sr = (dms_sr & ~(MST_FLT | MST_FENCE)) |
-            (ABREG[absel] & (MST_FLT | MST_FENCE));
+        meu_privileged (If_User_Map);                   /* priv viol if prot */
+        meu_set_fence (ABREG [absel]);                  /* load the MEM fence register */
         break;
 
     case 030:                                           /* RSA, RSB 10x730 (OP_N) */
-        ABREG[absel] = (uint16) dms_upd_sr ();          /* save stat */
+        ABREG [absel] = meu_update_status ();           /* save stat */
         break;
 
     case 031:                                           /* RVA, RVB 10x731 (OP_N) */
-        ABREG[absel] = (uint16) dms_upd_vr (err_PC);    /* return updated violation register */
+        ABREG [absel] = meu_update_violation ();        /* return updated violation register */
         break;
 
     case 032:                                           /* DJP 105732 (OP_A) */
-        if (dms_ump) dms_viol (err_PC, MVI_PRV);        /* priv viol if prot */
-        dms_enb = 0;                                    /* disable map */
-        dms_ump = SMAP;
-        mp_dms_jmp (op[0].word, 2);                     /* validate jump addr */
-        PCQ_ENTRY;                                      /* save curr PC */
-        PC = op[0].word;                                /* new PC */
-        ion_defer = 1;
+        meu_privileged (If_User_Map);                   /* priv viol if prot */
+        meu_set_state (ME_Disabled, System_Map);        /* disable MEM and switch to the system map */
+        mp_check_jmp (op[0].word, 2);                   /* validate jump addr */
+        PCQ_ENTRY;                                      /* save curr P */
+        PR = op[0].word;                                /* new P */
+        cpu_interrupt_enable = CLEAR;                   /* disable interrupts */
         break;
 
     case 033:                                           /* DJS 105733 (OP_A) */
-        if (dms_ump) dms_viol (err_PC, MVI_PRV);        /* priv viol if prot */
-        WriteW (op[0].word, PC);                        /* store ret addr */
-        PCQ_ENTRY;                                      /* save curr PC */
-        PC = (op[0].word + 1) & VAMASK;                 /* new PC */
-        dms_enb = 0;                                    /* disable map */
-        dms_ump = SMAP;
-        ion_defer = 1;                                  /* defer intr */
+        meu_privileged (If_User_Map);                   /* priv viol if prot */
+        WriteW (op[0].word, PR);                        /* store ret addr */
+        PCQ_ENTRY;                                      /* save curr P */
+        PR = (op[0].word + 1) & LA_MASK;                /* new P */
+        meu_set_state (ME_Disabled, System_Map);        /* disable MEM and switch to the system map */
+        cpu_interrupt_enable = CLEAR;                   /* disable interrupts */
         break;
 
     case 034:                                           /* SJP 105734 (OP_A) */
-        if (dms_ump) dms_viol (err_PC, MVI_PRV);        /* priv viol if prot */
-        dms_enb = 1;                                    /* enable system */
-        dms_ump = SMAP;
-        mp_dms_jmp (op[0].word, 2);                     /* validate jump addr */
-        PCQ_ENTRY;                                      /* save curr PC */
-        PC = op[0].word;                                /* jump */
-        ion_defer = 1;                                  /* defer intr */
+        meu_privileged (If_User_Map);                   /* priv viol if prot */
+        meu_set_state (ME_Enabled, System_Map);         /* enable MEM and switch to the system map */
+        mp_check_jmp (op[0].word, 2);                   /* validate jump addr */
+        PCQ_ENTRY;                                      /* save curr P */
+        PR = op[0].word;                                /* jump */
+        cpu_interrupt_enable = CLEAR;                   /* disable interrupts */
         break;
 
     case 035:                                           /* SJS 105735 (OP_A) */
-        if (dms_ump) dms_viol (err_PC, MVI_PRV);        /* priv viol if prot */
-        t = PC;                                         /* save retn addr */
-        PCQ_ENTRY;                                      /* save curr PC */
-        PC = (op[0].word + 1) & VAMASK;                 /* new PC */
-        dms_enb = 1;                                    /* enable system */
-        dms_ump = SMAP;
+        meu_privileged (If_User_Map);                   /* priv viol if prot */
+        t = PR;                                         /* save retn addr */
+        PCQ_ENTRY;                                      /* save curr P */
+        PR = (op[0].word + 1) & LA_MASK;                /* new P */
+        meu_set_state (ME_Enabled, System_Map);         /* enable MEM and switch to the system map */
         WriteW (op[0].word, t);                         /* store ret addr */
-        ion_defer = 1;                                  /* defer intr */
+        cpu_interrupt_enable = CLEAR;                   /* disable interrupts */
         break;
 
     case 036:                                           /* UJP 105736 (OP_A) */
-        if (dms_ump) dms_viol (err_PC, MVI_PRV);        /* priv viol if prot */
-        dms_enb = 1;                                    /* enable user */
-        dms_ump = UMAP;
-        mp_dms_jmp (op[0].word, 2);                     /* validate jump addr */
-        PCQ_ENTRY;                                      /* save curr PC */
-        PC = op[0].word;                                /* jump */
-        ion_defer = 1;                                  /* defer intr */
+        meu_privileged (If_User_Map);                   /* priv viol if prot */
+        meu_set_state (ME_Enabled, User_Map);           /* enable MEM and switch to the user map */
+        mp_check_jmp (op[0].word, 2);                   /* validate jump addr */
+        PCQ_ENTRY;                                      /* save curr P */
+        PR = op[0].word;                                /* jump */
+        cpu_interrupt_enable = CLEAR;                   /* disable interrupts */
         break;
 
     case 037:                                           /* UJS 105737 (OP_A) */
-        if (dms_ump) dms_viol (err_PC, MVI_PRV);        /* priv viol if prot */
-        t = PC;                                         /* save retn addr */
-        PCQ_ENTRY;                                      /* save curr PC */
-        PC = (op[0].word + 1) & VAMASK;                 /* new PC */
-        dms_enb = 1;                                    /* enable user */
-        dms_ump = UMAP;
+        meu_privileged (If_User_Map);                   /* priv viol if prot */
+        t = PR;                                         /* save retn addr */
+        PCQ_ENTRY;                                      /* save curr P */
+        PR = (op[0].word + 1) & LA_MASK;                /* new P */
+        meu_set_state (ME_Enabled, User_Map);           /* enable MEM and switch to the user map */
         WriteW (op[0].word, t);                         /* store ret addr */
-        ion_defer = 1;                                  /* defer intr */
+        cpu_interrupt_enable = CLEAR;                   /* disable interrupts */
         break;
 
     default:                                            /* others NOP */
@@ -580,7 +499,7 @@ return reason;
      10x756     ADY       10x776      CMW
      10x757     X*Y       10x777      MVW
 
-   Instructions that use IR bit 9 to select the A or B register are designated
+   Instructions that use IR bit 11 to select the A or B register are designated
    with a * above (e.g., 101740 is SAX, and 105740 is SBX).  For those that do
    not use this feature, either the 101xxx or 105xxx code will execute the
    corresponding instruction, although the 105xxx form is the documented
@@ -606,19 +525,20 @@ static const OP_PAT op_eig[32] = {
   OP_KA,   OP_KK,   OP_KV,   OP_KV                      /* CBS    TBS    CMW    MVW   */
   };
 
-t_stat cpu_eig (uint32 IR, uint32 intrq)
+t_stat cpu_eig (HP_WORD IR, uint32 intrq)
 {
 t_stat reason = SCPE_OK;
 OPS op;
-uint32 entry, absel;
-uint32 t, v1, v2, wc;
+uint8 byte, b1, b2;
+uint32 entry, absel, sum;
+HP_WORD t, v1, v2, wc;
 int32 sop1, sop2;
 
-absel = (IR & I_AB)? 1: 0;                              /* get A/B select */
+absel = AB_SELECT (IR);                                 /* get the A/B register selector */
 entry = IR & 037;                                       /* mask to entry point */
 
 if (op_eig [entry] != OP_N) {
-    reason = cpu_ops (op_eig [entry], op, intrq);       /* get instruction operands */
+    reason = cpu_ops (op_eig [entry], op);              /* get instruction operands */
 
     if (reason != SCPE_OK)                              /* evaluation failed? */
         return reason;                                  /* return reason for failure */
@@ -629,7 +549,7 @@ switch (entry) {                                        /* decode IR<4:0> */
 /* EIG module 1 */
 
     case 000:                                           /* SAX, SBX 10x740 (OP_A) */
-        op[0].word = (op[0].word + XR) & VAMASK;        /* indexed addr */
+        op[0].word = (op[0].word + XR) & LA_MASK;       /* indexed addr */
         WriteW (op[0].word, ABREG[absel]);              /* store */
         break;
 
@@ -638,7 +558,7 @@ switch (entry) {                                        /* decode IR<4:0> */
         break;
 
     case 002:                                           /* LAX, LBX 10x742 (OP_A) */
-        op[0].word = (op[0].word + XR) & VAMASK;        /* indexed addr */
+        op[0].word = (op[0].word + XR) & LA_MASK;       /* indexed addr */
         ABREG[absel] = ReadW (op[0].word);              /* load */
         break;
 
@@ -647,7 +567,7 @@ switch (entry) {                                        /* decode IR<4:0> */
         break;
 
     case 004:                                           /* CXA, CXB 10x744 (OP_N) */
-        ABREG[absel] = (uint16) XR;                     /* copy from XR */
+        ABREG [absel] = XR;                             /* copy from XR */
         break;
 
     case 005:                                           /* LDX 105745 (OP_K)*/
@@ -655,20 +575,20 @@ switch (entry) {                                        /* decode IR<4:0> */
         break;
 
     case 006:                                           /* ADX 105746 (OP_K) */
-        t = XR + op[0].word;                            /* add to XR */
-        if (t > DMASK) E = 1;                           /* set E, O */
-        if (((~XR ^ op[0].word) & (XR ^ t)) & SIGN) O = 1;
-        XR = t & DMASK;
+        sum = XR + op[0].word;                          /* add to XR */
+        if (sum > D16_UMAX) E = 1;                      /* set E, O */
+        if (((~XR ^ op[0].word) & (XR ^ sum)) & D16_SIGN) O = 1;
+        XR = sum & R_MASK;
         break;
 
     case 007:                                           /* XAX, XBX 10x747 (OP_N) */
         t = XR;                                         /* exchange XR */
-        XR = ABREG[absel];
-        ABREG[absel] = (uint16) t;
+        XR = ABREG [absel];
+        ABREG [absel] = t;
         break;
 
     case 010:                                           /* SAY, SBY 10x750 (OP_A) */
-        op[0].word = (op[0].word + YR) & VAMASK;        /* indexed addr */
+        op[0].word = (op[0].word + YR) & LA_MASK;       /* indexed addr */
         WriteW (op[0].word, ABREG[absel]);              /* store */
         break;
 
@@ -677,7 +597,7 @@ switch (entry) {                                        /* decode IR<4:0> */
         break;
 
     case 012:                                           /* LAY, LBY 10x752 (OP_A) */
-        op[0].word = (op[0].word + YR) & VAMASK;        /* indexed addr */
+        op[0].word = (op[0].word + YR) & LA_MASK;       /* indexed addr */
         ABREG[absel] = ReadW (op[0].word);              /* load */
         break;
 
@@ -686,7 +606,7 @@ switch (entry) {                                        /* decode IR<4:0> */
         break;
 
     case 014:                                           /* CYA, CYB 10x754 (OP_N) */
-        ABREG[absel] = (uint16) YR;                     /* copy from YR */
+        ABREG [absel] = YR;                             /* copy from YR */
         break;
 
     case 015:                                           /* LDY 105755 (OP_K) */
@@ -694,62 +614,62 @@ switch (entry) {                                        /* decode IR<4:0> */
         break;
 
     case 016:                                           /* ADY 105756 (OP_K) */
-        t = YR + op[0].word;                            /* add to YR */
-        if (t > DMASK) E = 1;                           /* set E, O */
-        if (((~YR ^ op[0].word) & (YR ^ t)) & SIGN) O = 1;
-        YR = t & DMASK;
+        sum = YR + op[0].word;                          /* add to YR */
+        if (sum > D16_UMAX) E = 1;                      /* set E, O */
+        if (((~YR ^ op[0].word) & (YR ^ sum)) & D16_SIGN) O = 1;
+        YR = sum & R_MASK;
         break;
 
     case 017:                                           /* XAY, XBY 10x757 (OP_N) */
         t = YR;                                         /* exchange YR */
-        YR = ABREG[absel];
-        ABREG[absel] = (uint16) t;
+        YR = ABREG [absel];
+        ABREG [absel] = t;
         break;
 
 /* EIG module 2 */
 
     case 020:                                           /* ISX 105760 (OP_N) */
-        XR = (XR + 1) & DMASK;                          /* incr XR */
-        if (XR == 0) PC = (PC + 1) & VAMASK;            /* skip if zero */
+        XR = (XR + 1) & R_MASK;                         /* incr XR */
+        if (XR == 0) PR = (PR + 1) & LA_MASK;           /* skip if zero */
         break;
 
     case 021:                                           /* DSX 105761 (OP_N) */
-        XR = (XR - 1) & DMASK;                          /* decr XR */
-        if (XR == 0) PC = (PC + 1) & VAMASK;            /* skip if zero */
+        XR = (XR - 1) & R_MASK;                         /* decr XR */
+        if (XR == 0) PR = (PR + 1) & LA_MASK;           /* skip if zero */
         break;
 
     case 022:                                           /* JLY 105762 (OP_A) */
-        mp_dms_jmp (op[0].word, 0);                     /* validate jump addr */
+        mp_check_jmp (op[0].word, 0);                   /* validate jump addr */
         PCQ_ENTRY;
-        YR = PC;                                        /* ret addr to YR */
-        PC = op[0].word;                                /* jump */
+        YR = PR;                                        /* ret addr to YR */
+        PR = op[0].word;                                /* jump */
         break;
 
     case 023:                                           /* LBT 105763 (OP_N) */
         AR = ReadB (BR);                                /* load byte */
-        BR = (BR + 1) & DMASK;                          /* incr ptr */
+        BR = (BR + 1) & R_MASK;                         /* incr ptr */
         break;
 
     case 024:                                           /* SBT 105764 (OP_N) */
-        WriteB (BR, AR);                                /* store byte */
-        BR = (BR + 1) & DMASK;                          /* incr ptr */
+        WriteB (BR, LOWER_BYTE (AR));                   /* store byte */
+        BR = (BR + 1) & R_MASK;                         /* incr ptr */
         break;
 
     case 025:                                           /* MBT 105765 (OP_KV) */
         wc = ReadW (op[1].word);                        /* get continuation count */
         if (wc == 0) wc = op[0].word;                   /* none? get initiation count */
-        if ((wc & SIGN) &&
-            (UNIT_CPU_TYPE == UNIT_TYPE_2100))
+        if ((wc & D16_SIGN) &&
+            cpu_configuration & CPU_2100)
             break;                                      /* < 0 is NOP for 2100 IOP */
         while (wc != 0) {                               /* while count */
             WriteW (op[1].word, wc);                    /* for MP abort */
-            t = ReadB (AR);                             /* move byte */
-            WriteB (BR, t);
-            AR = (AR + 1) & DMASK;                      /* incr src */
-            BR = (BR + 1) & DMASK;                      /* incr dst */
-            wc = (wc - 1) & DMASK;                      /* decr cnt */
+            byte = ReadB (AR);                          /* move byte */
+            WriteB (BR, byte);
+            AR = (AR + 1) & R_MASK;                     /* incr src */
+            BR = (BR + 1) & R_MASK;                     /* incr dst */
+            wc = (wc - 1) & D16_MASK;                   /* decr cnt */
             if (intrq && wc) {                          /* intr, more to do? */
-                PC = err_PC;                            /* back up PC */
+                PR = err_PR;                            /* back up P */
                 break;
                 }
             }
@@ -761,19 +681,19 @@ switch (entry) {                                        /* decode IR<4:0> */
         if (wc == 0) wc = op[0].word;                   /* none? get initiation count */
         while (wc != 0) {                               /* while count */
             WriteW (op[1].word, wc);                    /* for MP abort */
-            v1 = ReadB (AR);                            /* get src1 */
-            v2 = ReadB (BR);                            /* get src2 */
-            if (v1 != v2) {                             /* compare */
-                PC = (PC + 1 + (v1 > v2)) & VAMASK;
-                BR = (BR + wc) & DMASK;                 /* update BR */
+            b1 = ReadB (AR);                            /* get src1 */
+            b2 = ReadB (BR);                            /* get src2 */
+            if (b1 != b2) {                             /* compare */
+                PR = (PR + 1 + (b1 > b2)) & LA_MASK;
+                BR = (BR + wc) & R_MASK;                /* update BR */
                 wc = 0;                                 /* clr interim */
                 break;
                 }
-            AR = (AR + 1) & DMASK;                      /* incr src1 */
-            BR = (BR + 1) & DMASK;                      /* incr src2 */
-            wc = (wc - 1) & DMASK;                      /* decr cnt */
+            AR = (AR + 1) & R_MASK;                     /* incr src1 */
+            BR = (BR + 1) & R_MASK;                     /* incr src2 */
+            wc = (wc - 1) & D16_MASK;                   /* decr cnt */
             if (intrq && wc) {                          /* intr, more to do? */
-                PC = err_PC;                            /* back up PC */
+                PR = err_PR;                            /* back up P */
                 break;
                 }
             }
@@ -781,38 +701,38 @@ switch (entry) {                                        /* decode IR<4:0> */
         break;
 
     case 027:                                           /* SFB 105767 (OP_N) */
-        v1 = AR & 0377;                                 /* test byte */
-        v2 = (AR >> 8) & 0377;                          /* term byte */
+        b1 = LOWER_BYTE (AR);                           /* test byte */
+        b2 = UPPER_BYTE (AR);                           /* term byte */
         for (;;) {                                      /* scan */
-            t = ReadB (BR);                             /* read byte */
-            if (t == v1) break;                         /* test match? */
-            BR = (BR + 1) & DMASK;
-            if (t == v2) {                              /* term match? */
-                PC = (PC + 1) & VAMASK;
+            byte = ReadB (BR);                          /* read byte */
+            if (byte == b1) break;                      /* test match? */
+            BR = (BR + 1) & R_MASK;
+            if (byte == b2) {                           /* term match? */
+                PR = (PR + 1) & LA_MASK;
                 break;
                 }
             if (intrq) {                                /* int pending? */
-                PC = err_PC;                            /* back up PC */
+                PR = err_PR;                            /* back up P */
                 break;
                 }
             }
         break;
 
     case 030:                                           /* ISY 105770 (OP_N) */
-        YR = (YR + 1) & DMASK;                          /* incr YR */
-        if (YR == 0) PC = (PC + 1) & VAMASK;            /* skip if zero */
+        YR = (YR + 1) & R_MASK;                         /* incr YR */
+        if (YR == 0) PR = (PR + 1) & LA_MASK;           /* skip if zero */
         break;
 
     case 031:                                           /* DSY 105771 (OP_N) */
-        YR = (YR - 1) & DMASK;                          /* decr YR */
-        if (YR == 0) PC = (PC + 1) & VAMASK;            /* skip if zero */
+        YR = (YR - 1) & R_MASK;                         /* decr YR */
+        if (YR == 0) PR = (PR + 1) & LA_MASK;           /* skip if zero */
         break;
 
     case 032:                                           /* JPY 105772 (OP_C) */
-        op[0].word = (op[0].word + YR) & VAMASK;        /* index, no indir */
-        mp_dms_jmp (op[0].word, 0);                     /* validate jump addr */
+        op[0].word = (op[0].word + YR) & LA_MASK;       /* index, no indir */
+        mp_check_jmp (op[0].word, 0);                   /* validate jump addr */
         PCQ_ENTRY;
-        PC = op[0].word;                                /* jump */
+        PR = op[0].word;                                /* jump */
         break;
 
     case 033:                                           /* SBS 105773 (OP_KA) */
@@ -827,7 +747,7 @@ switch (entry) {                                        /* decode IR<4:0> */
 
     case 035:                                           /* TBS 105775 (OP_KK) */
         if ((op[1].word & op[0].word) != op[0].word)    /* test bits */
-            PC = (PC + 1) & VAMASK;
+            PR = (PR + 1) & LA_MASK;
         break;
 
     case 036:                                           /* CMW 105776 (OP_KV) */
@@ -835,21 +755,21 @@ switch (entry) {                                        /* decode IR<4:0> */
         if (wc == 0) wc = op[0].word;                   /* none? get initiation count */
         while (wc != 0) {                               /* while count */
             WriteW (op[1].word, wc);                    /* for abort */
-            v1 = ReadW (AR & VAMASK);                   /* first op */
-            v2 = ReadW (BR & VAMASK);                   /* second op */
-            sop1 = (int32) SEXT (v1);                   /* signed */
-            sop2 = (int32) SEXT (v2);
+            v1 = ReadW (AR & LA_MASK);                  /* first op */
+            v2 = ReadW (BR & LA_MASK);                  /* second op */
+            sop1 = SEXT16 (v1);                         /* signed */
+            sop2 = SEXT16 (v2);
             if (sop1 != sop2) {                         /* compare */
-                PC = (PC + 1 + (sop1 > sop2)) & VAMASK;
-                BR = (BR + wc) & DMASK;                 /* update BR */
+                PR = (PR + 1 + (sop1 > sop2)) & LA_MASK;
+                BR = (BR + wc) & R_MASK;                /* update BR */
                 wc = 0;                                 /* clr interim */
                 break;
                 }
-            AR = (AR + 1) & DMASK;                      /* incr src1 */
-            BR = (BR + 1) & DMASK;                      /* incr src2 */
-            wc = (wc - 1) & DMASK;                      /* decr cnt */
+            AR = (AR + 1) & R_MASK;                     /* incr src1 */
+            BR = (BR + 1) & R_MASK;                     /* incr src2 */
+            wc = (wc - 1) & D16_MASK;                   /* decr cnt */
             if (intrq && wc) {                          /* intr, more to do? */
-                PC = err_PC;                            /* back up PC */
+                PR = err_PR;                            /* back up P */
                 break;
                 }
             }
@@ -859,271 +779,24 @@ switch (entry) {                                        /* decode IR<4:0> */
     case 037:                                           /* MVW 105777 (OP_KV) */
         wc = ReadW (op[1].word);                        /* get continuation count */
         if (wc == 0) wc = op[0].word;                   /* none? get initiation count */
-        if ((wc & SIGN) &&
-            (UNIT_CPU_TYPE == UNIT_TYPE_2100))
+        if ((wc & D16_SIGN) &&
+            cpu_configuration & CPU_2100)
             break;                                      /* < 0 is NOP for 2100 IOP */
         while (wc != 0) {                               /* while count */
             WriteW (op[1].word, wc);                    /* for abort */
-            t = ReadW (AR & VAMASK);                    /* move word */
-            WriteW (BR & VAMASK, t);
-            AR = (AR + 1) & DMASK;                      /* incr src */
-            BR = (BR + 1) & DMASK;                      /* incr dst */
-            wc = (wc - 1) & DMASK;                      /* decr cnt */
+            t = ReadW (AR & LA_MASK);                   /* move word */
+            WriteW (BR & LA_MASK, t);
+            AR = (AR + 1) & R_MASK;                     /* incr src */
+            BR = (BR + 1) & R_MASK;                     /* incr dst */
+            wc = (wc - 1) & D16_MASK;                   /* decr cnt */
             if (intrq && wc) {                          /* intr, more to do? */
-                PC = err_PC;                            /* back up PC */
+                PR = err_PR;                            /* back up P */
                 break;
                 }
             }
         WriteW (op[1].word, wc);                        /* clean up inline */
         break;
 
-        }
-
-return reason;
-}
-
-
-/* 2000 I/O Processor
-
-   The IOP accelerates certain operations of the HP 2000 Time-Share BASIC system
-   I/O processor.  Most 2000 systems were delivered with 2100 CPUs, although IOP
-   microcode was developed for the 1000-M and 1000-E.  As the I/O processors
-   were specific to the 2000 system, general compatibility with other CPU
-   microcode options was unnecessary, and indeed no other options were possible
-   for the 2100.
-
-   Option implementation by CPU was as follows:
-
-      2114    2115    2116    2100   1000-M  1000-E  1000-F
-     ------  ------  ------  ------  ------  ------  ------
-      N/A     N/A     N/A    13206A  13207A  22702A   N/A
-
-   The routines are mapped to instruction codes as follows:
-
-     Instr.     2100      1000-M/E   Description
-     ------  ----------  ----------  --------------------------------------------
-     SAI     105060-117  101400-037  Store A indexed by B (+/- offset in IR<4:0>)
-     LAI     105020-057  105400-037  Load A indexed by B (+/- offset in IR<4:0>)
-     CRC     105150      105460      Generate CRC
-     REST    105340      105461      Restore registers from stack
-     READF   105220      105462      Read F register (stack pointer)
-     INS       --        105463      Initialize F register (stack pointer)
-     ENQ     105240      105464      Enqueue
-     PENQ    105257      105465      Priority enqueue
-     DEQ     105260      105466      Dequeue
-     TRSLT   105160      105467      Translate character
-     ILIST   105000      105470      Indirect address list (similar to $SETP)
-     PRFEI   105222      105471      Power fail exit with I/O
-     PRFEX   105223      105472      Power fail exit
-     PRFIO   105221      105473      Power fail I/O
-     SAVE    105362      105474      Save registers to stack
-
-     MBYTE   105120      105765      Move bytes (MBT)
-     MWORD   105200      105777      Move words (MVW)
-     SBYTE   105300      105764      Store byte (SBT)
-     LBYTE   105320      105763      Load byte (LBT)
-
-   The INS instruction was not required in the 2100 implementation because the
-   stack pointer was actually the memory protect fence register and so could be
-   loaded directly with an OTA/B 05.  Also, the 1000 implementation did not
-   offer the MBYTE, MWORD, SBYTE, and LBYTE instructions because the equivalent
-   instructions from the standard Extended Instruction Group were used instead.
-
-   Note that the 2100 MBYTE and MWORD instructions operate slightly differently
-   from the 1000 MBT and MVW instructions.  Specifically, the move count is
-   signed on the 2100 and unsigned on the 1000.  A negative count on the 2100
-   results in a NOP.
-
-   The simulator remaps the 2100 instructions to the 1000 codes.  The four EIG
-   equivalents are dispatched to the EIG simulator.  The rest are handled here.
-
-   Additional reference:
-   - HP 2000 Computer System Sources and Listings Documentation
-        (22687-90020, undated), section 3, pages 2-74 through 2-91.
-*/
-
-static const OP_PAT op_iop[16] = {
-  OP_V,    OP_N,    OP_N,    OP_N,                      /* CRC    RESTR  READF  INS   */
-  OP_N,    OP_N,    OP_N,    OP_V,                      /* ENQ    PENQ   DEQ    TRSLT */
-  OP_AC,   OP_CVA,  OP_A,    OP_CV,                     /* ILIST  PRFEI  PRFEX  PRFIO */
-  OP_N,    OP_N,    OP_N,    OP_N                       /* SAVE    ---    ---    ---  */
-  };
-
-t_stat cpu_iop (uint32 IR, uint32 intrq)
-{
-t_stat reason = SCPE_OK;
-OPS op;
-uint32 entry;
-uint32 hp, tp, i, t, wc, MA;
-
-if (UNIT_CPU_TYPE == UNIT_TYPE_2100) {                  /* 2100 IOP? */
-    if ((IR >= 0105020) && (IR <= 0105057))             /* remap LAI */
-        IR = 0105400 | (IR - 0105020);
-    else if ((IR >= 0105060) && (IR <= 0105117))        /* remap SAI */
-        IR = 0101400 | (IR - 0105060);
-    else {
-        switch (IR) {                                   /* remap others */
-        case 0105000: IR = 0105470; break;              /* ILIST */
-        case 0105120: return cpu_eig (0105765, intrq);  /* MBYTE (maps to MBT) */
-        case 0105150: IR = 0105460; break;              /* CRC   */
-        case 0105160: IR = 0105467; break;              /* TRSLT */
-        case 0105200: return cpu_eig (0105777, intrq);  /* MWORD (maps to MVW) */
-        case 0105220: IR = 0105462; break;              /* READF */
-        case 0105221: IR = 0105473; break;              /* PRFIO */
-        case 0105222: IR = 0105471; break;              /* PRFEI */
-        case 0105223: IR = 0105472; break;              /* PRFEX */
-        case 0105240: IR = 0105464; break;              /* ENQ   */
-        case 0105257: IR = 0105465; break;              /* PENQ  */
-        case 0105260: IR = 0105466; break;              /* DEQ   */
-        case 0105300: return cpu_eig (0105764, intrq);  /* SBYTE (maps to SBT) */
-        case 0105320: return cpu_eig (0105763, intrq);  /* LBYTE (maps to LBT) */
-        case 0105340: IR = 0105461; break;              /* REST  */
-        case 0105362: IR = 0105474; break;              /* SAVE  */
-
-        default:                                        /* all others invalid */
-            return stop_inst;
-            }
-        }
-    }
-
-entry = IR & 077;                                       /* mask to entry point */
-
-if (entry <= 037) {                                     /* LAI/SAI 10x400-437 */
-    MA = ((entry - 020) + BR) & VAMASK;                 /* +/- offset */
-    if (IR & I_AB) AR = ReadW (MA);                     /* AB = 1 -> LAI */
-    else WriteW (MA, AR);                               /* AB = 0 -> SAI */
-    return reason;
-    }
-else if (entry <= 057)                                  /* IR = 10x440-457? */
-    return stop_inst;                                   /* not part of IOP */
-
-entry = entry - 060;                                    /* offset 10x460-477 */
-
-if (op_iop [entry] != OP_N) {
-    reason = cpu_ops (op_iop [entry], op, intrq);       /* get instruction operands */
-
-    if (reason != SCPE_OK)                              /* evaluation failed? */
-        return reason;                                  /* return reason for failure */
-    }
-
-switch (entry) {                                        /* decode IR<5:0> */
-
-    case 000:                                           /* CRC 105460 (OP_V) */
-        t = ReadW (op[0].word) ^ (AR & 0377);           /* xor prev CRC and char */
-        for (i = 0; i < 8; i++) {                       /* apply polynomial */
-            t = (t >> 1) | ((t & 1) << 15);             /* rotate right */
-            if (t & SIGN) t = t ^ 020001;               /* old t<0>? xor */
-            }
-        WriteW (op[0].word, t);                         /* rewrite CRC */
-        break;
-
-    case 001:                                           /* RESTR 105461 (OP_N) */
-        iop_sp = (iop_sp - 1) & VAMASK;                 /* decr stack ptr */
-        t = ReadW (iop_sp);                             /* get E and O */
-        O = ((t >> 1) ^ 1) & 1;                         /* restore O */
-        E = t & 1;                                      /* restore E */
-        iop_sp = (iop_sp - 1) & VAMASK;                 /* decr sp */
-        BR = ReadW (iop_sp);                            /* restore B */
-        iop_sp = (iop_sp - 1) & VAMASK;                 /* decr sp */
-        AR = ReadW (iop_sp);                            /* restore A */
-        if (UNIT_CPU_MODEL == UNIT_2100)
-            mp_fence = iop_sp;                          /* 2100 keeps sp in MP FR */
-        break;
-
-    case 002:                                           /* READF 105462 (OP_N) */
-        AR = (uint16) iop_sp;                           /* copy stk ptr */
-        break;
-
-    case 003:                                           /* INS 105463 (OP_N) */
-        iop_sp = AR;                                    /* init stk ptr */
-        break;
-
-    case 004:                                           /* ENQ 105464 (OP_N) */
-        hp = ReadW (AR & VAMASK);                       /* addr of head */
-        tp = ReadW ((AR + 1) & VAMASK);                 /* addr of tail */
-        WriteW ((BR - 1) & VAMASK, 0);                  /* entry link */
-        WriteW ((tp - 1) & VAMASK, BR);                 /* tail link */
-        WriteW ((AR + 1) & VAMASK, BR);                 /* queue tail */
-        if (hp != 0) PC = (PC + 1) & VAMASK;            /* q not empty? skip */
-        break;
-
-    case 005:                                           /* PENQ 105465 (OP_N) */
-        hp = ReadW (AR & VAMASK);                       /* addr of head */
-        WriteW ((BR - 1) & VAMASK, hp);                 /* becomes entry link */
-        WriteW (AR & VAMASK, BR);                       /* queue head */
-        if (hp == 0)                                    /* q empty? */
-            WriteW ((AR + 1) & VAMASK, BR);             /* queue tail */
-        else PC = (PC + 1) & VAMASK;                    /* skip */
-        break;
-
-    case 006:                                           /* DEQ 105466 (OP_N) */
-        BR = ReadW (AR & VAMASK);                       /* addr of head */
-        if (BR) {                                       /* queue not empty? */
-            hp = ReadW ((BR - 1) & VAMASK);             /* read hd entry link */
-            WriteW (AR & VAMASK, hp);                   /* becomes queue head */
-            if (hp == 0)                                /* q now empty? */
-                WriteW ((AR + 1) & VAMASK, (AR + 1) & DMASK);
-            PC = (PC + 1) & VAMASK;                     /* skip */
-            }
-        break;
-
-    case 007:                                           /* TRSLT 105467 (OP_V) */
-        wc = ReadW (op[0].word);                        /* get count */
-        if (wc & SIGN) break;                           /* cnt < 0? */
-        while (wc != 0) {                               /* loop */
-            MA = (AR + AR + ReadB (BR)) & VAMASK;
-            t = ReadB (MA);                             /* xlate */
-            WriteB (BR, t);                             /* store char */
-            BR = (BR + 1) & DMASK;                      /* incr ptr */
-            wc = (wc - 1) & DMASK;                      /* decr cnt */
-            if (wc && intrq) {                          /* more and intr? */
-                WriteW (op[0].word, wc);                /* save count */
-                PC = err_PC;                            /* stop for now */
-                break;
-                }
-            }
-        break;
-
-    case 010:                                           /* ILIST 105470 (OP_AC) */
-        do {                                            /* for count */
-            WriteW (op[0].word, AR);                    /* write AR to mem */
-            AR = (AR + 1) & DMASK;                      /* incr AR */
-            op[0].word = (op[0].word + 1) & VAMASK;     /* incr MA */
-            op[1].word = (op[1].word - 1) & DMASK;      /* decr count */
-            }
-        while (op[1].word != 0);
-        break;
-
-    case 011:                                           /* PRFEI 105471 (OP_CVA) */
-        WriteW (op[1].word, 1);                         /* set flag */
-        reason = iogrp (op[0].word, 0);                 /* execute I/O instr */
-        op[0].word = op[2].word;                        /* set rtn and fall through */
-
-    case 012:                                           /* PRFEX 105472 (OP_A) */
-        PCQ_ENTRY;
-        PC = ReadW (op[0].word) & VAMASK;               /* jump indirect */
-        WriteW (op[0].word, 0);                         /* clear exit */
-        break;
-
-    case 013:                                           /* PRFIO 105473 (OP_CV) */
-        WriteW (op[1].word, 1);                         /* set flag */
-        reason = iogrp (op[0].word, 0);                 /* execute instr */
-        break;
-
-    case 014:                                           /* SAVE 105474 (OP_N) */
-        WriteW (iop_sp, AR);                            /* save A */
-        iop_sp = (iop_sp + 1) & VAMASK;                 /* incr stack ptr */
-        WriteW (iop_sp, BR);                            /* save B */
-        iop_sp = (iop_sp + 1) & VAMASK;                 /* incr stack ptr */
-        t = ((O ^ 1) << 1) | E;                         /* merge E and O */
-        WriteW (iop_sp, t);                             /* save E and O */
-        iop_sp = (iop_sp + 1) & VAMASK;                 /* incr stack ptr */
-        if (UNIT_CPU_TYPE == UNIT_TYPE_2100)
-            mp_fence = iop_sp;                          /* 2100 keeps sp in MP FR */
-        break;
-
-    default:                                            /* instruction undefined */
-        return stop_inst;
         }
 
 return reason;

@@ -190,7 +190,7 @@ REG *scq_r = NULL;                                      /* PC queue reg ptr */
 t_stat cpu_ex (t_value *vptr, t_addr addr, UNIT *uptr, int32 sw);
 t_stat cpu_dep (t_value val, t_addr addr, UNIT *uptr, int32 sw);
 t_stat cpu_reset (DEVICE *dptr);
-t_stat cpu_set_size (UNIT *uptr, int32 val, char *cptr, void *desc);
+t_stat cpu_set_size (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
 t_stat bus_op (uint32 src, uint32 op, uint32 dst);
 
 /* Dispatch tables for source, dest, function out, skip on function */
@@ -509,6 +509,10 @@ while (reason == 0) {                                   /* loop until halted */
             case 07:                                    /* src > 0 */
                 jmp = (t != 0) && !(t & SIGN);
                 break;
+
+            default:                                    /* Impossible Case - Silence Coverity */
+                jmp = 0;
+                break;
             }
 
         if (jmp) {                                      /* jump taken? */
@@ -518,7 +522,8 @@ while (reason == 0) {                                   /* loop until halted */
             MA = IDX_ADD (MA);                          /* index? */
             if (op & TRP_DEF) {                         /* defer? */
                 t = (M[MA] + 1) & DMASK;                /* autoinc */
-                if (MEM_ADDR_OK (MA)) M[MA] = t;
+                if (MEM_ADDR_OK (MA))
+                    M[MA] = t;
                 MA = IDX_ADD (t);                       /* index? */
                 }
             TRP = SC;                                   /* save SC */
@@ -1087,7 +1092,7 @@ M[addr] = val & DMASK;
 return SCPE_OK;
 }
 
-t_stat cpu_set_size (UNIT *uptr, int32 val, char *cptr, void *desc)
+t_stat cpu_set_size (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 int32 mc = 0;
 uint32 i;

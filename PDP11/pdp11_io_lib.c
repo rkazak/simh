@@ -1,6 +1,6 @@
 /* pdp11_io_lib.c: Unibus/Qbus common support routines
 
-   Copyright (c) 1993-2008, Robert M Supnik
+   Copyright (c) 1993-2017, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -37,7 +37,6 @@
 #include "sim_tmxr.h"
 #include "sim_ether.h"
 
-extern int32 autcon_enb;
 extern int32 int_vec[IPL_HLVL][32];
 #if !defined(VEC_SET)
 #define VEC_SET 0
@@ -48,10 +47,9 @@ extern int32 int_vec_set[IPL_HLVL][32];                 /* bits to set in vector
 extern int32 (*int_ack[IPL_HLVL][32])(void);
 extern t_stat (*iodispR[IOPAGESIZE >> 1])(int32 *dat, int32 ad, int32 md);
 extern t_stat (*iodispW[IOPAGESIZE >> 1])(int32 dat, int32 ad, int32 md);
+extern DIB *iodibp[IOPAGESIZE >> 1];
 
 extern t_stat build_dib_tab (void);
-
-static DIB *iodibp[IOPAGESIZE >> 1];
 
 static void build_vector_tab (void);
 
@@ -66,7 +64,7 @@ static void build_vector_tab (void);
 
 /* Enable/disable autoconfiguration */
 
-t_stat set_autocon (UNIT *uptr, int32 val, char *cptr, void *desc)
+t_stat set_autocon (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 if (cptr != NULL)
     return SCPE_ARG;
@@ -76,7 +74,7 @@ return auto_config (NULL, 0);
 
 /* Show autoconfiguration status */
 
-t_stat show_autocon (FILE *st, UNIT *uptr, int32 val, void *desc)
+t_stat show_autocon (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
 fprintf (st, "autoconfiguration ");
 fprintf (st, autcon_enb? "enabled": "disabled");
@@ -85,7 +83,7 @@ return SCPE_OK;
 
 /* Change device address */
 
-t_stat set_addr (UNIT *uptr, int32 val, char *cptr, void *desc)
+t_stat set_addr (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 DEVICE *dptr;
 DIB *dibp;
@@ -115,7 +113,7 @@ return SCPE_OK;
 
 /* Show device address */
 
-t_stat show_addr (FILE *st, UNIT *uptr, int32 val, void *desc)
+t_stat show_addr (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
 DEVICE *dptr;
 DIB *dibp;
@@ -129,9 +127,9 @@ if (dptr == NULL)
 dibp = (DIB *) dptr->ctxt;
 if ((dibp == NULL) || (dibp->ba <= IOPAGEBASE))
     return SCPE_IERR;
-if (sim_switches & SWMASK ('H'))
+if ((sim_switches & SWMASK('H')) || (sim_switch_number == 16))
     radix = 16;
-if (sim_switches & SWMASK ('O'))
+if ((sim_switches & SWMASK('O')) || (sim_switch_number == 8))
     radix = 8;
 fprintf (st, "address=");
 fprint_val (st, (t_value) dibp->ba, DEV_RDX, 32, PV_LEFT);
@@ -156,7 +154,7 @@ return SCPE_OK;
 
 /* Set address floating */
 
-t_stat set_addr_flt (UNIT *uptr, int32 val, char *cptr, void *desc)
+t_stat set_addr_flt (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 DEVICE *dptr;
 
@@ -170,9 +168,17 @@ if (dptr == NULL)
 return auto_config (NULL, 0);                           /* autoconfigure */
 }
 
+/* Show device address */
+
+t_stat show_mapped_addr (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+{
+fprintf (st, "address=%p-%p", desc, ((const char *)desc) + uptr->capac - 1);
+return SCPE_OK;
+}
+
 /* Change device vector */
 
-t_stat set_vec (UNIT *uptr, int32 arg, char *cptr, void *desc)
+t_stat set_vec (UNIT *uptr, int32 arg, CONST char *cptr, void *desc)
 {
 DEVICE *dptr;
 DIB *dibp;
@@ -201,11 +207,11 @@ return SCPE_OK;
 
 /* Show device vector */
 
-t_stat show_vec (FILE *st, UNIT *uptr, int32 arg, void *desc)
+t_stat show_vec (FILE *st, UNIT *uptr, int32 arg, CONST void *desc)
 {
 DEVICE *dptr;
 DIB *dibp;
-uint32 vec, numvec, radix = DEV_RDX;
+uint32 vec, numvec, br_lvl, radix = DEV_RDX;
 
 if (uptr == NULL)
     return SCPE_IERR;
@@ -215,9 +221,9 @@ if (dptr == NULL)
 dibp = (DIB *) dptr->ctxt;
 if (dibp == NULL)
     return SCPE_IERR;
-if (sim_switches & SWMASK ('H'))
+if ((sim_switches & SWMASK('H')) || (sim_switch_number == 16))
     radix = 16;
-if (sim_switches & SWMASK ('O'))
+if ((sim_switches & SWMASK('O')) || (sim_switch_number == 8))
     radix = 8;
 vec = dibp->vec;
 if (arg)
@@ -250,14 +256,18 @@ else {
     }
 if (vec >= ((VEC_SET | AUTO_VECBASE) & ~3))
     fprintf (st, "*");
+br_lvl = dibp->vloc / 32;
+if (br_lvl < 4)                                         /* VAXen do 0-3, others 4-7 */
+    br_lvl = br_lvl + 4;
+fprintf (st, ", BR%d", br_lvl);
 return SCPE_OK;
 }
 
 /* Show vector for terminal multiplexor */
 
-t_stat show_vec_mux (FILE *st, UNIT *uptr, int32 arg, void *desc)
+t_stat show_vec_mux (FILE *st, UNIT *uptr, int32 arg, CONST void *desc)
 {
-TMXR *mp = (TMXR *) desc;
+const TMXR *mp = (const TMXR *) desc;
 
 if ((mp == NULL) || (arg == 0))
     return SCPE_IERR;
@@ -296,6 +306,7 @@ const char *cdname;
 
 if ((dptr == NULL) || (dibp == NULL))                   /* validate args */
     return SCPE_IERR;
+dibp->dptr = dptr;                                      /* save back pointer */
 if (dibp->vnum > VEC_DEVMAX)
     return SCPE_IERR;
 vec = dibp->vec;
@@ -340,11 +351,10 @@ if (vec && !(sim_switches & SWMASK ('P'))) {
         if (!cdname) {
             cdname = "CPU";
         }
-        sim_printf ("Device %s interrupt vector conflict with %s at ",
-                    sim_dname (dptr), cdname);
-        sim_print_val ((t_value) dibp->vec, DEV_RDX, 32, PV_LEFT);
-        sim_printf ("\n");
-        return SCPE_STOP;
+        return sim_messagef (SCPE_STOP, (DEV_RDX == 16) ? 
+                                        "Device %s interrupt vector conflict with %s at 0x%X\n" :
+                                        "Device %s interrupt vector conflict with %s at 0%o\n",
+                             sim_dname (dptr), cdname, (int)dibp->vec);
         }
     }
 /* Interrupt slot assignment and conflict check. */
@@ -361,9 +371,8 @@ for (i = 0; i < dibp->vnum; i++) {                      /* loop thru vec */
         (int_ack[ilvl][ibit] != dibp->ack[i])) ||
         (int_vec[ilvl][ibit] && vec &&
         (int_vec[ilvl][ibit] != vec))) {
-        sim_printf ("Device %s interrupt slot conflict at %d\n",
-                    sim_dname (dptr), idx);
-        return SCPE_STOP;
+        return sim_messagef (SCPE_STOP, "Device %s interrupt slot conflict at %d\n",
+                             sim_dname (dptr), idx);
         }
     if (dibp->ack[i])
         int_ack[ilvl][ibit] = dibp->ack[i];
@@ -372,7 +381,7 @@ for (i = 0; i < dibp->vnum; i++) {                      /* loop thru vec */
             int_vec[ilvl][ibit] = vec;
         }
     }
-/* Register I/O space address and check for conflicts */
+/* Register(Deregister) I/O space address and check for conflicts */
 for (i = 0; i < (int32) dibp->lnt; i = i + 2) {         /* create entries */
     idx = ((dibp->ba + i) & IOPAGEMASK) >> 1;           /* index into disp */
     if ((iodispR[idx] && dibp->rd &&                    /* conflict? */
@@ -397,23 +406,27 @@ for (i = 0; i < (int32) dibp->lnt; i = i + 2) {         /* create entries */
         if (!cdname) {
             cdname = "CPU";
             }
-        sim_printf ("Device %s address conflict with %s at ", sim_dname (dptr), cdname);
-        sim_print_val ((t_value) dibp->ba, DEV_RDX, 32, PV_LEFT);
-        sim_printf ("\n");
-        return SCPE_STOP;
+        return sim_messagef (SCPE_STOP, (DEV_RDX == 16) ? 
+                                        "Device %s address conflict with %s at 0x%X\n" :
+                                        "Device %s address conflict with %s at 0%o\n",
+                             sim_dname (dptr), cdname, (int)dibp->ba);
         }
-    if (dibp->rd)                                       /* set rd dispatch */
-        iodispR[idx] = dibp->rd;
-    if (dibp->wr)                                       /* set wr dispatch */
-        iodispW[idx] = dibp->wr;
-    iodibp[idx] = dibp;                                 /* remember DIB */
+    if ((dibp->rd == NULL) && (dibp->wr == NULL) && (dibp->vnum == 0)) 
+        iodibp[idx] = NULL;                         /* deregister DIB */
+    else {
+        if (dibp->rd)
+            iodispR[idx] = dibp->rd;                /* set rd dispatch */
+        if (dibp->wr)
+            iodispW[idx] = dibp->wr;                /* set wr dispatch */
+        iodibp[idx] = dibp;                         /* remember DIB */
+        }
     }
 return SCPE_OK;
 }
 
 /* Show IO space */
 
-t_stat show_iospace (FILE *st, UNIT *uptr, int32 val, void *desc)
+t_stat show_iospace (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
 uint32 i, j;
 DEVICE *dptr;
@@ -421,13 +434,16 @@ DIB *dibp;
 uint32 maxaddr, maxname, maxdev;
 int32 maxvec, vecwid;
 int32 brbase = 0;
+uint32 rdx = DEV_RDX;
 char valbuf[40];
+const char *vec_fmt = NULL;
+char vec_fmt_buf[16];
 
-#if defined DEV_RDX && DEV_RDX == 16
-#define VEC_FMT "X"
-#else
-#define VEC_FMT "o"
-#endif
+if ((sim_switches & SWMASK('O')) || (sim_switch_number == 8))
+    rdx = 8;
+if ((sim_switches & SWMASK('H')) || (sim_switch_number == 16))
+    rdx = 16;
+vec_fmt = (rdx == 16) ? "X" : "o";
 
 if (build_dib_tab ())                                   /* build IO page */
     return SCPE_OK;
@@ -444,12 +460,7 @@ for (i = 0, dibp = NULL; i < (IOPAGESIZE >> 1); i++) {  /* loop thru entries */
     size_t l;
     if (iodibp[i] && (iodibp[i] != dibp)) {             /* new block? */
         dibp = iodibp[i];                               /* DIB for block */
-        for (j = 0, dptr = NULL; sim_devices[j] != NULL; j++) {
-            if (((DIB*) sim_devices[j]->ctxt) == dibp) {
-                dptr = sim_devices[j];                  /* locate device */
-                break;
-                }                                       /* end if */
-            }                                           /* end for j */
+        dptr = dibp->dptr;
         if ((dibp->ba+ dibp->lnt - 1) > maxaddr)
             maxaddr = dibp->ba+ dibp->lnt - 1;
         if (dibp->vec > maxvec)
@@ -463,8 +474,9 @@ for (i = 0, dibp = NULL; i < (IOPAGESIZE >> 1); i++) {  /* loop thru entries */
             maxdev = j;
         }                                               /* end if */
     }                                                   /* end for i */
-maxaddr = fprint_val (NULL, (t_value) dibp->ba, DEV_RDX, 32, PV_LEFT);
-sprintf (valbuf, "%03" VEC_FMT, maxvec);
+maxaddr = fprint_val (NULL, (t_value) dibp->ba, rdx, 32, PV_LEFT);
+sprintf (vec_fmt_buf, "%s%s", "%03", vec_fmt);
+sprintf (valbuf, vec_fmt_buf, maxvec);
 vecwid = maxvec = (int32) strlen (valbuf);
 if (vecwid < 3)
     vecwid = 3;
@@ -513,25 +525,23 @@ fputc ('\n', st);
 for (i = 0, dibp = NULL; i < (IOPAGESIZE >> 1); i++) {  /* loop thru entries */
     if (iodibp[i] && (iodibp[i] != dibp)) {             /* new block? */
         dibp = iodibp[i];                               /* DIB for block */
-        for (j = 0, dptr = NULL; sim_devices[j] != NULL; j++) {
-            if (((DIB*) sim_devices[j]->ctxt) == dibp) {
-                dptr = sim_devices[j];                  /* locate device */
-                break;
-                }                                       /* end if */
-            }                                           /* end for j */
-        fprint_val (st, (t_value) dibp->ba, DEV_RDX, 32, PV_LEFT);
+        dptr = dibp->dptr;                              /* locate device */
+        fprint_val (st, (t_value) dibp->ba, rdx, 32, PV_LEFT);
         fprintf (st, " - ");
-        fprint_val (st, (t_value) dibp->ba + dibp->lnt - 1, DEV_RDX, 32, PV_LEFT);
+        fprint_val (st, (t_value) dibp->ba + dibp->lnt - 1, rdx, 32, PV_LEFT);
         fprintf (st, "%c ",                        /* print block entry */
             (dibp->ba < IOPAGEBASE + AUTO_CSRBASE + AUTO_CSRMAX)? '*': ' ');
         if (dibp->vec == 0)
             fprintf (st, "%*s", ((vecwid*2)+1+1), " ");
         else {
-            fprintf (st, "%0*" VEC_FMT, vecwid, dibp->vec);
-            if (dibp->vnum > 1)
-                fprintf (st, "-%0*" VEC_FMT, vecwid, dibp->vec + (4 *
+            sprintf (vec_fmt_buf, "%s%s", "%0*", vec_fmt);
+            fprintf (st, vec_fmt_buf, vecwid, dibp->vec);
+            if (dibp->vnum > 1) {
+                sprintf (vec_fmt_buf, "%s%s", "-%0*", vec_fmt);
+                fprintf (st, vec_fmt_buf, vecwid, dibp->vec + (4 *
                 (dibp->ulnt? dibp->lnt/dibp->ulnt:
                                             (dptr? dptr->numunits: 1)) * dibp->vnum) - 4);
+                }
             else
                 fprintf (st, " %*s", vecwid, " ");
             fprintf (st, "%1s", (dibp->vnum >= AUTO_VECBASE)? "*": " ");
@@ -546,20 +556,19 @@ for (i = 0, dibp = NULL; i < (IOPAGESIZE >> 1); i++) {  /* loop thru entries */
         }                                               /* end if */
     }                                                   /* end for i */
 return SCPE_OK;
-#undef VEC_FMT
 }
 
 /* Autoconfiguration
 
-   The table reflects the MicroVAX 3900 microcode, with one field addition - the
-   number of controllers field handles devices where multiple instances
-   are simulated through a single DEVICE structure (e.g., DZ, VH, DL, DC).
+   The table reflects the MicroVAX 3900 microcode, with one field 
+   addition:
+      a valid flag marking the end of the list when the value is -1
 
-   The table has been reviewed, extended and updated to reflect the contents of
-   the auto configure table in VMS sysgen (V5.5-2)
+   The table has been reviewed, extended and updated to reflect the 
+   contents of the auto configure table in VMS sysgen (V5.5-2)
 
-   A minus number of vectors indicates a field that should be calculated
-   but not placed in the DIB (RQ, TQ dynamic vectors)
+   A minus number of vectors indicates a field that should be 
+   calculated but not placed in the DIB (RQ, TQ dynamic vectors)
 
    An amod value of 0 indicates that all addresses are FIXED
    An vmod value of 0 indicates that all vectors are FIXED */
@@ -567,7 +576,7 @@ return SCPE_OK;
 
 typedef struct {
     const char  *dnam[AUTO_MAXC];
-    int32       numc;
+    int32       valid;
     int32       numv;
     uint32      amod;
     uint32      vmod;
@@ -584,8 +593,12 @@ AUTO_CON auto_tab[] = {/*c  #v  am vm  fxa   fxv */
         {017300} },                                     /* KE11-A - fx CSR, no VEC */
     { { "KG" },          1,  0,  0, 0, 
         {010700} },                                     /* KG11-A - fx CSR, no VEC */
-    { { "RHA", "RHB", "RHC" },  1,  1,  0, 0, 
-        {016700, 012440, 012040}, {0254, 0224, 0204} }, /* RH11/RH70 - fx CSR, fx VEC */
+    { { "RHA" },         1,  1,  0, 0, 
+        {016700}, {0254} },                             /* RH11/RH70 - fx CSR, fx VEC */
+    { { "RHB" },         1,  1,  0, 0, 
+        {012440}, {0224} },                             /* RH11/RH70 - fx CSR, fx VEC */
+    { { "RHC" },  1,  1,  0, 0, 
+        {012040}, {0204} },                             /* RH11/RH70 - fx CSR, fx VEC */
     { { "CLK" },         1,  1,  0, 0, 
         {017546}, {0100} },                             /* KW11L - fx CSR, fx VEC */
     { { "PCLK" },        1,  1,  0, 0, 
@@ -624,11 +637,6 @@ AUTO_CON auto_tab[] = {/*c  #v  am vm  fxa   fxv */
          014240, 014250, 014260, 014270,
          014300, 014310, 014320, 014330, 
          014340, 014350, 014360, 014370} },             /* DC11 - fx CSRs */
-    { { "TDC" },          1,  2,  0, 8, 
-        {016500, 016510, 016520, 016530, 
-         016540, 016550, 016560, 016570,
-         016600, 016610, 016620, 016630,
-         016640, 016650, 016660, 016670} },             /* TU58 - fx CSRs */
     { { NULL },          1,  1,  0, 4, 
         {015200, 015210, 015220, 015230, 
          015240, 015250, 015260, 015270,
@@ -652,16 +660,18 @@ AUTO_CON auto_tab[] = {/*c  #v  am vm  fxa   fxv */
          017430, 017432, 017434, 017436} },             /* DT11 - fx CSRs */
     { { NULL },          1,  2,  0, 8,
       {016200, 016240} },                               /* DX11 */
-    { { "DLI" },         1,  2,  0, 8, 
+    { { "TDC", "DLI" },  1,  2,  0, 8, 
         {016500, 016510, 016520, 016530,
          016540, 016550, 016560, 016570,
          016600, 016610, 016620, 016630,
-         016740, 016750, 016760, 016770} },             /* KL11/DL11/DLV11 - fx CSRs */
+         016740, 016750, 016760, 016770} },             /* KL11/DL11/DLV11/TU58 - fx CSRs */
     { { NULL },          1,  2,  0, 8, { 0 } },         /* DLV11J - fx CSRs */
     { { NULL },          1,  2,  8, 8 },                /* DJ11 */
     { { NULL },          1,  2, 16, 8 },                /* DH11 */
     { { "VT" },          1,  4,  0, 8,
       {012000, 012010, 012020, 012030} },               /* VT11/GT40 - fx CSRs  */
+    { { "VS60" },        1,  4,  0, 8,
+      {012000} },                                       /* VS60/GT48 - fx CSRs  */
     { { NULL },          1,  2,  0, 8,
       {010400} },                                       /* LPS11 */
     { { NULL },          1,  2,  8, 8 },                /* DQ11 */
@@ -773,7 +783,13 @@ AUTO_CON auto_tab[] = {/*c  #v  am vm  fxa   fxv */
     { { NULL },          1,  2,  4, 8 },                /* DTC05, DECvoice */
     { { NULL },          1,  2,  8, 8 },                /* KWV32 (DSV11) */
     { { NULL },          1,  1, 64, 4 },                /* QZA */
-    { { NULL }, -1 }                                    /* end table */
+    { { "CH" },          1,  1,  0, 0, 
+        {04140}, {0270} },                              /* CH11 - CHAOS Net - fx CSR, fx VEC */
+    { { "NG" },          1,  1,  0, 0, 
+        {04040}, {0270} },                              /* NG - vector display */
+    { { "DAZ" },         1,  1,  0, 0, 
+        {00104} },                                      /* DAZ */
+    { { NULL },         -1 }                            /* end table */
 };
 
 #if !defined(DEV_NEXUS) 
@@ -801,7 +817,7 @@ if (done)
 for (j = 0; (dptr = sim_devices[j]) != NULL; j++) {
     if ((dptr->flags & (DEV_UBUS | DEV_QBUS)) == 0)
         continue;
-    for (autp = auto_tab; autp->numc >= 0; autp++) {
+    for (autp = auto_tab; autp->valid >= 0; autp++) {
         for (k=0; autp->dnam[k]; k++) {
             if (!strcmp(dptr->name, autp->dnam[k])) {
                 dibp = (DIB *)dptr->ctxt;
@@ -827,30 +843,24 @@ t_stat auto_config (const char *name, int32 nctrl)
 {
 uint32 csr = IOPAGEBASE + AUTO_CSRBASE;
 uint32 vec = AUTO_VECBASE;
-int32 ilvl, ibit;
-extern UNIT cpu_unit;
+int32 ilvl, ibit, numc;
 AUTO_CON *autp;
 DEVICE *dptr;
 DIB *dibp;
-uint32 j, vmask, amask;
+uint32 j, k, jena, vmask, amask;
 
 if (autcon_enb == 0)                                    /* enabled? */
     return SCPE_OK;
 if (name) {                                             /* updating? */
-    if (nctrl < 0)
+    dptr = find_dev (name);
+    if (dptr == NULL)
         return SCPE_ARG;
-    for (autp = auto_tab; autp->numc >= 0; autp++) {
-        for (j = 0; (j < AUTO_MAXC) && autp->dnam[j]; j++) {
-            if (strcmp (name, autp->dnam[j]) == 0) {
-                autp->numc = nctrl;
-                break;
-                }
-            }
-        if ((j < AUTO_MAXC) && autp->dnam[j] && (strcmp (name, autp->dnam[j]) == 0))
-            break;
-        }
+    dibp = (DIB *) dptr->ctxt;                          /* get DIB */
+    if ((nctrl < 0) || (dibp == NULL))
+        return SCPE_ARG;
+    dibp->numc = nctrl;
     }
-for (autp = auto_tab; autp->numc >= 0; autp++) {        /* loop thru table */
+for (autp = auto_tab; autp->valid >= 0; autp++) {       /* loop thru table */
     if (autp->amod) {                                   /* floating csr? */
         amask = autp->amod - 1;
         csr = (csr + amask) & ~amask;                   /* align csr */
@@ -871,24 +881,32 @@ for (autp = auto_tab; autp->numc >= 0; autp++) {        /* loop thru table */
             dptr->flags |= DEV_DIS;
             if (sim_switches & SWMASK ('P'))
                 continue;
-            sim_printf ("%s device not compatible with system bus\n", sim_dname(dptr));
-            return SCPE_NOFNC;
+            return sim_messagef (SCPE_NOFNC, "%s device not compatible with system bus\n", sim_dname(dptr));
             }
         dibp = (DIB *) dptr->ctxt;                      /* get DIB */
         if (dibp == NULL)                               /* not there??? */
             return SCPE_IERR;
+        numc = dibp->numc ? dibp->numc : 1;
         ilvl = dibp->vloc / 32;
         ibit = dibp->vloc % 32;
-        if (autp->fixa[j])                              /* fixed csr avail? */
-            dibp->ba = IOPAGEBASE + autp->fixa[j];      /* use it */
+        /* Identify how many devices earlier in the device list are 
+           enabled and use that info to determine fixed address assignments */
+        for (k=jena=0; k<j; k++) {
+            DEVICE *kdptr = find_dev (autp->dnam[k]);
+            
+            if (kdptr && (!(kdptr->flags & DEV_DIS)))
+                jena += ((DIB *)kdptr->ctxt)->numc ? ((DIB *)kdptr->ctxt)->numc : 1;
+            }
+        if (autp->fixa[jena])                           /* fixed csr avail? */
+            dibp->ba = IOPAGEBASE + autp->fixa[jena];   /* use it */
         else {                                          /* no fixed left */
             dibp->ba = csr;                             /* set CSR */
-            csr += (autp->numc * autp->amod);           /* next CSR */
+            csr += (numc * autp->amod);                 /* next CSR */
             }                                           /* end else */
         if (autp->numv) {                               /* vec needed? */
-            if (autp->fixv[j]) {                        /* fixed vec avail? */
+            if (autp->fixv[jena]) {                     /* fixed vec avail? */
                 if (autp->numv > 0)
-                    dibp->vec = autp->fixv[j];          /* use it */
+                    dibp->vec = autp->fixv[jena];       /* use it */
                 }
             else {                                      /* no fixed left */
                 uint32 numv = abs (autp->numv);         /* get num vec */
@@ -896,7 +914,7 @@ for (autp = auto_tab; autp->numc >= 0; autp++) {        /* loop thru table */
                 vec = (vec + vmask) & ~vmask;           /* align vector */
                 if (autp->numv > 0)
                     dibp->vec = vec;                    /* set vector */
-                vec += (autp->numc * numv * 4);
+                vec += (numc * numv * 4);
                 }                                       /* end else */
             }                                           /* end vec needed */
         }                                               /* end for j */
@@ -908,9 +926,11 @@ return SCPE_OK;
 
 /* Factory bad block table creation routine
 
-   This routine writes a DEC standard 044 compliant bad block table on the
-   last track of the specified unit.  The bad block table consists of 10
-   repetitions of the same table, formatted as follows:
+   This routine writes a DEC standard 144 compliant bad block table on the
+   last track of the specified unit as described in: 
+      EL-00144_B_DEC_STD_144_Disk_Standard_for_Recording_and_Handling_Bad_Sectors_Nov76.pdf
+   The bad block table consists of 10 repetitions of the same table, 
+   formatted as follows:
 
         words 0-1       pack id number
         words 2-3       cylinder/sector/surface specifications
@@ -925,49 +945,9 @@ return SCPE_OK;
         sta     =       status code
 */
 
+#include "sim_disk.h"
+
 t_stat pdp11_bad_block (UNIT *uptr, int32 sec, int32 wds)
 {
-int32 i;
-t_addr da;
-uint16 *buf;
-char *namebuf, *c;
-uint32 packid;
-
-if ((sec < 2) || (wds < 16))
-    return SCPE_ARG;
-if ((uptr->flags & UNIT_ATT) == 0)
-    return SCPE_UNATT;
-if (uptr->flags & UNIT_RO)
-    return SCPE_RO;
-if (!get_yn ("Overwrite last track? [N]", FALSE))
-    return SCPE_OK;
-da = (uptr->capac - (sec * wds)) * sizeof (uint16);
-if (sim_fseek (uptr->fileref, da, SEEK_SET))
-    return SCPE_IOERR;
-if ((buf = (uint16 *) malloc (wds * sizeof (uint16))) == NULL)
-    return SCPE_MEM;
-if ((namebuf = (char *) malloc (1 + strlen (uptr->filename))) == NULL) {
-    free (buf);
-    return SCPE_MEM;
-    }
-strcpy (namebuf, uptr->filename);
-if ((c = strrchr (namebuf, '/')))
-    strcpy (namebuf, c+1);
-if ((c = strrchr (namebuf, '\\')))
-    strcpy (namebuf, c+1);
-if ((c = strrchr (namebuf, ']')))
-    strcpy (namebuf, c+1);
-packid = eth_crc32(0, namebuf, strlen (namebuf));
-buf[0] = (uint16)packid;
-buf[1] = (uint16)(packid >> 16) & 0x7FFF;   /* Make sure MSB is clear */
-buf[2] = buf[3] = 0;
-for (i = 4; i < wds; i++)
-    buf[i] = 0177777u;
-for (i = 0; (i < sec) && (i < 10); i++)
-    sim_fwrite (buf, sizeof (uint16), wds, uptr->fileref);
-free (namebuf);
-free (buf);
-if (ferror (uptr->fileref))
-    return SCPE_IOERR;
-return SCPE_OK;
+return sim_disk_pdp11_bad_block (uptr, sec, wds);
 }

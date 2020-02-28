@@ -1,7 +1,7 @@
 /*
  * besm6_tty.c: BESM-6 teletype device
  *
- * Copyright (c) 2009, Leo Broukhis
+ * Copyright (c) 2009-2017, Leo Broukhis
  * Copyright (c) 2009, Serge Vakulenko
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -72,8 +72,16 @@ char *  process (int sym)
 /* For serial lines */
 int tty_active [TTY_MAX+1], tty_sym [TTY_MAX+1];
 int tty_typed [TTY_MAX+1], tty_instate [TTY_MAX+1];
-time_t tty_last_time [TTY_MAX+1];
-int tty_idle_count [TTY_MAX+1];
+
+/* For all lines */
+time_t tty_last_time [LINES_MAX+1];
+int tty_idle_count [LINES_MAX+1];
+
+/* The serial interrupt generator frequency, common for all VT lines */
+int tty_rate = 300;
+
+/* Interrupt generator mode: 1 - model time, 0 - wallclock time */
+int tty_turbo = 1;
 
 uint32 vt_sending, vt_receiving;
 uint32 tt_sending, tt_receiving;
@@ -94,8 +102,7 @@ char *vt_cptr [LINES_MAX+1];
 void tt_print();
 void consul_receive();
 t_stat vt_clk(UNIT *);
-extern char *get_sim_sw (char *cptr);
-extern int32 tmr_poll;                              /* calibrated clock timer poll */
+extern const char *get_sim_sw (const char *cptr);
 
 int attached_console;
 
@@ -150,6 +157,7 @@ TMXR tty_desc = { LINES_MAX+1, 0, 0, tty_line };        /* mux descriptor */
 #define TTY_UNICODE_CHARSET     0
 #define TTY_KOI7_JCUKEN_CHARSET (1<<UNIT_V_UF)
 #define TTY_KOI7_QWERTY_CHARSET (2<<UNIT_V_UF)
+#define TTY_RAW_CHARSET         (3<<UNIT_V_UF)
 #define TTY_CHARSET_MASK        (3<<UNIT_V_UF)
 #define TTY_OFFLINE_STATE       0
 #define TTY_TELETYPE_STATE      (1<<(UNIT_V_UF+2))
@@ -177,11 +185,11 @@ t_stat tty_reset (DEVICE *dptr)
      * and the device is always ready. */
     /* Forcing a ready interrupt. */
     PRP |= CONS_CAN_PRINT[0] | CONS_CAN_PRINT[1];
-    //return sim_activate_after (tty_unit, 1000*MSEC/300);
-    return sim_clock_coschedule (tty_unit, tmr_poll);
+    // Schedule the very first TTY interrupt to match the next clock interrupt.
+    return sim_clock_coschedule (tty_unit, 0);
 }
 
-/* Bit 19 of GRP, should be 300 Hz */
+/* Bit 19 of GRP, should be <tty_rate> Hz */
 t_stat vt_clk (UNIT * this)
 {
     int num;
@@ -215,10 +223,21 @@ t_stat vt_clk (UNIT * this)
         case TTY_KOI7_QWERTY_CHARSET:
             tmxr_linemsg (t, "Encoding is KOI-7 (qwerty)\r\n");
             break;
+        case TTY_RAW_CHARSET:
+            tmxr_linemsg (t, "Encoding is RAW\r\n");
+            break;
         case TTY_UNICODE_CHARSET:
             tmxr_linemsg (t, "Encoding is UTF-8\r\n");
             break;
         }
+        if (sim_int_char < 040 || sim_int_char == 0177) {
+            sprintf (buf, "WRU – Break to sim> prompt character - is ^%c\r\n",
+                     sim_int_char ^ 0100);
+        } else {
+            sprintf (buf, "WRU – Break to sim> prompt character - is %c\r\n",
+                     sim_int_char);
+        }
+        tmxr_linemsg (t, buf);
         tty_idle_count[num] = 0;
         tty_last_time[num] = time (0);
         sprintf (buf, "%.24s from %s\r\n",
@@ -238,8 +257,7 @@ t_stat vt_clk (UNIT * this)
         static int divider;
         if (++divider == CLK_TPS/10) {
             divider = 0;
-            if (SCPE_STOP == sim_poll_kbd())
-                stop_cpu = 1;
+            sim_poll_kbd();
         }
     }
 
@@ -251,16 +269,20 @@ t_stat vt_clk (UNIT * this)
      * e.g. until the next 250 Hz wallclock interrupt, but making sure 
      * that the model time interval between GRP_SERIAL interrupts 
      * is never less than expected.
-     * Using sim_activate_after() would be more straightforward (no need for a check
-     * as the host is faster than the target), but likely less efficient for idling.
      */
-    if (vt_is_idle() && sim_activate_time(clocks) > 1000*MSEC/300)
-        return sim_clock_coschedule (this, tmr_poll);
-    else
-        return sim_activate(this, 1000*MSEC/300);
+    if (vt_is_idle()) {
+        /* When idle, slow down the TTY interrupts to match the clock interrupts. */
+        return sim_clock_coschedule (this, 0);
+    } else if (tty_turbo) {
+        /* In "turbo" mode, the TTY works at the model speed */
+        return sim_activate(this, 1000*MSEC/tty_rate);
+    } else {
+        /* In "non-turbo" mode, the TTY interrupts imitate the true feel of the speed */
+        return sim_activate_after(this, 1000*MSEC/tty_rate);
+    }
 }
 
-t_stat tty_setmode (UNIT *u, int32 val, char *cptr, void *desc)
+t_stat tty_setmode (UNIT *u, int32 val, CONST char *cptr, void *desc)
 {
     int num = u - tty_unit;
     TMLN *t = &tty_line [num];
@@ -315,7 +337,7 @@ t_stat tty_setmode (UNIT *u, int32 val, char *cptr, void *desc)
  *      attach tty <port>
  * Where <port> is the port number for telnet, e.g. 4199.
  */
-t_stat tty_attach (UNIT *u, char *cptr)
+t_stat tty_attach (UNIT *u, CONST char *cptr)
 {
     int num = u - tty_unit;
     char gbuf[CBUFSIZE];
@@ -369,11 +391,49 @@ t_stat tty_detach (UNIT *u)
     return tmxr_detach (&tty_desc, &tty_unit[0]);
 }
 
+t_stat tty_showrate (FILE *f, UNIT *up, int32 v, CONST void *dp) {
+    fprintf(f, "%d Baud", tty_rate);
+    return SCPE_OK;
+}
+
+t_stat tty_showturbo (FILE *f, UNIT *up, int32 v, CONST void *dp) {
+    fprintf(f, tty_turbo ? "Turbo" : "Authentic feel");
+    return SCPE_OK;
+}
+
+t_stat tty_setrate (UNIT *up, int32 v, CONST char *cp, void *dp) {
+    int rate;
+    if (cp)
+        rate = atoi(cp);
+    else
+        return SCPE_MISVAL;
+    if (rate <= 0 || rate > 19200 || rate % 300 != 0)
+        return SCPE_ARG;
+    rate /= 300;
+    if ((rate-1) & rate)
+        return SCPE_ARG;
+    tty_rate = rate * 300;
+    return SCPE_OK;
+}
+
+t_stat tty_setturbo (UNIT *up, int32 v, CONST char *cp, void *dp) {
+    if (!cp)
+        return SCPE_MISVAL;
+    if (!MATCH_CMD("ON", cp))
+        tty_turbo = 1;
+    else if (!MATCH_CMD("OFF", cp))
+        tty_turbo = 0;
+    else
+        return SCPE_ARG;
+    return SCPE_OK;
+}
+
 /*
  * TTY control:
  * set ttyN unicode     - selecting UTF-8 encoding
  * set ttyN jcuken      - selecting KOI-7 encoding, JCUKEN layout
  * set ttyN qwerty      - selecting KOI-7 encoding, QWERTY layout
+ * set ttyN raw         - selecting transmission of raw chars
  * set ttyN off         - disconnecting a line
  * set ttyN tt          - a Baudot TTY
  * set ttyN vt          - a Videoton-340 terminal
@@ -381,6 +441,8 @@ t_stat tty_detach (UNIT *u)
  * set ttyN destrbs     - destructive (erasing) backspace
  * set ttyN authbs      - authentic backspace (cursor left)
  * set tty disconnect=N - forceful termination of a telnet connection
+ * set tty rate=N       - I/O rate in Hz
+ * set tty turbo={ON,OFF} - TTY interrupts use model time (on) or wallclock (0ff)
  * show tty             - showing modes and types
  * show tty connections - showing IP-addresses and connection times
  * show tty statistics  - showing TX/RX byte counts
@@ -392,6 +454,8 @@ MTAB tty_mod[] = {
       "JCUKEN" },
     { TTY_CHARSET_MASK, TTY_KOI7_QWERTY_CHARSET, "KOI7 (qwerty) input",
       "QWERTY" },
+    { TTY_CHARSET_MASK, TTY_RAW_CHARSET, "RAW input/output",
+      "RAW" },
     { TTY_STATE_MASK, TTY_OFFLINE_STATE, "offline",
       "OFF", &tty_setmode },
     { TTY_STATE_MASK, TTY_TELETYPE_STATE, "Teletype",
@@ -404,8 +468,12 @@ MTAB tty_mod[] = {
       "DESTRBS" },
     { TTY_BSPACE_MASK, TTY_AUTHENTIC_BSPACE, NULL,
       "AUTHBS" },
-    { MTAB_XTD | MTAB_VDV, 1, NULL,
-      "DISCONNECT", &tmxr_dscln, NULL, (void*) &tty_desc },
+    { MTAB_XTD | MTAB_VDV | MTAB_VALR, 1, NULL,
+      "DISCONNECT", &tmxr_dscln, NULL, (void*) &tty_desc, "terminates telnet connection" },
+    { MTAB_XTD | MTAB_VDV | MTAB_VALR, 1, "RATE",
+      "RATE", &tty_setrate, &tty_showrate, NULL, "{300,600,1200,2400,4800,9600,19200}" },
+    { MTAB_XTD | MTAB_VDV | MTAB_VALR, 1, "TURBO",
+      "TURBO", &tty_setturbo, &tty_showturbo, NULL, "{ON, OFF}"},
     { UNIT_ATT, UNIT_ATT, "connections",
       NULL, NULL, &tmxr_show_summ, (void*) &tty_desc },
     { MTAB_XTD | MTAB_VDV | MTAB_NMO, 1, "CONNECTIONS",
@@ -462,7 +530,7 @@ void vt_puts (int num, const char *s)
         return;
     if (t->rcve) {
         /* A telnet connection. */
-        tmxr_linemsg (t, (char*) s);
+        tmxr_linemsg (t, s);
     } else {
         /* Console output. */
         while (*s) sim_putchar(*s++);
@@ -477,9 +545,11 @@ const char * koi7_rus_to_unicode [32] = {
 };
 
 /* Videoton-340 employed single byte control codes rather than ESC sequences. */
-void vt_send(int num, uint32 sym, int destructive_bs)
+void vt_send(int num, uint32 sym)
 {
-    if (sym < 0x60) {
+    if ((tty_unit[num].flags & TTY_CHARSET_MASK) == TTY_RAW_CHARSET) {
+        vt_putc(num, sym);
+    } else if (sym < 0x60) {
         switch (sym) {
         case '\031':
             /* Up */
@@ -499,7 +569,7 @@ void vt_send(int num, uint32 sym, int destructive_bs)
         case '\b':
             /* Left */
             vt_puts (num, "\033[");
-            if (destructive_bs) {
+            if ((tty_unit[num].flags & TTY_BSPACE_MASK) == TTY_DESTRUCTIVE_BSPACE) {
                 /* Erasing the previous char. */
                 vt_puts (num, "D \033[");
             }
@@ -572,8 +642,7 @@ void vt_print()
             break;
         case 18: /* stop bit */
             tty_sym[num] = ~tty_sym[num] & 0x7f;
-            vt_send (num, tty_sym[num],
-                     (tty_unit[num].flags & TTY_BSPACE_MASK) == TTY_DESTRUCTIVE_BSPACE);
+            vt_send (num, tty_sym[num]);
             tty_active[num] = 0;
             tty_sym[num] = 0;
             vt_sending &= ~mask;
@@ -686,12 +755,12 @@ static int unicode_to_koi7 (unsigned val)
 /*
  * Set command
  */
-static t_stat cmd_set (int32 num, char *cptr)
+static t_stat cmd_set (int32 num, CONST char *cptr)
 {
     char gbuf [CBUFSIZE];
     int len;
 
-    cptr = get_sim_sw (cptr);
+    cptr = (CONST char *)get_sim_sw (cptr);
     if (! cptr)
         return SCPE_INVSW;
     if (! *cptr)
@@ -710,6 +779,9 @@ static t_stat cmd_set (int32 num, char *cptr)
     } else if (strncmp ("QWERTY", gbuf, len) == 0) {
         tty_unit[num].flags &= ~TTY_CHARSET_MASK;
         tty_unit[num].flags |= TTY_KOI7_QWERTY_CHARSET;
+    } else if (strncmp ("RAW", gbuf, len) == 0) {
+        tty_unit[num].flags &= ~TTY_CHARSET_MASK;
+        tty_unit[num].flags |= TTY_RAW_CHARSET;
     } else if (strncmp ("TT", gbuf, len) == 0) {
         tty_unit[num].flags &= ~TTY_STATE_MASK;
         tty_unit[num].flags |= TTY_TELETYPE_STATE;
@@ -734,14 +806,14 @@ static t_stat cmd_set (int32 num, char *cptr)
 /*
  * Show command
  */
-static t_stat cmd_show (int32 num, char *cptr)
+static t_stat cmd_show (int32 num, CONST char *cptr)
 {
     TMLN *t = &tty_line [num];
     char gbuf [CBUFSIZE];
     MTAB *m;
     int len;
 
-    cptr = get_sim_sw (cptr);
+    cptr = (CONST char *)get_sim_sw (cptr);
     if (! cptr)
         return SCPE_INVSW;
     if (! *cptr) {
@@ -779,18 +851,19 @@ static t_stat cmd_show (int32 num, char *cptr)
 /*
  * Exit command
  */
-static t_stat cmd_exit (int32 num, char *cptr)
+static t_stat cmd_exit (int32 num, CONST char *cptr)
 {
     return SCPE_EXIT;
 }
 
-static t_stat cmd_help (int32 num, char *cptr);
+static t_stat cmd_help (int32 num, CONST char *cptr);
 
 static CTAB cmd_table[] = {
     { "SET", &cmd_set, 0,
       "set unicode              select UTF-8 encoding\r\n"
       "set jcuken               select KOI7 encoding, 'jcuken' keymap\r\n"
       "set qwerty               select KOI7 encoding, 'qwerty' keymap\r\n"
+      "set raw                  select no I/O conversions\r\n"
       "set tt                   use Teletype mode\r\n"
       "set vt                   use Videoton-340 mode\r\n"
       "set consul               use Consul-254 mode\r\n"
@@ -834,13 +907,13 @@ static CTAB *lookup_cmd (char *command)
 /*
  * Help command
  */
-static t_stat cmd_help (int32 num, char *cptr)
+static t_stat cmd_help (int32 num, CONST char *cptr)
 {
     TMLN *t = &tty_line [num];
     char gbuf [CBUFSIZE];
     CTAB *c;
 
-    cptr = get_sim_sw (cptr);
+    cptr = (CONST char *)get_sim_sw (cptr);
     if (! cptr)
         return SCPE_INVSW;
     if (! *cptr) {
@@ -868,21 +941,21 @@ static t_stat cmd_help (int32 num, char *cptr)
 void vt_cmd_exec (int num)
 {
     TMLN *t = &tty_line [num];
-    char *cptr, gbuf [CBUFSIZE];
+    char gbuf [CBUFSIZE];
+    CONST char *cptr;
     CTAB *cmdp;
     t_stat err;
-    extern char *scp_errors[];
 
     cptr = get_glyph (vt_cbuf [num], gbuf, 0);      /* get command glyph */
     cmdp = lookup_cmd (gbuf);                       /* lookup command */
     if (! cmdp) {
-        tmxr_linemsg (t, scp_errors[SCPE_UNK - SCPE_BASE]);
+        tmxr_linemsg (t, sim_error_text (SCPE_UNK));
         tmxr_linemsg (t, "\r\n");
         return;
     }
     err = cmdp->action (num, cptr);                 /* if found, exec */
     if (err >= SCPE_BASE) {                         /* error? */
-        tmxr_linemsg (t, scp_errors [err - SCPE_BASE]);
+        tmxr_linemsg (t, sim_error_text (err));
         tmxr_linemsg (t, "\r\n");
     }
     if (err == SCPE_EXIT) {                         /* close telnet session */
@@ -1019,9 +1092,6 @@ int vt_getc (int num)
     } else {
         /* Console (keyboard) input. */
         c = sim_poll_kbd();
-        if (c == SCPE_STOP) {
-            stop_cpu = 1;   /* just in case */ 
-        }
         if (! (c & SCPE_KFLAG))
             return -1;
     }
@@ -1146,6 +1216,7 @@ void vt_receive()
             case TTY_KOI7_JCUKEN_CHARSET:
                 tty_typed[num] = vt_kbd_input_koi7 (num);
                 break;
+            case TTY_RAW_CHARSET:
             case TTY_KOI7_QWERTY_CHARSET:
                 tty_typed[num] = vt_getc (num);
                 break;
@@ -1160,10 +1231,12 @@ void vt_receive()
                 break;
             }
             if (tty_typed[num] <= 0177) {
-                if (tty_typed[num] == '\r' || tty_typed[num] == '\n')
-                    tty_typed[num] = 3;     /* ETX is used as Enter */
-                if (tty_typed[num] == '\177')
-                    tty_typed[num] = '\b';  /* ASCII DEL -> BS */
+                if ((tty_unit[num].flags & TTY_CHARSET_MASK) != TTY_RAW_CHARSET) {
+                    if (tty_typed[num] == '\r' || tty_typed[num] == '\n')
+                        tty_typed[num] = 3;     /* ETX is used as Enter */
+                    if (tty_typed[num] == '\177')
+                        tty_typed[num] = '\b';  /* ASCII DEL -> BS */
+                }
                 tty_instate[num] = 1;
                 TTY_IN |= mask;         /* start bit */
                 GRP |= GRP_TTY_START;   /* not used ? */
@@ -1221,8 +1294,7 @@ void consul_print (int dev_num, uint32 cmd)
     cmd &= 0177;
     switch (tty_unit[line_num].flags & TTY_STATE_MASK) {
     case TTY_VT340_STATE:
-        vt_send (line_num, cmd,
-                 (tty_unit[line_num].flags & TTY_BSPACE_MASK) == TTY_DESTRUCTIVE_BSPACE);
+        vt_send (line_num, cmd);
         break;
     case TTY_CONSUL_STATE:
         besm6_debug(">>> CONSUL%o: Native charset not implemented", line_num);
@@ -1244,6 +1316,7 @@ void consul_receive ()
         case TTY_KOI7_JCUKEN_CHARSET:
             c = vt_kbd_input_koi7 (line_num);
             break;
+        case TTY_RAW_CHARSET:
         case TTY_KOI7_QWERTY_CHARSET:
             c = vt_getc (line_num);
             break;
@@ -1256,8 +1329,10 @@ void consul_receive ()
         }
         if (c >= 0 && c <= 0177) {
             CONSUL_IN[dev_num] = odd_parity(c) ? c | 0200 : c;
-            if (c == '\r' || c == '\n')
+            if ((tty_unit[line_num].flags & TTY_CHARSET_MASK) != TTY_RAW_CHARSET &&
+                (c == '\r' || c == '\n')) {
                 CONSUL_IN[dev_num] = 3;
+            }
             PRP |= CONS_HAS_INPUT[dev_num];
             vt_idle = 0;
         }

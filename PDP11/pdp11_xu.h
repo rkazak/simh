@@ -50,19 +50,16 @@
 #include "pdp10_defs.h"
 #define XU_RDX                    8
 #define XU_WID                   16
-extern int32 int_req;
 
 #elif defined (VM_VAX)                                                  /* VAX version */
 #include "vax_defs.h"
 #define XU_RDX                    16
 #define XU_WID                    32
-extern int32 int_req[IPL_HLVL];
 
 #else                                                                   /* PDP-11 version */
 #include "pdp11_defs.h"
 #define XU_RDX                     8
 #define XU_WID                    16
-extern int32 int_req[IPL_HLVL];
 #endif                                                  /* VM_PDP10 */
 
 #include "sim_ether.h"
@@ -159,6 +156,7 @@ struct xu_device {
   uint16          udb[UDBSIZE];                         /* copy of Unibus Data Block */
   uint16          rxhdr[4];                             /* content of RX ring entry, during wait */
   uint16          txhdr[4];                             /* content of TX ring entry, during xmit */
+  t_bool          initialized;                          /* flag for one time initializations */
 };
 
 struct xu_controller {
@@ -302,6 +300,15 @@ typedef struct xu_controller CTLR;
 #define RXR_NCHN  0020000                               /* <13> No Data Chaining */
 #define RXR_OVRN  0010000                               /* <12> Overrun Error [DELUA only] */
 #define RXR_MLEN  0007777                               /* <11:0> Message Length */
+
+BITFIELD xu_rdes_w2[] = {
+  BITNCF(8), BIT(ENP), BIT(STP), BITNC, BIT(CRC), BIT(OFLO), BIT(FRAM), BIT(ERRS), BIT(OWN),
+  ENDBITS
+};
+BITFIELD xu_rdes_w3[] = {
+  BITFFMT(mlen,12,"0x%X"), BITNC, BIT(NCHN), BIT(UBTO), BIT(BUFL),
+  ENDBITS
+};
 
 /* debugging bitmaps */
 #define DBG_TRC  0x0001                                 /* trace routine calls */

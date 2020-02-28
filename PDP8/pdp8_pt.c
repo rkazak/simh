@@ -1,6 +1,6 @@
 /* pdp8_pt.c: PDP-8 paper tape reader/punch simulator
 
-   Copyright (c) 1993-2013, Robert M Supnik
+   Copyright (c) 1993-2017, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,7 @@
 
    ptr,ptp      PC8E paper tape reader/punch
 
+   13-Mar-17    RMS     Annotated fall through in switch
    17-Mar-13    RMS     Modified to use central set_bootpc routine
    25-Apr-03    RMS     Revised for extended file support
    04-Oct-02    RMS     Added DIBs
@@ -46,6 +47,8 @@ t_stat ptp_svc (UNIT *uptr);
 t_stat ptr_reset (DEVICE *dptr);
 t_stat ptp_reset (DEVICE *dptr);
 t_stat ptr_boot (int32 unitno, DEVICE *dptr);
+const char *ptr_description (DEVICE *dptr);
+const char *ptp_description (DEVICE *dptr);
 
 /* PTR data structures
 
@@ -62,13 +65,13 @@ UNIT ptr_unit = {
     };
 
 REG ptr_reg[] = {
-    { ORDATA (BUF, ptr_unit.buf, 8) },
-    { FLDATA (DONE, dev_done, INT_V_PTR) },
-    { FLDATA (ENABLE, int_enable, INT_V_PTR) },
-    { FLDATA (INT, int_req, INT_V_PTR) },
-    { DRDATA (POS, ptr_unit.pos, T_ADDR_W), PV_LEFT },
-    { DRDATA (TIME, ptr_unit.wait, 24), PV_LEFT },
-    { FLDATA (STOP_IOE, ptr_stopioe, 0) },
+    { ORDATAD (BUF, ptr_unit.buf, 8, "last data item processed") },
+    { FLDATAD (DONE, dev_done, INT_V_PTR, "device done flag") },
+    { FLDATAD (ENABLE, int_enable, INT_V_PTR, "interrupt enable flag") },
+    { FLDATAD (INT, int_req, INT_V_PTR, "interrupt pending flag") },
+    { DRDATAD (POS, ptr_unit.pos, T_ADDR_W, "position in the input file"), PV_LEFT },
+    { DRDATAD (TIME, ptr_unit.wait, 24, "time from I/O initiation to interrupt"), PV_LEFT },
+    { FLDATAD (STOP_IOE, ptr_stopioe, 0, "stop on I/O error") },
     { NULL }
     };
 
@@ -82,7 +85,10 @@ DEVICE ptr_dev = {
     1, 10, 31, 1, 8, 8,
     NULL, NULL, &ptr_reset,
     &ptr_boot, NULL, NULL,
-    &ptr_dib, 0 };
+    &ptr_dib, 0, 0,
+    NULL, NULL, NULL, NULL, NULL, NULL,
+    &ptr_description
+    };
 
 /* PTP data structures
 
@@ -98,13 +104,13 @@ UNIT ptp_unit = {
     };
 
 REG ptp_reg[] = {
-    { ORDATA (BUF, ptp_unit.buf, 8) },
-    { FLDATA (DONE, dev_done, INT_V_PTP) },
-    { FLDATA (ENABLE, int_enable, INT_V_PTP) },
-    { FLDATA (INT, int_req, INT_V_PTP) },
-    { DRDATA (POS, ptp_unit.pos, T_ADDR_W), PV_LEFT },
-    { DRDATA (TIME, ptp_unit.wait, 24), PV_LEFT },
-    { FLDATA (STOP_IOE, ptp_stopioe, 0) },
+    { ORDATAD (BUF, ptp_unit.buf, 8, "last data item processed") },
+    { FLDATAD (DONE, dev_done, INT_V_PTP, "device done flag") },
+    { FLDATAD (ENABLE, int_enable, INT_V_PTP, "interrupt enable flag") },
+    { FLDATAD (INT, int_req, INT_V_PTP, "interrupt pending flag") },
+    { DRDATAD (POS, ptp_unit.pos, T_ADDR_W, "position in the output file"), PV_LEFT },
+    { DRDATAD (TIME, ptp_unit.wait, 24, "time from I/O initiation to interrupt"), PV_LEFT },
+    { FLDATAD (STOP_IOE, ptp_stopioe, 0, "stop on I/O error") },
     { NULL }
     };
 
@@ -118,7 +124,9 @@ DEVICE ptp_dev = {
     1, 10, 31, 1, 8, 8,
     NULL, NULL, &ptp_reset,
     NULL, NULL, NULL,
-    &ptp_dib, 0
+    &ptp_dib, 0, 0,
+    NULL, NULL, NULL, NULL, NULL, NULL,
+    &ptp_description
     };
 
 /* Paper tape reader: IOT routine */
@@ -136,7 +144,8 @@ switch (IR & 07) {                                      /* decode IR<9:11> */
         return (dev_done & INT_PTR)? IOT_SKP + AC: AC;  
 
     case 6:                                             /* RFC!RRB */
-        sim_activate (&ptr_unit, ptr_unit.wait);
+        sim_activate (&ptr_unit, ptr_unit.wait);        /* activate */
+        /* fall through */
     case 2:                                             /* RRB */
         dev_done = dev_done & ~INT_PTR;                 /* clear flag */
         int_req = int_req & ~INT_PTR;                   /* clear int req */
@@ -288,4 +297,14 @@ for (i = 0; i < BOOT_LEN; i++)
     M[BOOT_START + i] = boot_rom[i];
 cpu_set_bootpc (BOOT_START);
 return SCPE_OK;
+}
+
+const char *ptr_description (DEVICE *dptr)
+{
+return "PC8E paper tape reader";
+}
+
+const char *ptp_description (DEVICE *dptr)
+{
+return "PC8E paper tape punch";
 }

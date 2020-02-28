@@ -67,6 +67,8 @@ t_stat td_wr_o_buf (CTLR *ctlr, int32 data);
 #define TDDEB_TRC       00040                           /* trace */
 #define TDDEB_INT       00100                           /* interrupts */
 #define TDDEB_PKT       00200                           /* packet */
+#define TDDEB_DAT       00400                           /* data */
+#define TDDEB_ERR       01000                           /* errors */
 
 static DEBTAB td_deb[] = {
     { "OPS", TDDEB_OPS, "transactions" },
@@ -79,6 +81,8 @@ static DEBTAB td_deb[] = {
     { "OWR", TDDEB_OWR, "output reg writes" },
     { "INT", TDDEB_INT, "interrupts" },
     { "TRC", TDDEB_TRC, "trace" },
+    { "DAT", TDDEB_DAT, "data" },
+    { "ERR", TDDEB_ERR, "errors" },
     { NULL, 0 }
     };
 

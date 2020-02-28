@@ -1,6 +1,6 @@
 /* pdp1_dt.c: 18b DECtape simulator
 
-   Copyright (c) 1993-2015, Robert M Supnik
+   Copyright (c) 1993-2017, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,8 @@
 
    dt           Type 550/555 DECtape
 
+   15-Mar-17    RMS     Fixed dt_seterr to clear successor states
+   09-Mar-17    RMS     Fixed dt_seterr to handle nx unit select (COVERITY)
    28-Mar-15    RMS     Revised to use sim_printf
    21-Dec-06    RMS     Added 16-channel SBS support
    23-Jun-06    RMS     Fixed conflict in ATTACH switches
@@ -268,7 +270,7 @@ static const int32 map_unit[16] = {                     /* Type 550 unit map */
 
 t_stat dt_svc (UNIT *uptr);
 t_stat dt_reset (DEVICE *dptr);
-t_stat dt_attach (UNIT *uptr, char *cptr);
+t_stat dt_attach (UNIT *uptr, CONST char *cptr);
 t_stat dt_detach (UNIT *uptr);
 void dt_deselect (int32 oldf);
 void dt_newsa (int32 newf);
@@ -308,23 +310,23 @@ UNIT dt_unit[] = {
     };
 
 REG dt_reg[] = {
-    { ORDATA (DTSA, dtsa, 18) },
-    { ORDATA (DTSB, dtsb, 18) },
-    { ORDATA (DTDB, dtdb, 18) },
-    { FLDATA (DTF, dtsb, DTB_V_DTF) },
-    { FLDATA (BEF, dtsb, DTB_V_BEF) },
-    { FLDATA (ERF, dtsb, DTB_V_ERF) },
-    { DRDATA (LTIME, dt_ltime, 31), REG_NZ },
-    { DRDATA (DCTIME, dt_dctime, 31), REG_NZ },
-    { ORDATA (SUBSTATE, dt_substate, 2) },
+    { ORDATAD (DTSA, dtsa, 18, "status register A") },
+    { ORDATAD (DTSB, dtsb, 18, "status register B") },
+    { ORDATAD (DTDB, dtdb, 18, "data buffer") },
+    { FLDATAD (DTF, dtsb, DTB_V_DTF, "DECtape flag") },
+    { FLDATAD (BEF, dtsb, DTB_V_BEF, "block end flag") },
+    { FLDATAD (ERF, dtsb, DTB_V_ERF, "error flag") },
+    { DRDATAD (LTIME, dt_ltime, 31, "time between lines"), REG_NZ },
+    { DRDATAD (DCTIME, dt_dctime, 31, "time to declarate to a full stop"), REG_NZ },
+    { ORDATAD (SUBSTATE, dt_substate, 2, "read/write command substate") },
     { DRDATA (LBLK, dt_logblk, 12), REG_HIDDEN },
-    { URDATA (POS, dt_unit[0].pos, 10, T_ADDR_W, 0,
-              DT_NUMDR, PV_LEFT | REG_RO) },
-    { URDATA (STATT, dt_unit[0].STATE, 8, 18, 0,
-              DT_NUMDR, REG_RO) },
+    { URDATAD (POS, dt_unit[0].pos, 10, T_ADDR_W, 0,
+              DT_NUMDR, PV_LEFT | REG_RO, "position, in lines, units 0-7") },
+    { URDATAD (STATT, dt_unit[0].STATE, 8, 18, 0,
+              DT_NUMDR, REG_RO, "unit state, units 0-7") },
     { URDATA (LASTT, dt_unit[0].LASTT, 10, 32, 0,
               DT_NUMDR, REG_HRO) },
-    { FLDATA (STOP_OFFR, dt_stopoffr, 0) },
+    { FLDATAD (STOP_OFFR, dt_stopoffr, 0, "stop on off-reel error") },
     { DRDATA (SBSLVL, dt_sbs, 4), REG_HRO },
     { NULL }
     };
@@ -644,7 +646,7 @@ t_bool dt_setpos (UNIT *uptr)
 {
 uint32 new_time, ut, ulin, udelt;
 int32 mot = DTS_GETMOT (uptr->STATE);
-int32 unum, delta;
+int32 unum, delta = 0;
 
 new_time = sim_grtime ();                               /* current time */
 ut = new_time - uptr->LASTT;                            /* elapsed time */
@@ -856,16 +858,18 @@ return SCPE_OK;
 
 void dt_seterr (UNIT *uptr, int32 e)
 {
-int32 mot = DTS_GETMOT (uptr->STATE);
-
 dtsa = dtsa & ~DTA_STSTP;                               /* clear go */
 dtsb = dtsb | DTB_ERF | e;                              /* set error flag */
-if (mot >= DTS_ACCF) {                                  /* ~stopped or stopping? */
-    sim_cancel (uptr);                                  /* cancel activity */
-    if (dt_setpos (uptr))                               /* update position */
-        return;
-    sim_activate (uptr, dt_dctime);                     /* sched decel */
-    DTS_SETSTA (DTS_DECF | (mot & DTS_DIR), 0);         /* state = decel */
+if (uptr != NULL) {                                     /* valid unit? */
+    int32 mot = DTS_GETMOT (uptr->STATE);               /* get motion */
+    if (mot >= DTS_ACCF) {                              /* ~stopped or stopping? */
+        sim_cancel (uptr);                              /* cancel activity */
+        if (dt_setpos (uptr))                           /* update position */
+            return;
+        sim_activate (uptr, dt_dctime);                 /* sched decel */
+        DTS_SETSTA (DTS_DECF | (mot & DTS_DIR), 0);     /* state = decel */
+        }
+    else DTS_SETSTA (mot, 0);                           /* clear 2nd, 3rd */
     }
 DT_UPDINT;
 return;
@@ -980,7 +984,7 @@ return 0;
    If 18b/36b, read data into buffer
 */
 
-t_stat dt_attach (UNIT *uptr, char *cptr)
+t_stat dt_attach (UNIT *uptr, CONST char *cptr)
 {
 uint16 pdp8b[D8_NBSIZE];
 uint16 pdp11b[D18_BSIZE];

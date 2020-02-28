@@ -81,7 +81,7 @@
 /* VAX 8600 boot device definitions */
 
 struct boot_dev {
-    char                *name;
+    const char          *name;
     int32               code;
     int32               let;
     };
@@ -107,34 +107,21 @@ static struct boot_dev boot_tab[] = {
     { NULL }
     };
 
-extern int32 R[16];
-extern int32 PSL;
-extern int32 ASTLVL, SISR;
-extern int32 mapen, pme, trpirq;
-extern int32 in_ie;
-extern int32 mchk_va, mchk_ref;
-extern int32 crd_err, mem_err, hlt_pin;
 extern int32 tmr_int, tti_int, tto_int, csi_int;
 extern uint32 sbi_er;
-extern jmp_buf save_env;
-extern int32 p1;
-extern int32 fault_PC;                                  /* fault PC */
-extern UNIT cpu_unit;
 
 void uba_eval_int (void);
 t_stat abus_reset (DEVICE *dptr);
 const char *abus_description (DEVICE *dptr);
-t_stat vax860_boot (int32 flag, char *ptr);
-t_stat vax860_boot_parse (int32 flag, char *ptr);
-t_stat cpu_boot (int32 unitno, DEVICE *dptr);
+t_stat vax860_boot (int32 flag, CONST char *ptr);
+t_stat vax860_boot_parse (int32 flag, const char *ptr);
 void init_pamm (void);
 
 extern t_stat (*nexusR[NEXUS_NUM])(int32 *dat, int32 ad, int32 md);
 extern t_stat (*nexusW[NEXUS_NUM])(int32 dat, int32 ad, int32 md);
-extern int32 intexc (int32 vec, int32 cc, int32 ipl, int ei);
 extern int32 iccs_rd (void);
 extern int32 nicr_rd (void);
-extern int32 icr_rd (t_bool interp);
+extern int32 icr_rd (void);
 extern int32 todr_rd (void);
 extern int32 rxcs_rd (void);
 extern int32 rxdb_rd (void);
@@ -246,13 +233,13 @@ for (i=0; i<32; i++)
     pamm[512+i] = PAMM_IOA0;
 }
 
-t_stat cpu_show_memory (FILE* st, UNIT* uptr, int32 val, void* desc)
+t_stat cpu_show_memory (FILE* st, UNIT* uptr, int32 val, CONST void* desc)
 {
 int32 slot[32];
 int32 base[32];
 struct {
     int capacity;
-    char *option;
+    const char *option;
     } boards[] = {
         {  4, "MS86-B"}, 
         { 16, "MS86-C"},
@@ -435,7 +422,7 @@ switch (rg) {
         break;
 
     case MT_ICR:                                        /* ICR */
-        val = icr_rd (FALSE);
+        val = icr_rd ();
         break;
 
     case MT_TODR:                                       /* TODR */
@@ -476,6 +463,7 @@ switch (rg) {
 
     case MT_MDCTL:                                      /* MDCTL */
         val = mdctl & MDCTL_RW;
+        break;
 
     case MT_EHSR:                                       /* EHSR */
         val = ehsr & EHSR_VMSE;
@@ -498,7 +486,7 @@ switch (rg) {
        break;
 
     default:
-        RSVD_OPND_FAULT;
+        RSVD_OPND_FAULT(ReadIPR);
         }
 
 return val;
@@ -571,7 +559,7 @@ switch (rg) {
         break;
 
     default:
-        RSVD_OPND_FAULT;
+        RSVD_OPND_FAULT(WriteIPR);
         }
 
 return;
@@ -694,10 +682,12 @@ return cc;
    Sets up R0-R5, calls SCP boot processor with effective BOOT CPU
 */
 
-t_stat vax860_boot (int32 flag, char *ptr)
+t_stat vax860_boot (int32 flag, CONST char *ptr)
 {
 t_stat r;
 
+if ((ptr = get_sim_sw (ptr)) == NULL)                   /* get switches */
+    return SCPE_INVSW;
 r = vax860_boot_parse (flag, ptr);                      /* parse the boot cmd */
 if (r != SCPE_OK) {                                     /* error? */
     if (r >= SCPE_BASE) {                               /* message available? */
@@ -706,16 +696,17 @@ if (r != SCPE_OK) {                                     /* error? */
         }
     return r;
     }
-strncpy (cpu_boot_cmd, ptr, CBUFSIZE);                  /* save for reboot */
+strncpy (cpu_boot_cmd, ptr, CBUFSIZE-1);                /* save for reboot */
 return run_cmd (flag, "CPU");
 }
 
 /* Parse boot command, set up registers - also used on reset */
 
-t_stat vax860_boot_parse (int32 flag, char *ptr)
+t_stat vax860_boot_parse (int32 flag, const char *ptr)
 {
 char gbuf[CBUFSIZE];
-char *slptr, *regptr;
+char *slptr;
+const char *regptr;
 int32 i, r5v, unitno;
 DEVICE *dptr;
 UNIT *uptr;
@@ -740,6 +731,7 @@ else
     ba = dibp->ba;
 unitno = (int32) (uptr - dptr->units);
 r5v = 0;
+/* coverity[NULL_RETURNS] */ 
 if ((strncmp (regptr, "/R5:", 4) == 0) ||
     (strncmp (regptr, "/R5=", 4) == 0) ||
     (strncmp (regptr, "/r5:", 4) == 0) ||
@@ -838,13 +830,17 @@ for (i = 0; (dptr = sim_devices[i]) != NULL; i++) {     /* loop thru dev */
 return SCPE_OK;
 }
 
-t_stat cpu_set_model (UNIT *uptr, int32 val, char *cptr, void *desc)
+t_stat cpu_set_model (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 if (cptr == NULL) return SCPE_ARG;
-if (strcmp(cptr, "8600") == 0)
+if (strcmp(cptr, "8600") == 0) {
    sys_model = 0;
-else if (strcmp(cptr, "8650") == 0)
+   strcpy (sim_name, "VAX 8600");
+   }
+else if (strcmp(cptr, "8650") == 0) {
    sys_model = 1;
+   strcpy (sim_name, "VAX 8650");
+   }
 else
    return SCPE_ARG;
 return SCPE_OK;
@@ -869,7 +865,6 @@ fprintf (st, "   RQn        to boot from rqn\n");
 fprintf (st, "   RQBn       to boot from rqbn\n");
 fprintf (st, "   RQCn       to boot from rqcn\n");
 fprintf (st, "   RQDn       to boot from rqdn\n");
-fprintf (st, "   TQn        to boot from tqn\n");
 fprintf (st, "   CS         to boot from console RL\n\n");
 return SCPE_OK;
 }

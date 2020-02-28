@@ -1,6 +1,6 @@
 /* nova_cpu.c: NOVA CPU simulator
 
-   Copyright (c) 1993-2013, Robert M. Supnik
+   Copyright (c) 1993-2017, Robert M. Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,7 @@
 
    cpu          Nova central processor
 
+   07-Sep-17    RMS     Fixed sim_eval declaration in history routine (COVERITY)
    17-Mar-13    RMS     Added clarifying brances to IND_STEP macro (Dave Bryan)
    04-Jul-07    BKR     DEV_SET/CLR macros now used,
                         support for non-existant devices added
@@ -320,12 +321,12 @@ static  Hist_entry * hist = NULL ;                      /* instruction history *
 t_stat cpu_ex (t_value *vptr, t_addr addr, UNIT *uptr, int32 sw);
 t_stat cpu_dep (t_value val, t_addr addr, UNIT *uptr, int32 sw);
 t_stat cpu_reset (DEVICE *dptr);
-t_stat cpu_set_size (UNIT *uptr, int32 val, char *cptr, void *desc);
+t_stat cpu_set_size (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
 t_stat cpu_boot (int32 unitno, DEVICE *dptr);
 t_stat build_devtab (void);
 
-t_stat hist_set( UNIT * uptr, int32 val, char * cptr, void * desc ) ;
-t_stat hist_show( FILE * st, UNIT * uptr, int32 val, void * desc ) ;
+t_stat hist_set( UNIT * uptr, int32 val, CONST char * cptr, void * desc ) ;
+t_stat hist_show( FILE * st, UNIT * uptr, int32 val, CONST void * desc ) ;
 static int hist_save( int32 pc, int32 our_ir ) ;
 char * devBitNames( int32 flags, char * ptr, char * sepStr ) ;
 
@@ -1126,7 +1127,7 @@ return SCPE_OK;
 
 /* Alter memory size */
 
-t_stat cpu_set_size (UNIT *uptr, int32 val, char *cptr, void *desc)
+t_stat cpu_set_size (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 int32 mc = 0;
 t_addr i;
@@ -1330,7 +1331,7 @@ return ( -1 ) ;
 
 /*  setup history save area (proposed global routine)  */
 
-t_stat hist_set( UNIT * uptr, int32 val, char * cptr, void * desc )
+t_stat hist_set( UNIT * uptr, int32 val, CONST char * cptr, void * desc )
 {
 int32   i, lnt ;
 t_stat  r ;
@@ -1372,8 +1373,6 @@ return ( SCPE_OK ) ;
 
 int hist_fprintf( FILE * fp, int itemNum, Hist_entry * hptr )
 {
-t_value     sim_eval ;
-
 if ( hptr )
     {
     if ( itemNum == 0 )
@@ -1394,8 +1393,8 @@ if ( hptr )
         fprintf( fp, "%06o  %06o   ", SP, FP ) ;
         }
 
-    sim_eval = (hptr->ir & 0xFFFF) ;
-    if ( (fprint_sym(fp, (hptr->pc & AMASK), &sim_eval, &cpu_unit, SWMASK ('M'))) > 0 )
+    sim_eval[0] = (hptr->ir & 0xFFFF) ;
+    if ( (fprint_sym(fp, (hptr->pc & AMASK), sim_eval, &cpu_unit, SWMASK ('M'))) > 0 )
         {
         fprintf( fp, "(undefined) %04o", (hptr->ir & 0xFFFF) ) ;
     }
@@ -1420,10 +1419,10 @@ return ( 0 ) ;
 
 /* show execution history (proposed global routine) */
 
-t_stat hist_show( FILE * st, UNIT * uptr, int32 val, void * desc )
+t_stat hist_show( FILE * st, UNIT * uptr, int32 val, CONST void * desc )
 {
 int32           k, di, lnt ;
-char *          cptr = (char *) desc ;
+CONST char *    cptr = (CONST char *) desc ;
 t_stat          r ;
 Hist_entry *    hptr ;
 
@@ -1467,7 +1466,7 @@ struct Dbits
     {
     int32      dBit ;
     int32      dInvertMask ;
-    char *     dName ;
+    const char *dName ;
     }  devBits [] =
 
     {

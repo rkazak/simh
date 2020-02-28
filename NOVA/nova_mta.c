@@ -1,6 +1,6 @@
 /* nova_mta.c: NOVA magnetic tape simulator
 
-   Copyright (c) 1993-2008, Robert M. Supnik
+   Copyright (c) 1993-2017, Robert M. Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,7 @@
 
    mta          magnetic tape
 
+   13-Mar-17    RMS     Annotated fall through in switch
    04-Jul-07    BKR     fixed boot code to properly boot self-boot tapes;
                         boot routine now uses standard DG APL boot code;
                         device name changed to DG's MTA from DEC's MT.
@@ -166,17 +167,16 @@ int32 mta_cwait = 100;                                  /* command latency */
 int32 mta_rwait = 100;                                  /* record latency */
 uint8 *mtxb = NULL;                                     /* transfer buffer */
 
-DEVICE mta_dev;
 int32 mta (int32 pulse, int32 code, int32 AC);
 t_stat mta_svc (UNIT *uptr);
 t_stat mta_reset (DEVICE *dptr);
 t_stat mta_boot (int32 unitno, DEVICE *dptr);
-t_stat mta_attach (UNIT *uptr, char *cptr);
+t_stat mta_attach (UNIT *uptr, CONST char *cptr);
 t_stat mta_detach (UNIT *uptr);
 int32 mta_updcsta (UNIT *uptr);
 void mta_upddsta (UNIT *uptr, int32 newsta);
 t_stat mta_map_err (UNIT *uptr, t_stat st);
-t_stat mta_vlock (UNIT *uptr, int32 val, char *cptr, void *desc);
+t_stat mta_vlock (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
 
 static const int ctype[32] = {                          /* c vs r timing */
  0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0,
@@ -511,8 +511,10 @@ switch (st) {
 
     case MTSE_FMT:                                      /* illegal fmt */
         mta_upddsta (uptr, uptr->USTAT | STA_WLK | STA_RDY);
+        /* fall through */
     case MTSE_UNATT:                                    /* unattached */
         mta_sta = mta_sta | STA_ILL;
+        /* fall through */
     case MTSE_OK:                                       /* no error */
         return SCPE_IERR;                               /* never get here! */
 
@@ -592,7 +594,7 @@ return SCPE_OK;
 
 /* Attach routine */
 
-t_stat mta_attach (UNIT *uptr, char *cptr)
+t_stat mta_attach (UNIT *uptr, CONST char *cptr)
 {
 t_stat r;
 
@@ -618,7 +620,7 @@ return sim_tape_detach (uptr);
 
 /* Write lock/unlock validate routine */
 
-t_stat mta_vlock (UNIT *uptr, int32 val, char *cptr, void *desc)
+t_stat mta_vlock (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 if ((uptr->flags & UNIT_ATT) && (val || sim_tape_wrp (uptr)))
     mta_upddsta (uptr, uptr->USTAT | STA_WLK);

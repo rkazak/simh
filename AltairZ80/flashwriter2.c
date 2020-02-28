@@ -54,7 +54,7 @@ extern int32 sio0d(const int32 port, const int32 io, const int32 data);
 extern uint32 sim_map_resource(uint32 baseaddr, uint32 size, uint32 resource_type,
         int32 (*routine)(const int32, const int32, const int32), uint8 unmap);
 
-static char ansibuf[10];
+static char ansibuf[32];
 
 #define FW2_MAX_BOARDS          4
 #define UNIT_V_FW2_VERBOSE      (UNIT_V_UF + 1) /* verbose mode, i.e. show error messages   */
@@ -75,11 +75,12 @@ static FW2_INFO *fw2_info[FW2_MAX_BOARDS];
 static uint8 port_map[FW2_MAX_BOARDS] = { 0x11, 0x15, 0x17, 0x19 };
 
 static int32 fw2dev(const int32 Addr, const int32 rw, const int32 data);
-static t_stat fw2_attach(UNIT *uptr, char *cptr);
+static t_stat fw2_attach(UNIT *uptr, CONST char *cptr);
 static t_stat fw2_detach(UNIT *uptr);
 static uint8 FW2_Read(const uint32 Addr);
 static uint8 FW2_Write(const uint32 Addr, uint8 cData);
-static t_stat get_base_address(char *cptr, uint32 *baseaddr);
+static t_stat get_base_address(const char *cptr, uint32 *baseaddr);
+static const char* fw2_description(DEVICE *dptr);
 
 static UNIT fw2_unit[] = {
     { UDATA (NULL, UNIT_FIX + UNIT_ATTABLE + UNIT_DISABLE + UNIT_ROABLE, FW2_CAPACITY) },
@@ -88,7 +89,11 @@ static UNIT fw2_unit[] = {
     { UDATA (NULL, UNIT_FIX + UNIT_ATTABLE + UNIT_DISABLE + UNIT_ROABLE, FW2_CAPACITY) }
 };
 
-#define FWII_NAME   "Vector Graphic Flashwriter 2 FWII"
+#define FWII_NAME   "Vector Graphic Flashwriter 2"
+
+static const char* fw2_description(DEVICE *dptr) {
+    return FWII_NAME;
+}
 
 static MTAB fw2_mod[] = {
     /* quiet, no warning messages       */
@@ -106,11 +111,11 @@ DEVICE fw2_dev = {
     NULL, NULL, NULL,
     NULL, &fw2_attach, &fw2_detach,
     NULL, (DEV_DISABLE | DEV_DIS), 0,
-    NULL, NULL, FWII_NAME
+    NULL, NULL, NULL, NULL, NULL, NULL, &fw2_description
 };
 
 /* Attach routine */
-static t_stat fw2_attach(UNIT *uptr, char *cptr)
+static t_stat fw2_attach(UNIT *uptr, CONST char *cptr)
 {
     t_stat r;
     unsigned int i = 0;
@@ -132,7 +137,11 @@ static t_stat fw2_attach(UNIT *uptr, char *cptr)
         }
     }
 
-    fw2_info[i] = calloc(1, sizeof(FW2_INFO));
+    if (i == FW2_MAX_BOARDS) {
+        return (SCPE_IERR);
+    }
+
+    fw2_info[i] = (FW2_INFO *)calloc(1, sizeof(FW2_INFO));
     fw2_info[i]->uptr = uptr;
     fw2_info[i]->uptr->u3 = baseaddr;
 
@@ -192,7 +201,7 @@ static t_stat fw2_detach(UNIT *uptr)
     return SCPE_OK;
 }
 
-static t_stat get_base_address(char *cptr, uint32 *baseaddr)
+static t_stat get_base_address(const char *cptr, uint32 *baseaddr)
 {
     uint32 b;
     sscanf(cptr, "%x", &b);

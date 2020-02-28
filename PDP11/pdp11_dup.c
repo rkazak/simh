@@ -101,7 +101,7 @@ static t_stat dup_svc (UNIT *uptr);
 static t_stat dup_poll_svc (UNIT *uptr);
 static t_stat dup_rcv_byte (int32 dup);
 static t_stat dup_reset (DEVICE *dptr);
-static t_stat dup_attach (UNIT *uptr, char *ptr);
+static t_stat dup_attach (UNIT *uptr, CONST char *ptr);
 static t_stat dup_detach (UNIT *uptr);
 static t_stat dup_clear (int32 dup, t_bool flag);
 static int32 dup_rxinta (void);
@@ -112,17 +112,17 @@ static void dup_clr_rxint (int32 dup);
 static void dup_set_rxint (int32 dup);
 static void dup_clr_txint (int32 dup);
 static void dup_set_txint (int32 dup);
-static t_stat dup_setnl (UNIT *uptr, int32 val, char *cptr, void *desc);
-static t_stat dup_setspeed (UNIT* uptr, int32 val, char* cptr, void* desc);
-static t_stat dup_showspeed (FILE* st, UNIT* uptr, int32 val, void* desc);
-static t_stat dup_setcorrupt (UNIT *uptr, int32 val, char *cptr, void *desc);
-static t_stat dup_showcorrupt (FILE *st, UNIT *uptr, int32 val, void *desc);
-static t_stat dup_set_W3 (UNIT* uptr, int32 val, char* cptr, void* desc);
-static t_stat dup_show_W3 (FILE* st, UNIT* uptr, int32 val, void* desc);
-static t_stat dup_set_W5 (UNIT* uptr, int32 val, char* cptr, void* desc);
-static t_stat dup_show_W5 (FILE* st, UNIT* uptr, int32 val, void* desc);
-static t_stat dup_set_W6 (UNIT* uptr, int32 val, char* cptr, void* desc);
-static t_stat dup_show_W6 (FILE* st, UNIT* uptr, int32 val, void* desc);
+static t_stat dup_setnl (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+static t_stat dup_setspeed (UNIT* uptr, int32 val, CONST char* cptr, void* desc);
+static t_stat dup_showspeed (FILE* st, UNIT* uptr, int32 val, CONST void* desc);
+static t_stat dup_setcorrupt (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+static t_stat dup_showcorrupt (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+static t_stat dup_set_W3 (UNIT* uptr, int32 val, CONST char* cptr, void* desc);
+static t_stat dup_show_W3 (FILE* st, UNIT* uptr, int32 val, CONST void* desc);
+static t_stat dup_set_W5 (UNIT* uptr, int32 val, CONST char* cptr, void* desc);
+static t_stat dup_show_W5 (FILE* st, UNIT* uptr, int32 val, CONST void* desc);
+static t_stat dup_set_W6 (UNIT* uptr, int32 val, CONST char* cptr, void* desc);
+static t_stat dup_show_W6 (FILE* st, UNIT* uptr, int32 val, CONST void* desc);
 static t_stat dup_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
 static t_stat dup_help_attach (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
 static const char *dup_description (DEVICE *dptr);
@@ -675,8 +675,6 @@ if (dup_W6[dup])
     old_rxcsr_b_modem_bits = dup_rxcsr[dup] & RXCSR_B_MODEM_BITS;
 else
     old_rxcsr_b_modem_bits = 0;
-old_rxcsr_a_modem_bits = dup_rxcsr[dup] & RXCSR_A_MODEM_BITS;
-old_rxcsr_b_modem_bits = dup_rxcsr[dup] & RXCSR_B_MODEM_BITS;
 tmxr_set_get_modem_bits (lp, 0, 0, &modem_bits);
 if (dup_W5[dup])
     new_rxcsr_a_modem_bits = (((modem_bits & TMXR_MDM_RNG) ? RXCSR_M_RING : 0) |
@@ -1042,7 +1040,7 @@ int32 dup, active, attached;
 
 sim_debug(DBG_TRC, DUPDPTR, "dup_poll_svc()\n");
 
-tmxr_poll_conn(&dup_desc);
+(void)tmxr_poll_conn(&dup_desc);
 tmxr_poll_rx (&dup_desc);
 tmxr_poll_tx (&dup_desc);
 for (dup=active=attached=0; dup < dup_desc.lines; dup++) {
@@ -1060,16 +1058,17 @@ for (dup=active=attached=0; dup < dup_desc.lines; dup++) {
     if (!(dup_rxcsr[dup] & RXCSR_M_RXACT)) {
         const uint8 *buf;
         uint16 size;
+        t_stat r;
 
         if (dup_parcsr[dup] & PARCSR_M_DECMODE)
-            ddcmp_tmxr_get_packet_ln (lp, &buf, &size, dup_corruption[dup]);
+            r = ddcmp_tmxr_get_packet_ln (lp, &buf, &size, dup_corruption[dup]);
         else {
             size_t size_t_size;
 
-            tmxr_get_packet_ln (lp, &buf, &size_t_size);
+            r = tmxr_get_packet_ln (lp, &buf, &size_t_size);
             size = (uint16)size_t_size;
             }
-        if (buf) {
+        if ((r == SCPE_OK) && (buf)) {
             if (dup_rcvpksize[dup] < size) {
                 dup_rcvpksize[dup] = size;
                 dup_rcvpacket[dup] = (uint8 *)realloc (dup_rcvpacket[dup], dup_rcvpksize[dup]);
@@ -1251,7 +1250,7 @@ if ((r == SCPE_OK) && (attached))
 return r;
 }
 
-static t_stat dup_attach (UNIT *uptr, char *cptr)
+static t_stat dup_attach (UNIT *uptr, CONST char *cptr)
 {
 t_stat r;
 DEVICE *dptr = DUPDPTR;
@@ -1306,7 +1305,7 @@ return r;
 
 /* SET/SHOW SPEED processor */
 
-static t_stat dup_showspeed (FILE* st, UNIT* uptr, int32 val, void* desc)
+static t_stat dup_showspeed (FILE* st, UNIT* uptr, int32 val, CONST void* desc)
 {
 DEVICE *dptr = DUPDPTR;
 int32 dup = (int32)(uptr-dptr->units);
@@ -1318,7 +1317,7 @@ else
 return SCPE_OK;
 }
 
-static t_stat dup_setspeed (UNIT* uptr, int32 val, char* cptr, void* desc)
+static t_stat dup_setspeed (UNIT* uptr, int32 val, CONST char* cptr, void* desc)
 {
 DEVICE *dptr = DUPDPTR;
 int32 dup = (int32)(uptr-dptr->units);
@@ -1336,7 +1335,7 @@ return SCPE_OK;
 
 /* SET/SHOW CORRUPTION processor */
 
-static t_stat dup_showcorrupt (FILE* st, UNIT* uptr, int32 val, void* desc)
+static t_stat dup_showcorrupt (FILE* st, UNIT* uptr, int32 val, CONST void* desc)
 {
 DEVICE *dptr = DUPDPTR;
 int32 dup = (int32)(uptr-dptr->units);
@@ -1348,7 +1347,7 @@ else
 return SCPE_OK;
 }
 
-static t_stat dup_setcorrupt (UNIT* uptr, int32 val, char* cptr, void* desc)
+static t_stat dup_setcorrupt (UNIT* uptr, int32 val, CONST char* cptr, void* desc)
 {
 DEVICE *dptr = DUPDPTR;
 int32 dup = (int32)(uptr-dptr->units);
@@ -1366,7 +1365,7 @@ return SCPE_OK;
 
 /* SET/SHOW W3 processor */
 
-static t_stat dup_show_W3 (FILE* st, UNIT* uptr, int32 val, void* desc)
+static t_stat dup_show_W3 (FILE* st, UNIT* uptr, int32 val, CONST void* desc)
 {
 DEVICE *dptr = DUPDPTR;
 int32 dup = (int32)(uptr-dptr->units);
@@ -1378,7 +1377,7 @@ else
 return SCPE_OK;
 }
 
-static t_stat dup_set_W3 (UNIT* uptr, int32 val, char* cptr, void* desc)
+static t_stat dup_set_W3 (UNIT* uptr, int32 val, CONST char* cptr, void* desc)
 {
 DEVICE *dptr = DUPDPTR;
 int32 dup = (int32)(uptr-dptr->units);
@@ -1389,7 +1388,7 @@ return SCPE_OK;
 
 /* SET/SHOW W5 processor */
 
-static t_stat dup_show_W5 (FILE* st, UNIT* uptr, int32 val, void* desc)
+static t_stat dup_show_W5 (FILE* st, UNIT* uptr, int32 val, CONST void* desc)
 {
 DEVICE *dptr = DUPDPTR;
 int32 dup = (int32)(uptr-dptr->units);
@@ -1401,7 +1400,7 @@ else
 return SCPE_OK;
 }
 
-static t_stat dup_set_W5 (UNIT* uptr, int32 val, char* cptr, void* desc)
+static t_stat dup_set_W5 (UNIT* uptr, int32 val, CONST char* cptr, void* desc)
 {
 DEVICE *dptr = DUPDPTR;
 int32 dup = (int32)(uptr-dptr->units);
@@ -1412,7 +1411,7 @@ return SCPE_OK;
 
 /* SET/SHOW W6 processor */
 
-static t_stat dup_show_W6 (FILE* st, UNIT* uptr, int32 val, void* desc)
+static t_stat dup_show_W6 (FILE* st, UNIT* uptr, int32 val, CONST void* desc)
 {
 DEVICE *dptr = DUPDPTR;
 int32 dup = (int32)(uptr-dptr->units);
@@ -1424,7 +1423,7 @@ else
 return SCPE_OK;
 }
 
-static t_stat dup_set_W6 (UNIT* uptr, int32 val, char* cptr, void* desc)
+static t_stat dup_set_W6 (UNIT* uptr, int32 val, CONST char* cptr, void* desc)
 {
 DEVICE *dptr = DUPDPTR;
 int32 dup = (int32)(uptr-dptr->units);
@@ -1435,7 +1434,7 @@ return SCPE_OK;
 
 /* SET LINES processor */
 
-static t_stat dup_setnl (UNIT *uptr, int32 val, char *cptr, void *desc)
+static t_stat dup_setnl (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 int32 newln, l;
 uint32 i;

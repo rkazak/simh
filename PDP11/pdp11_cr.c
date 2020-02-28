@@ -1,6 +1,6 @@
 /* pdp11_cr.c: CR/CM/CD-11/CD20 card reader simulator
 
-   Copyright (c) 2005-2010, John A. Dundas III
+   Copyright (c) 2005-2017, John A. Dundas III
    Portions derived from work by Douglas W. Jones, jones@cs.uiowa.edu
    Portions derived from work by Robert M Supnik
 
@@ -100,6 +100,8 @@
     ECOs (at least) for Data Buffer status and augmented image mode.
 
   Revision History:
+   19-Jan-17    RMS     CR11 is BR6, CD11 is BR4
+   14-Mar-16    RMS     Added UC15 support (CR11 only)
    23-Feb-13    JGP     Added DEC version of the 026 codepage
                         Fixed the handling of the CR11 error bits after
                         a control register write.
@@ -200,31 +202,42 @@
  * known software support, as this reduces user configuration errors/confusion.
  */
 
+
 #if defined (VM_PDP10)                                  /* PDP10 version */
 #include "pdp10_defs.h"
-extern int32 int_req;
-#define DFLT_DIS        (DEV_DIS)
-#define DFLT_TYPE       (UNIT_CD20)                    /* CD20 (CD11) only */
-#define CD20_ONLY       (1)
+#define IPL_CD          (IPL_CR)                        /* use same for CD */
+#define INT_V_CD        (INT_V_CR)
+#define INT_CD          (INT_CR)
+#define DFLT_QB         (0)
+#define DFLT_TYPE       (UNIT_CD20)                     /* CD20 (CD11) only */
+#define DFLT_IVCL       (IVCL(CD))
 #define DFLT_CPM        1200
+#define CD20_ONLY       (1)
 #define AIECO_REQ       (1)                             /* Requires Augmented Image ECO */
 #elif defined (VM_VAX)                                  /* VAX version */
 #include "vax_defs.h"
-extern int32 int_req[IPL_HLVL];
-#define DFLT_DIS        (DEV_QBUS)                      /* CR11 is programmed I/O only, Qbus OK */
+#define IPL_CD          (IPL_CR)                        /* use same for CD */
+#define INT_V_CD        (INT_V_CR)
+#define INT_CD          (INT_CR)
+#define DFLT_QB         (DEV_QBUS)                      /* CR11 is programmed I/O only, Qbus OK */
 #define DFLT_TYPE       (UNIT_CR11)                     /* CR11 only */
-#define CR11_ONLY       (1)
+#define DFLT_IVCL       (IVCL(CR))
 #define DFLT_CPM        285
+#define CR11_ONLY       (1)
 #else                                                   /* PDP-11 version */
 #include "pdp11_defs.h"
-extern int32 int_req[IPL_HLVL];
-#define DFLT_DIS        (DEV_QBUS)                      /* CR11 is programmed I/O only, Qbus OK */
+#define DFLT_QB         (DEV_QBUS)                      /* CR11 is programmed I/O only, Qbus OK */
 #define DFLT_TYPE       (UNIT_CR11)                     /* Default, but changable */
+#define DFLT_IVCL       (IVCL(CR))
 #define DFLT_CPM        285
-#define CD20_OK        (1)
-#define AIECO_OK       (1)                              /* Augmented Image ECO optional */
-#define CR11_OK        (1)
-#define CD11_OK        (1)
+#if defined (UC15)
+#define CR11_ONLY       (1)
+#else
+#define CR11_OK         (1)                             /* only on real PDP-11 */
+#define CD11_OK         (1)
+#define CD20_OK         (1)
+#define AIECO_OK        (1)                             /* Augmented Image ECO optional */
+#endif
 #endif
 
 /* **** No VM_xxx macros should be referenced after this line **** */
@@ -236,7 +249,7 @@ extern int32 int_req[IPL_HLVL];
 #define I4C_H82         I4C ('H','8','2',' ')
 #define I4C_H40         I4C ('H','4','0',' ')
 
-#define    UNIT_V_TYPE      (UNIT_V_UF + 0) /* Bit-encoded 2-bit field */
+#define    UNIT_V_TYPE      (UNIT_V_UF + 0)             /* Bit-encoded 2-bit field */
 #define    UNIT_TYPE        (3u << UNIT_V_TYPE)
 #define    UNIT_CR11        (1u << UNIT_V_TYPE)
 #define    UNIT_CD20        (2u << UNIT_V_TYPE)
@@ -277,8 +290,7 @@ extern int32 int_req[IPL_HLVL];
 #define DFLT_AIECO   (0)
 #endif
 
-#include <assert.h>
-#define    ERROR            (00404)
+#define    CR_ER            (00404)
 #include "pdp11_cr_dat.h"
 #define    PUNCH_EOD        (07417)
 #define    PUNCH_SPACE      (0)                          /* same for all encodings */
@@ -446,22 +458,23 @@ t_stat cr_wr (int32, int32, int32);
 int32  cr_intac(void);
 t_stat cr_svc (UNIT *);
 t_stat cr_reset (DEVICE *);
-t_stat cr_attach (UNIT *, char *);
+t_stat cr_attach (UNIT *, CONST char *);
 t_stat cr_detach (UNIT *);
-t_stat cr_set_type (UNIT *, int32, char *, void *);
-t_stat cr_set_aieco (UNIT *, int32, char *, void *);
-t_stat cr_show_format (FILE *, UNIT *, int32, void *);
-t_stat cr_set_rate (UNIT *, int32, char *, void *);
-t_stat cr_show_rate (FILE *, UNIT *, int32, void *);
-t_stat cr_set_reset (UNIT *, int32, char *, void *);
-t_stat cr_set_stop (UNIT *, int32, char *, void *);
-t_stat cr_set_eof (UNIT *, int32, char *, void *);
-t_stat cr_show_eof (FILE *, UNIT *, int32, void *);
-t_stat cr_set_trans (UNIT *, int32, char*, void *);
-t_stat cr_show_trans (FILE *, UNIT *, int32, void *);
+t_stat cr_set_type (UNIT *, int32, CONST char *, void *);
+t_stat cr_set_aieco (UNIT *, int32, CONST char *, void *);
+t_stat cr_show_format (FILE *, UNIT *, int32, CONST void *);
+t_stat cr_set_rate (UNIT *, int32, CONST char *, void *);
+t_stat cr_show_rate (FILE *, UNIT *, int32, CONST void *);
+t_stat cr_set_reset (UNIT *, int32, CONST char *, void *);
+t_stat cr_set_stop (UNIT *, int32, CONST char *, void *);
+t_stat cr_set_eof (UNIT *, int32, CONST char *, void *);
+t_stat cr_show_eof (FILE *, UNIT *, int32, CONST void *);
+t_stat cr_set_trans (UNIT *, int32, CONST char*, void *);
+t_stat cr_show_trans (FILE *, UNIT *, int32, CONST void *);
 static t_stat cr_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
 const char *cr_description (DEVICE *dptr);
-
+void cr_set_int (void);
+void cr_clr_int (void);
 
 /* CR data structures
 
@@ -475,7 +488,7 @@ const char *cr_description (DEVICE *dptr);
 #define IOLN_CR         010
 
 static DIB cr_dib = { IOBA_AUTO, IOLN_CR, &cr_rd, &cr_wr,
-        1, IVCL (CR), VEC_AUTO, { cr_intac } };
+        1, DFLT_IVCL, VEC_AUTO, { cr_intac } };
 
 static UNIT cr_unit = {
     UDATA (&cr_svc,
@@ -490,21 +503,23 @@ static const REG cr_reg[] = {
     { GRDATAD (CRB1,          crb1, DEV_RDX, 16, 0, "CR11 12-bit Hollerith character") },
     { GRDATAD (CRB2,          crb2, DEV_RDX, 16, 0, "CR11 8-bit compressed character") },
     { GRDATAD (CRM,            crm, DEV_RDX, 16, 0, "CR11 maintenance register") },
+    { FLDATA (INTCR,    IREQ (CR), INT_V_CR) },
 #endif
 #if defined (CD11_OK) || defined (CD11_ONLY) || defined (CD20_OK) || defined (CD20_ONLY)
     { GRDATAD (CDST,          cdst, DEV_RDX, 16, 0, "CD11 control/status register") },
     { GRDATAD (CDCC,          cdcc, DEV_RDX, 16, 0, "CD11 column count") },
     { GRDATAD (CDBA,          cdba, DEV_RDX, 16, 0, "CD11 current bus address") },
     { GRDATAD (CDDB,          cddb, DEV_RDX, 16, 0, "CD11 data buffer, 2nd status") },
+    { FLDATA (INTCD,    IREQ (CD), INT_V_CD) },
 #endif
     { GRDATAD (BLOWER, blowerState, DEV_RDX,  2, 0, "blower state value") },
-    { FLDATAD (INT,      IREQ (CR), INT_V_CR,       "interrupt pending flag") },
     { FLDATAD (ERR,            crs, CSR_V_ERR,      "error flag (CRS<15>)") },
     { FLDATAD (IE,             crs, CSR_V_IE,       "interrupt enable flag (CRS<6>)") },
     { DRDATAD (POS,    cr_unit.pos, T_ADDR_W,       "file position - do not alter"), PV_LEFT },
     { DRDATAD (TIME,  cr_unit.wait, 24,             "delay time between columns"), PV_LEFT },
-    { GRDATA  (DEVADDR,  cr_dib.ba, DEV_RDX, 32, 0), REG_HRO },
-    { GRDATA  (DEVVEC,  cr_dib.vec, DEV_RDX, 16, 0), REG_HRO },
+    { GRDATA (DEVADDR,   cr_dib.ba, DEV_RDX, 32, 0), REG_HRO },
+    { GRDATA (DEVVEC,   cr_dib.vec, DEV_RDX, 16, 0), REG_HRO },
+    { GRDATA (DEVVLOC, cr_dib.vloc, DEV_RDX, 16, 0), REG_HRO },
     { NULL }  };
 
 static char *translation_help = NULL;
@@ -567,11 +582,11 @@ static MTAB cr_mod[] = {
     { 0 }  };
 
 DEVICE cr_dev = {
-    "CR", &cr_unit, (REG *)  &cr_reg, (MTAB *) &cr_mod,
+    "CR", &cr_unit, (REG *)&cr_reg, (MTAB *)&cr_mod,
     1, 10, 31, 1, DEV_RDX, 8,
     NULL, NULL, &cr_reset,
     NULL, &cr_attach, &cr_detach,
-    &cr_dib, DEV_DISABLE | DFLT_DIS | DEV_UBUS | DEV_DEBUG, 0,
+    &cr_dib, DEV_DISABLE | DEV_DIS | DFLT_QB | DEV_UBUS | DEV_DEBUG, 0,
     NULL, NULL, NULL, &cr_help, NULL, NULL,
     &cr_description
     };
@@ -687,9 +702,9 @@ static t_bool readCardImage (   UNIT    *uptr,
 
         /* Read card image into internal buffer */
 
-        assert (colStart < colEnd);
-        assert (colStart >= 0);
-        assert (colEnd <= 81);
+        ASSURE (colStart < colEnd);
+        ASSURE (colStart >= 0);
+        ASSURE (colEnd <= 81);
         for (col = colStart; col < colEnd; ) {
             int16    i;
             int    c1, c2, c3;
@@ -766,9 +781,9 @@ static t_bool readCardASCII (   UNIT    *uptr,
     int    c = 0, col, peek;
     FILE   *fp = uptr->fileref;
 
-    assert (colStart < colEnd);
-    assert (colStart >= 1);
-    assert (colEnd <= 80);
+    ASSURE (colStart < colEnd);
+    ASSURE (colStart >= 1);
+    ASSURE (colEnd <= 80);
 
     if (DEBUG_PRS (cr_dev))
         fprintf (sim_deb, "readCardASCII\n");
@@ -814,7 +829,7 @@ static t_bool readCardASCII (   UNIT    *uptr,
         default:
             hcard[col] = (uint16)codeTbl[c & 0177];
             /* check for unrepresentable ASCII characters */
-            if (hcard[col] == ERROR) {
+            if (hcard[col] == CR_ER) {
                 cdst |= CDCSR_DATAERR;
                 if (DEBUG_PRS (cr_dev))
                     fprintf (sim_deb,
@@ -1024,7 +1039,7 @@ t_stat cr_wr (  int32   data,
             if (access == WRITEB)
                 data = (crs & ~0377) | (data & 0377); 
             if (!(data & CSR_IE))
-                CLR_INT (CR);
+                cr_clr_int ();
             crs = (crs & ~CRCSR_RW) | (data & CRCSR_RW);
             /* Clear status bits after CSR load */
             crs &= ~(CSR_ERR | CRCSR_ONLINE | CRCSR_CRDDONE | CRCSR_TIMERR);
@@ -1041,7 +1056,7 @@ t_stat cr_wr (  int32   data,
                 if (curr_crs & (CRCSR_SUPPLY | CRCSR_RDCHK | CRCSR_OFFLINE)) {
                     crs |= CSR_ERR | (curr_crs & (CRCSR_SUPPLY | CRCSR_RDCHK |
                                                   CRCSR_OFFLINE));
-                    if (crs & CSR_IE) SET_INT(CR);
+                    if (crs & CSR_IE) cr_set_int ();
                 }
                 if (blowerState != BLOW_ON) {
                     blowerState = BLOW_START;
@@ -1059,7 +1074,7 @@ t_stat cr_wr (  int32   data,
                                   ((data & 0x00ff) | (cdst & 0xFF00));
 
             if (data & CDCSR_PWRCLR) {
-                CLR_INT (CR);
+                cr_clr_int ();
                 sim_cancel (&cr_unit);
                 cdcc = 0;
                 cdba = 0;
@@ -1111,9 +1126,9 @@ t_stat cr_wr (  int32   data,
                       |(data &  (CSR_ERR | CDCSR_RDRCHK | CDCSR_EOF | CDCSR_DATAERR | CDCSR_LATE | 
                                  CDCSR_NXM | CSR_IE | CDCSR_XBA17 | CDCSR_XBA16 | CDCSR_ONLINE | CDCSR_PACK));
             }
-            /* Apparently the hardware does not SET_INT if ready/online are already set.  If it did, TOPS-10's driver wouldn't work */
+            /* Apparently the hardware does not set int if ready/online are already set.  If it did, TOPS-10's driver wouldn't work */
             if (!(cdst & CSR_IE))
-                CLR_INT (CR);
+                cr_clr_int ();
 
             if (DEBUG_PRS (cr_dev))
                 fprintf (sim_deb, "cr_wr data %06o cdst %06o\n",
@@ -1205,7 +1220,7 @@ t_stat cr_svc ( UNIT    *uptr    )
 
     /* (almost) anything we do now will cause a CR (But not a CD) interrupt */
     if ((CR11_CTL(uptr)) && (crs & CSR_IE))
-       SET_INT (CR);
+       cr_set_int ();
     
     /* Unit not attached, or error status while idle */
     if (!(uptr->flags & UNIT_ATT) || (!(crs & CRCSR_BUSY) && ((CR11_CTL(uptr)?crs : cdst) & CSR_ERR))) {
@@ -1215,7 +1230,7 @@ t_stat cr_svc ( UNIT    *uptr    )
                 cddbs |= CDDB_STACK;
             }
             if (cdst & CSR_IE)
-                SET_INT (CR);
+                cr_set_int ();
         }
         return (SCPE_OK);
     }
@@ -1232,7 +1247,7 @@ t_stat cr_svc ( UNIT    *uptr    )
          /* Check CD11 error status that stops transfers */
         if (CD11_CTL(uptr) && (cdst & (CDCSR_LATE | CDCSR_NXM))) {
             cdst |= CSR_ERR | CDCSR_OFFLINE | CDCSR_RDY | CDCSR_RDRCHK;
-            SET_INT (CR);
+            cr_set_int ();
             return (SCPE_OK);
         }
 
@@ -1242,7 +1257,7 @@ t_stat cr_svc ( UNIT    *uptr    )
         /* If a CD11 gets this far, an interrupt is required.  If CDCC != 0,
          * continue reading the next card.
          */
-        SET_INT (CR);
+        cr_set_int ();
         if (cdcc == 0)
             return (SCPE_OK);
     }
@@ -1263,7 +1278,7 @@ readFault:
                 if (cdst & (CDCSR_RDRCHK | CDCSR_HOPPER))
                     cdst |= CSR_ERR | CDCSR_OFFLINE;
                 if (cdst & CSR_IE)
-                    SET_INT (CR);
+                    cr_set_int ();
 
             } else {
                 /*
@@ -1275,7 +1290,7 @@ readFault:
                 if (crs & (CRCSR_RDCHK | CRCSR_SUPPLY)) {
                     crs |= CSR_ERR | CRCSR_OFFLINE;
                     crs &= ~(CRCSR_ONLINE | CRCSR_BUSY | CRCSR_CRDDONE);
-                    CLR_INT(CR);
+                    cr_clr_int ();
                 }
             }
             sim_activate_after (uptr, spinDown);
@@ -1391,13 +1406,13 @@ incremented properly.  If this causes problems, I'll fix it.
              * If this is the last column, defer interrupt so end doesn't interrupt again.
              */
             if ((cdcc == 0) && (cdst & CSR_IE) && (currCol < colEnd))
-                SET_INT (CR);
+                cr_set_int ();
         }
     } else { /* CR11 */
         /* Handle EJECT bit: if set DO NOT assert COLRDY */
         /* nor interrupt                                 */
         if ((crs & CRCSR_EJECT)) {
-            CLR_INT (CR);
+            cr_clr_int ();
         } else {
             crs |= CRCSR_COLRDY;
         }
@@ -1432,12 +1447,13 @@ t_stat cr_reset (   DEVICE  *dptr    )
         for ( i = 0; i < NTRANS; i++ )
             size += strlen (transcodes[i].name)+1;
         translation_help = (char *)malloc (size );
-        strcpy(translation_help, trans_hlp);
+        strlcpy(translation_help, trans_hlp, size);
         for (i = 0; i < NTRANS; i++) {
-            strcat(translation_help, transcodes[i].name);
-            strcat(translation_help,"|");
+            strlcat(translation_help, transcodes[i].name, size);
+            strlcat(translation_help,"|", size);
         }
-        strcpy(translation_help+strlen(translation_help)-1, "}");
+        translation_help[strlen(translation_help)-1] = '\0';
+        strlcpy(translation_help, "}", size);
         for (i = 0; i < (sizeof cr_mod / sizeof cr_mod[0]); i++ ) 
             if (cr_mod[i].pstring && !strcmp(cr_mod[i].pstring, "TRANSLATION")) {
                 cr_mod[i].mstring = translation_help;
@@ -1483,6 +1499,7 @@ t_stat cr_reset (   DEVICE  *dptr    )
     }
     EOFcard = 0;
     CLR_INT (CR);
+    CLR_INT (CD);
     /* TBD: flush current card */
     /* init uptr->wait ? */
     return auto_config (dptr->name, 1);
@@ -1501,7 +1518,7 @@ globals correctly.
 /* No bits should change, nor an interrupt should be asserted               */
 /* This is a change of behaviour respect to the previous code               */
 t_stat cr_attach (  UNIT    *uptr,
-                    char    *cptr    )
+                    CONST char    *cptr    )
 {
     t_stat        reason;
 
@@ -1532,18 +1549,44 @@ t_stat cr_detach (  UNIT    *uptr    )
     return (detach_unit (uptr));
 }
 
+void cr_set_int (void)
+{
+if (CR11_CTL (&cr_unit)) {
+    SET_INT (CR);
+    }
+else {
+    SET_INT (CD);
+    }
+}
+
+void cr_clr_int (void)
+{
+if (CR11_CTL (&cr_unit)) {
+    CLR_INT (CR);
+    }
+else {
+    CLR_INT (CD);
+    }
+}
+
+
 #if defined (CR11_OK) || defined (CD11_OK) || defined (CD20_OK)
 t_stat cr_set_type (    UNIT    *uptr,
                         int32   val,
-                        char    *cptr,
+                        CONST char    *cptr,
                         void    *desc    )
 {
     DEVICE *dptr = find_dev_from_unit (uptr);
+    DIB *dibp;
 
     /* disallow type change if currently attached */
 
     if (uptr->flags & UNIT_ATT)
         return (SCPE_NOFNC);
+    if (dptr == NULL)
+        return SCPE_IERR;
+    if ((dibp = (DIB *) dptr->ctxt) == NULL)
+        return SCPE_IERR;
     if (val == UNIT_CR11) {
         dptr->flags |= DEV_QBUS;                    /* Can be a Qbus device - programmed I/O only */
     } else {                                        /* CD11/CD20 are 18bit DMA devices */
@@ -1555,6 +1598,7 @@ t_stat cr_set_type (    UNIT    *uptr,
     uptr->wait = (60 * 1000000) / (cpm * 80);       /* Time between columns in usec.
                                                      * Readers are rated in card/min for 80 column cards */
     transcodes[0].table = (val & UNIT_CD20)? o29_decascii_code : o29_code;
+    dibp->vloc = (val & UNIT_CR11)? IVCL (CR): IVCL (CD);
 
     return (SCPE_OK);
 }
@@ -1563,7 +1607,7 @@ t_stat cr_set_type (    UNIT    *uptr,
 #if defined (AIECO_OK)
 t_stat cr_set_aieco (    UNIT    *uptr,
                         int32   val,
-                        char    *cptr,
+                        CONST char    *cptr,
                         void    *desc    )
 {
     /* disallow eco change if currently attached or not CD20 */
@@ -1579,7 +1623,7 @@ t_stat cr_set_aieco (    UNIT    *uptr,
 t_stat cr_show_format ( FILE    *st,
                         UNIT    *uptr,
                         int32   val,
-                        void    *desc    )
+                        CONST void    *desc    )
 {
     fprintf (st, "%s format", cardFormat);
     return (SCPE_OK);
@@ -1587,7 +1631,7 @@ t_stat cr_show_format ( FILE    *st,
 
 t_stat cr_set_rate (    UNIT    *uptr,
                         int32   val,
-                        char    *cptr,
+                        CONST char    *cptr,
                         void    *desc    )
 {
     t_stat    status = SCPE_OK;
@@ -1614,7 +1658,7 @@ t_stat cr_set_rate (    UNIT    *uptr,
 t_stat cr_show_rate (   FILE    *st,
                         UNIT    *uptr,
                         int32   val,
-                        void    *desc    )
+                        CONST void    *desc    )
 {
     fprintf (st, "%d cards per minute", cpm);
     return (SCPE_OK);
@@ -1627,7 +1671,7 @@ t_stat cr_show_rate (   FILE    *st,
 
 t_stat cr_set_reset (   UNIT    *uptr,
                         int32   val,
-                        char    *cptr,
+                        CONST char    *cptr,
                         void    *desc    )
 {
     if (DEBUG_PRS (cr_dev))
@@ -1654,7 +1698,7 @@ t_stat cr_set_reset (   UNIT    *uptr,
 
     /* Assert interrupt if interrupts enabled     */
     if ((CR11_CTL(uptr)?crs : cdst) & CSR_IE) {
-        SET_INT (CR);
+        cr_set_int ();
         if (DEBUG_PRS (cr_dev))
             fprintf (sim_deb, "cr_set_reset setting interrupt\n");
     }
@@ -1683,7 +1727,7 @@ t_stat cr_set_reset (   UNIT    *uptr,
 
 t_stat cr_set_stop (    UNIT    *uptr,
                         int32   val,
-                        char    *cptr,
+                        CONST char    *cptr,
                         void    *desc    )
 {
     if (DEBUG_PRS (cr_dev))
@@ -1693,7 +1737,7 @@ t_stat cr_set_stop (    UNIT    *uptr,
     cdst |= CSR_ERR | CDCSR_OFFLINE;
     /* CD11 does not appear to interrupt on STOP. */
     if (CR11_CTL(uptr) && (crs & CSR_IE))
-        SET_INT (CR);
+        cr_set_int ();
     if (blowerState != BLOW_OFF) {
         blowerState = BLOW_STOP;
     }
@@ -1704,7 +1748,7 @@ t_stat cr_set_stop (    UNIT    *uptr,
 
 t_stat cr_set_eof (    UNIT    *uptr,
                         int32   val,
-                        char    *cptr,
+                        CONST char    *cptr,
                         void    *desc    )
 {
     if (DEBUG_PRS (cr_dev))
@@ -1717,7 +1761,7 @@ t_stat cr_set_eof (    UNIT    *uptr,
 t_stat cr_show_eof ( FILE    *st,
                      UNIT    *uptr,
                      int32   val,
-                     void    *desc    )
+                     CONST void    *desc    )
 {
     fprintf (st, (eofPending? "EOF pending": "no EOF pending"));
     return (SCPE_OK);
@@ -1725,7 +1769,7 @@ t_stat cr_show_eof ( FILE    *st,
 
 t_stat cr_set_trans (   UNIT    *uptr,
                         int32   val,
-                        char    *cptr,
+                        CONST char    *cptr,
                         void    *desc    )
 {
     size_t  i;
@@ -1747,7 +1791,7 @@ t_stat cr_set_trans (   UNIT    *uptr,
 t_stat cr_show_trans (  FILE    *st,
                         UNIT    *uptr,
                         int32   val,
-                        void    *desc    )
+                        CONST void    *desc    )
 {
     size_t i;
 
@@ -1764,7 +1808,7 @@ t_stat cr_show_trans (  FILE    *st,
  * This ugliness is more maintainable than a preprocessor mess.
  */
 
-static void cr_supported ( char *string, int32 *bits )
+static void cr_supported ( char *string, int32 *bits, size_t string_aize )
 {
 int32 crtypes = 0;
 #define MAXDESCRIP sizeof ("CR11/CD11/CD20/") /* sizeof includes \0 */
@@ -1782,17 +1826,15 @@ char devtype[MAXDESCRIP] = "";
 
 if (string) {
     if (crtypes & 1)
-        strcat (devtype, "CR11/");
+        strlcat (devtype, "CR11/", sizeof (devtype));
     if (crtypes & 2)
-        strcat (devtype, "CD11/");
+        strlcat (devtype, "CD11/", sizeof (devtype));
     if (crtypes & 4)
-        strcat (devtype, "CD20/");
-    devtype[strlen(devtype)-1] = '\0';
-    strcpy (string, devtype);
+        strlcat (devtype, "CD20/", sizeof (devtype));
+    strlcpy (string, devtype, string_aize);
 }
 if (bits)
     *bits = crtypes;
-return;
 }
 
 static t_stat cr_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr)
@@ -1800,23 +1842,24 @@ static t_stat cr_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const cha
 char devtype[MAXDESCRIP];
 int32 crtypes;
 
-cr_supported (devtype, &crtypes);
+cr_supported (devtype, &crtypes, sizeof (devtype));
 fprintf (st, "%s Card Reader (CR)\n\n", devtype);
 fprintf (st, "The card reader (CR) implements a single controller (the model(s) shown\n");
-fprintf (st, "above) and a card reader (e.g., Documation M200, GDI Model 100) by reading a\n");
-fprintf (st, "file and presenting lines or cards to the simulator.  Card decks may be\n");
+fprintf (st, "above) and a card reader (e.g., Documation M200, GDI Model 100) by reading\n");
+fprintf (st, "a file and presenting lines or cards to the simulator.  Card decks may be\n");
 fprintf (st, "represented by plain text ASCII files, card image files, or column binary\n");
 fprintf (st, "files.\n\n");
 
 fprintf (st, "The controller is also compatible with the CM11-F, CME11, and CMS11.\n\n");
 
 fprintf (st, "Card image files are a file format designed by Douglas W. Jones at the\n");
-fprintf (st, "University of Iowa to support the interchange of card deck data.  These files\n");
-fprintf (st, "have a much richer information carrying capacity than plain ASCII files.  Card\n");
-fprintf (st, "Image files can contain such interchange information as card-stock color,\n");
-fprintf (st, "corner cuts, special artwork, as well as the binary punch data representing all\n");
-fprintf (st, "12 columns.  Complete details on the format, as well as sample code, are\n");
-fprintf (st, "available at Prof. Jones's site: http://www.cs.uiowa.edu/~jones/cards/.\n\n");
+fprintf (st, "University of Iowa to support the interchange of card deck data.  These\n");
+fprintf (st, "files have a much richer information carrying capacity than plain ASCII\n");
+fprintf (st, "files.  Card Image files can contain such interchange information as\n");
+fprintf (st, "card-stock color, corner cuts, special artwork, as well as the binary\n");
+fprintf (st, "punch data representing all 12 columns.  Complete details on the format,\n");
+fprintf (st, "as well as sample code, are available at Prof. Jones's site:\n");
+fprintf (st, "       http://www.cs.uiowa.edu/~jones/cards/.\n\n");
 
 if ((crtypes & -crtypes) != crtypes) {
     fprintf (st, "The card reader device an be configured to emulate the following\n");
@@ -1828,12 +1871,12 @@ if ((crtypes & -crtypes) != crtypes) {
     if (crtypes & 4) {
         fprintf (st, "    SET CR CD20       set controller type to CD20\n");
 #if defined (AIECO_OK)
-        fprintf (st, "        SET CR AIECO  emulate the CD20 \"augmented image\" ECO\n");
+        fprintf (st, "    SET CR AIECO      emulate the CD20 \"augmented image\" ECO\n");
         fprintf (st, "                      default is %semulated.\n", (DFLT_AIECO? "":"not "));
 #endif
 }
-    fprintf (st, "\nThe controller type must be set before attaching a virtual card deck to the\n");
-    fprintf (st, "device.  You may NOT change controller type once a file is attached.\n\n");
+    fprintf (st, "\nThe controller type must be set before attaching a virtual card deck to\n");
+    fprintf (st, "the device.  You may NOT change controller type once a file is attached.\n\n");
     fprintf (st, "The primary differences between the controllers are summarized in the\n");
     fprintf (st, "table below.  By default, %s simulation is selected.\n\n", 
                     (DFLT_TYPE & UNIT_CD20)? "CD20": ((DFLT_TYPE & UNIT_CR11)? "CR11" : "CD11"));
@@ -1845,22 +1888,23 @@ if ((crtypes & -crtypes) != crtypes) {
     fprintf (st, "    hopper cap.     <= 1000         1000-2250\n");
     fprintf (st, "    cards           Mark-sense & punched only\n");
     fprintf (st, "                    punched\n\n");
-    fprintf (st, "The CD11 simulation includes the Rev. J modification to make the CDDB act as\n");
-    fprintf (st, "a second status register during non-data transfer periods.\n\n");
+    fprintf (st, "The CD11 simulation includes the Rev. J modification to make the CDDB act\n");
+    fprintf (st, "as a second status register during non-data transfer periods.\n\n");
 }
 if (crtypes & 1) {
-    fprintf (st, "Examples of the CR11 include the M8290 and M8291 (CMS11).  All card readers use\n");
-    fprintf (st, "a common vector at 0230 and CSR at 177160.  Even though the CR11 is normally\n");
-    fprintf (st, "configured as a BR6 device, it is configured for BR4 in this simulation.\n\n");
+    fprintf (st, "Examples of the CR11 include the M8290 and M8291 (CMS11).  All card readers\n");
+    fprintf (st, "use a common vector at 0230 and CSR at 177160.  Even though the CR11 is\n");
+    fprintf (st, "normally configured as a BR6 device, it is configured for BR4 in this\n");
+    fprintf (st, "simulation.\n\n");
 }
 fprintf (st, "The card reader supports ASCII, card image, and column binary format card\n");
-fprintf (st, "\"decks.\"  When reading plain ASCII files, lines longer than 80 characters are\n");
-fprintf (st, "silently truncated.  Card image support is included for 80 column Hollerith,\n");
-fprintf (st, "82 column Hollerith, and 40 column Hollerith (mark-sense) cards. \n");
+fprintf (st, "\"decks.\"  When reading plain ASCII files, lines longer than 80 characters\n");
+fprintf (st, "are silently truncated.  Card image support is included for 80 column\n");
+fprintf (st, "Hollerith, 82 column Hollerith, and 40 column Hollerith (mark-sense) cards.\n");
 fprintf (st, "Column binary supports 80 column card images only.\n");
 if (crtypes & 6) {
     fprintf (st, "The CD11/CD20 optionally check columns 0/81/41 for punches, which produce\n");
-    fprintf( st, "read check errors.  As verifiers may produce these, this can be controlled:\n");
+    fprintf( st, "read check errors.  As verifiers may produce these, this can be controlled:\n\n");
     fprintf( st, "    SET CR RDCHECK   - Enable read check errors (default)\n");
     fprintf( st, "    SET CR NORDCHECK - Disable read check errors\n\n");
 }
@@ -1869,70 +1913,77 @@ fprintf (st, "    ATTACH -A CR <file>           file is ASCII text\n");
 fprintf (st, "    ATTACH -B CR <file>           file is column binary\n");
 fprintf (st, "    ATTACH -I CR <file>           file is card image format\n\n");
 
-fprintf (st, "If no flags are given, the file extension is evaluated.  If the filename ends\n");
-fprintf (st, "in .TXT, the file is treated as ASCII text.  If the filename ends in .CBN, the\n");
-fprintf (st, "file is treated as column binary.  Otherwise, the CR driver looks for a card\n");
-fprintf (st, "image header.  If a correct header is found the file is treated as card image\n");
-fprintf (st, "format, otherwise it is treated as ASCII text.\n\n");
+fprintf (st, "If no flags are given, the file extension is evaluated.  If the filename\n");
+fprintf (st, "ends in .TXT, the file is treated as ASCII text.  If the filename ends in\n");
+fprintf (st, ".CBN, the file is treated as column binary.  Otherwise, the CR driver looks\n");
+fprintf (st, "for a card image header.  If a correct header is found the file is treated\n");
+fprintf (st, "as card image format, otherwise it is treated as ASCII text.\n\n");
 
-fprintf (st, "The correct character translation MUST be set if a plain text file is to be\n");
-fprintf (st, "used for card deck input.  The correct translation SHOULD be set to allow\n");
-fprintf (st, "correct ASCII debugging of a card image or column binary input deck.  Depending\n");
-fprintf (st, "upon the operating system in use, how it was generated, and how the card data\n");
-fprintf (st, "will be read and used, the translation must be set correctly so that the proper\n");
-fprintf (st, "character set is used by the driver.  Use the following command to explicitly\n");
-fprintf (st, "set the correct translation:\n\n");
+fprintf (st, "The correct character translation MUST be set if a plain text file is to\n");
+fprintf (st, "be used for card deck input.  The correct translation SHOULD be set to\n");
+fprintf (st, "allow correct ASCII debugging of a card image or column binary input deck.\n");
+fprintf (st, "Depending upon the operating system in use, how it was generated, and how\n");
+fprintf (st, "the card data will be read and used, the translation must be set correctly\n");
+fprintf (st, "so that the proper character set is used by the driver.  Use the following\n");
+fprintf (st, "command to explicitly set the correct translation:\n\n");
 fprintf (st, "    SET TRANSLATION={DEFAULT|026|026FTN|026DEC|026DECASCII|029|029DECASCII|EBCDIC}\n\n");
-fprintf (st, "This command should be given after a deck is attached to the simulator.  The\n");
-fprintf (st, "mappings above are completely described at\n");
+fprintf (st, "This command should be given after a deck is attached to the simulator.\n");
+fprintf (st, "The mappings above are completely described at\n");
 fprintf (st, "    http://www.cs.uiowa.edu/~jones/cards/codes.html.\n");
 fprintf (st, "Note that early DEC software typically used 029 or 026FTN mappings.\n");
-fprintf (st, "Later systems used the 026DECASCII and/or 029DECASCII mappings, which include all 7-bit ASCII characters\n");
-fprintf (st, "DEC operating systems used a variety of methods to determine the end of a deck\n");
-fprintf (st, "(recognizing that 'hopper empty' does not necessarily mean the end of a deck.\n");
-fprintf (st, "Below is a summary of the various operating system conventions for signaling\n");
-fprintf (st, "end of deck (or end of file with multi-file batch systems):\n\n");
+fprintf (st, "Later systems used the 026DECASCII and/or 029DECASCII mappings, which\n");
+fprintf (st, "include all 7-bit ASCII characters.\n\n");
+fprintf (st, "DEC operating systems used a variety of methods to determine the end of\n");
+fprintf (st, "a deck (recognizing that 'hopper empty' does not necessarily mean the\n");
+fprintf (st, "end of a deck.  Below is a summary of the various operating system\n");
+fprintf (st, "conventions for signaling end of deck (or end of file with multi-file\n");
+fprintf (st, "batch systems):\n\n");
 fprintf (st, "    RT-11:    12-11-0-1-6-7-8-9 punch in column 1\n");
 fprintf (st, "    RSTS/E:   12-11-0-1 or 12-11-0-1-6-7-8-9 punch in column 1\n");
 fprintf (st, "    RSX:      12-11-0-1-6-7-8-9 punch in first 8 columns\n");
 fprintf (st, "    VMS:      12-11-0-1-6-7-8-9 punch in first 8 columns\n");
 fprintf (st, "    TOPS:     12-11-0-1 or 12-11-0-1-6-7-8-9 punch in column 1\n\n");
-fprintf (st, "Using the AUTOEOF setting, the card reader can be set to automatically generate\n");
-fprintf (st, "an EOF card consisting of the 12-11-0-1-6-7-8-9 punch in columns 1-8.  ");
+fprintf (st, "Using the AUTOEOF setting, the card reader can be set to automatically\n");
+fprintf (st, "generate an EOF card consisting of the 12-11-0-1-6-7-8-9 punch in columns\n");
+fprintf (st, "1-8.\n\n");
 if (crtypes & 6) {
     fprintf (st, "When set,\nThe %s ", ((crtypes & 6) == 2)? "CD11": ((crtypes & 6) == 4)? "CD20": "CD11/CD20");
 
     fprintf (st,                    "will automatically set the EOF bit in the\n");
-    fprintf (st, "controller after the EOF card has been processed.  By default AUTOEOF is enabled.\n");
-    fprintf (st, "The controller also supports an EOF switch that will set the EOF bit when the\n");
-    fprintf (st, "hopper empties.  The switch resets each time the hopper empties.  The SET EOF command emulates this.\n");
+    fprintf (st, "controller after the EOF card has been processed.  By default AUTOEOF\n");
+    fprintf (st, "is enabled.  The controller also supports an EOF switch that will set\n");
+    fprintf (st, "the EOF bit when the hopper empties.  The switch resets each time the\n");
+    fprintf (st, "hopper empties.  The SET CR EOF command emulates this.\n");
     if (crtypes &1)
-        fprintf (st, "The CR11 does not support the EOF switch/bit.\n");
+        fprintf (st, "The CR11 does not support the EOF switch/bit.\n\n");
     else
         fprintf (st, "\n");
 }
-fprintf (st, "The default card reader rate for the ");
+fprintf (st, "The default card reader input rate for the ");
 if (crtypes & 4) {
-    fprintf (st,                                         "CD20 is 1200");
+    fprintf (st,                                         "CD20 is 1200 cpm");
     if (crtypes != 4)
-        fprintf (st, " and for the ");
+        fprintf (st, ", and for the\n");
+    else
+        fprintf (st, ".\n");
 }
 if (crtypes & 3)
-    fprintf (st,                                         "CR/CD11 is 285");
-fprintf (st, " cpm.\n");
-fprintf (st, "The reader rate can be set to its default value or to anywhere in the range\n");
-fprintf (st, "of 200 to 1200 cpm.This rate may be changed while the unit is attached.\n\n");
-fprintf (st, "It is standard operating procedure for operators to load a card deck and press\n");
-fprintf (st, "the momentary action RESET button to clear any error conditions and alert the\n");
-fprintf (st, "processor that a deck is available to read.  Use the SET CR RESET command to\n");
-fprintf (st, "simulate pressing the card reader RESET button.\n\n");
+    fprintf (st,                                         "CR/CD11 is 285 cpm.\n");
+fprintf (st, "The reader rate can be set to its default value or to anywhere in the\n");
+fprintf (st, "range of 200 to 1200 cpm.This rate may be changed while the unit is\n");
+fprintf (st, "attached.\n\n");
+fprintf (st, "It is standard operating procedure for operators to load a card deck and\n");
+fprintf (st, "press the momentary action RESET button to clear any error conditions and\n");
+fprintf (st, "alert the processor that a deck is available to read.  Use the:\n");
+fprintf (st, "    SET CR RESET\n");
+fprintf (st, "command to simulate pressing the card reader RESET button.\n\n");
 fprintf (st, "Another common control of physical card readers is the STOP button.  An\n");
-fprintf (st, "operator could use this button to finish the read operation for the current\n");
-fprintf (st, "card and terminate reading a deck early.  Use the SET CR STOP command to\n");
-fprintf (st, "simulate pressing the card reader STOP button.\n\n");
+fprintf (st, "operator could use this button to finish the read operation for the\n");
+fprintf (st, "current card and terminate reading a deck early.  Use the SET CR STOP\n");
+fprintf (st, "command to simulate pressing the card reader STOP button.\n\n");
 fprintf (st, "The simulator does not support the BOOT command.  The simulator does not\n");
-fprintf (st, "stop on file I/O errors.  Instead the controller signals a reader check to\n");
-fprintf (st, "the CPU.\n");
+fprintf (st, "stop on file I/O errors.  Instead the controller signals a reader check\n");
+fprintf (st, "to the CPU.\n");
 
 fprint_reg_help (st, dptr);
 return SCPE_OK;
@@ -1942,9 +1993,10 @@ const char *cr_description (DEVICE *dptr)
 {
   /* Not thread-safe, but malloc() would be leak. */
   static char desc[MAXDESCRIP+sizeof(" card reader")-1] = "";
+
   if (desc[0] == '\0') {
-      cr_supported (desc, NULL);
-      strcat (desc, " card reader");
+      cr_supported (desc, NULL, sizeof (desc));
+      strlcat (desc, " card reader", sizeof (desc));
   }
   return desc;
 }

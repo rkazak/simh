@@ -1,6 +1,6 @@
 /* pdp11_rf.c: RF11 fixed head disk simulator
 
-   Copyright (c) 2006-2013, Robert M Supnik
+   Copyright (c) 2006-2017, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,7 @@
 
    rf           RF11 fixed head disk
 
+   13-Feb-17    RMS     Fixed CSR address in boot code (Paul Koning)
    23-Oct-13    RMS     Revised for new boot setup routine
    03-Sep-13    RMS     Added explicit void * cast
    19-Mar-12    RMS     Fixed bug in updating mem addr extension (Peter Schorn)
@@ -110,9 +111,6 @@
 #define GET_POS(x)      ((int) fmod (sim_gtime() / ((double) (x)), \
                         ((double) RF_NUMWD)))
 
-extern uint16 *M;
-extern int32 int_req[IPL_HLVL];
-
 uint32 rf_cs = 0;                                       /* status register */
 uint32 rf_cma = 0;
 uint32 rf_wc = 0;
@@ -131,8 +129,8 @@ int32 rf_inta (void);
 t_stat rf_svc (UNIT *uptr);
 t_stat rf_reset (DEVICE *dptr);
 t_stat rf_boot (int32 unitno, DEVICE *dptr);
-t_stat rf_attach (UNIT *uptr, char *cptr);
-t_stat rf_set_size (UNIT *uptr, int32 val, char *cptr, void *desc);
+t_stat rf_attach (UNIT *uptr, CONST char *cptr);
+t_stat rf_set_size (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
 uint32 update_rfcs (uint32 newcs, uint32 newdae);
 t_stat rf_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
 const char *rf_description (DEVICE *dptr);
@@ -443,13 +441,13 @@ return auto_config (0, 0);
 
 #define BOOT_START      02000                           /* start */
 #define BOOT_ENTRY      (BOOT_START + 002)              /* entry */
-#define BOOT_CSR        (BOOT_START + 032)              /* CSR */
+#define BOOT_CSR        (BOOT_START + 010)              /* CSR */
 #define BOOT_LEN        (sizeof (boot_rom) / sizeof (uint16))
 
 static const uint16 boot_rom[] = {
     0043113,                        /* "FD" */
     0012706, BOOT_START,            /* MOV #boot_start, SP */
-    0012701, 0177472,               /* MOV #RFDAE+2, R1     ; csr block */
+    0012701, 0177472,               /* MOV #RFCS+12, R1     ; csr block */
     0005041,                        /* CLR -(R1)            ; clear dae */
     0005041,                        /* CLR -(R1),           ; clear da */
     0005041,                        /* CLR -(R1),           ; clear cma */
@@ -470,15 +468,15 @@ t_stat rf_boot (int32 unitno, DEVICE *dptr)
 size_t i;
 
 for (i = 0; i < BOOT_LEN; i++)
-    M[(BOOT_START >> 1) + i] = boot_rom[i];
-M[BOOT_CSR >> 1] = (rf_dib.ba & DMASK) + 012;
+    WrMemW (BOOT_START + (2 * i), boot_rom[i]);
+WrMemW (BOOT_CSR, (rf_dib.ba & DMASK) + 012);
 cpu_set_boot (BOOT_ENTRY);
 return SCPE_OK;
 }
 
 /* Attach routine */
 
-t_stat rf_attach (UNIT *uptr, char *cptr)
+t_stat rf_attach (UNIT *uptr, CONST char *cptr)
 {
 uint32 sz, p;
 uint32 ds_bytes = RF_DKSIZE * sizeof (int16);
@@ -496,7 +494,7 @@ return attach_unit (uptr, cptr);
 
 /* Change disk size */
 
-t_stat rf_set_size (UNIT *uptr, int32 val, char *cptr, void *desc)
+t_stat rf_set_size (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 if (val < 0)
     return SCPE_IERR;

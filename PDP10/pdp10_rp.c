@@ -1,6 +1,6 @@
 /* pdp10_rp.c - RH11/RP04/05/06/07 RM02/03/05/80 "Massbus" disk controller
 
-   Copyright (c) 1993-2008, Robert M Supnik
+   Copyright (c) 1993-2017, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,7 @@
 
    rp           RH/RP/RM moving head disks
 
+   13-Mar-17    RMS     Annotated fall through in switch
    12-Nov-05    RMS     Fixed DCLR not to clear drive address
    07-Jul-05    RMS     Removed extraneous externs
    18-Mar-05    RMS     Added attached test to detach routine
@@ -45,7 +46,7 @@
    28-Sep-01    RMS     Fixed interrupt handling for SC/ATA
    23-Aug-01    RMS     Added read/write header stubs for ITS
                         (found by Mirian Crzig Lennox) 
-   13-Jul-01    RMS     Changed fread call to fxread (found by Peter Schorn)
+   13-Jul-01    RMS     Changed fread call to fxread (Peter Schorn)
    14-May-01    RMS     Added check for unattached drive
 
    The "Massbus style" disks consisted of several different large
@@ -70,14 +71,13 @@
 
 #include "pdp10_defs.h"
 #include <math.h>
-#include <assert.h>
 
 #define RP_NUMDR        8                               /* #drives */
 #define RP_NUMWD        128                             /* 36b words/sector */
 #define RP_MAXFR        32768                           /* max transfer */
 #define SPINUP_DLY      (1000*1000)                     /* Spinup delay, usec */
 #define GET_SECTOR(x,d) ((int) fmod (sim_gtime() / ((double) (x)), \
-                    ((double) drv_tab[d].sect)))
+                        ((double) drv_tab[d].sect)))
 #define MBA_RP_CTRL     0                               /* RP drive */
 #define MBA_RM_CTRL     1                               /* RM drive */
 
@@ -242,7 +242,7 @@
 #define GET_DA(c,fs,d)  ((((GET_CY (c) * drv_tab[d].surf) + \
                         GET_SF (fs)) * drv_tab[d].sect) + GET_SC (fs))
 
-/* RPCC - 176736 - current cylinder */
+/* RPCC -  176736 - current cylinder */
 /* RPER2 - 176740 - error status 2 - drive unsafe conditions */
 /* RPER3 - 176742 - error status 3 - more unsafe conditions */
 /* RPEC1 - 176744 - ECC status 1 - unimplemented */
@@ -330,11 +330,8 @@ struct drvtyp drv_tab[] = {
     { 0 }
     };
 
-extern d10 *M;                                          /* memory */
-extern int32 int_req;
 extern int32 ubmap[UBANUM][UMAP_MEMSIZE];               /* Unibus maps */
 extern int32 ubcs[UBANUM];
-extern UNIT cpu_unit;
 extern uint32 fe_bootrh;
 extern int32 fe_bootunit;
 
@@ -370,12 +367,12 @@ int32 rp_inta (void);
 t_stat rp_svc (UNIT *uptr);
 t_stat rp_reset (DEVICE *dptr);
 t_stat rp_boot (int32 unitno, DEVICE *dptr);
-t_stat rp_attach (UNIT *uptr, char *cptr);
+t_stat rp_attach (UNIT *uptr, CONST char *cptr);
 t_stat rp_detach (UNIT *uptr);
 void set_rper (int16 flag, int32 drv);
 void update_rpcs (int32 flags, int32 drv);
 void rp_go (int32 drv, int32 fnc);
-t_stat rp_set_size (UNIT *uptr, int32 val, char *cptr, void *desc);
+t_stat rp_set_size (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
 
 /* RP data structures
 
@@ -410,34 +407,34 @@ UNIT rp_unit[] = {
     };
 
 REG rp_reg[] = {
-    { ORDATA (RPCS1, rpcs1, 16) },
-    { ORDATA (RPWC, rpwc, 16) },
-    { ORDATA (RPBA, rpba, 16) },
-    { ORDATA (RPCS2, rpcs2, 16) },
-    { ORDATA (RPDB, rpdb, 16) },
-    { BRDATA (RPDA, rpda, 8, 16, RP_NUMDR) },
-    { BRDATA (RPDS, rpds, 8, 16, RP_NUMDR) },
-    { BRDATA (RPER1, rper1, 8, 16, RP_NUMDR) },
-    { BRDATA (RPHR, rmhr, 8, 16, RP_NUMDR) },
-    { BRDATA (RPOF, rpof, 8, 16, RP_NUMDR) },
-    { BRDATA (RPDC, rpdc, 8, 16, RP_NUMDR) },
-    { BRDATA (RPER2, rper2, 8, 16, RP_NUMDR) },
-    { BRDATA (RPER3, rper3, 8, 16, RP_NUMDR) },
-    { BRDATA (RPEC1, rpec1, 8, 16, RP_NUMDR) },
-    { BRDATA (RPEC2, rpec2, 8, 16, RP_NUMDR) },
-    { BRDATA (RMMR, rpmr, 8, 16, RP_NUMDR) },
-    { BRDATA (RMMR2, rmmr2, 8, 16, RP_NUMDR) },
-    { FLDATA (IFF, rpiff, 0) },
-    { FLDATA (INT, int_req, INT_V_RP) },
-    { FLDATA (SC, rpcs1, CSR_V_ERR) },
-    { FLDATA (DONE, rpcs1, CSR_V_DONE) },
-    { FLDATA (IE, rpcs1, CSR_V_IE) },
-    { DRDATA (STIME, rp_swait, 24), REG_NZ + PV_LEFT },
-    { DRDATA (RTIME, rp_rwait, 24), REG_NZ + PV_LEFT },
+    { ORDATAD (RPCS1, rpcs1, 16, "control status 1") },
+    { ORDATAD (RPWC, rpwc, 16, "word count") },
+    { ORDATAD (RPBA, rpba, 16, "bus address") },
+    { ORDATAD (RPCS2, rpcs2, 16, "control status") },
+    { ORDATAD (RPDB, rpdb, 16, "data buffer") },
+    { BRDATAD (RPDA, rpda, 8, 16, RP_NUMDR, "desired surface, sector") },
+    { BRDATAD (RPDS, rpds, 8, 16, RP_NUMDR, "drive status, drives 0 to 7") },
+    { BRDATAD (RPER1, rper1, 8, 16, RP_NUMDR, "drive errors, drives 0 to 7") },
+    { BRDATAD (RPHR, rmhr, 8, 16, RP_NUMDR, "holding register, drives 0 to 7") },
+    { BRDATAD (RPOF, rpof, 8, 16, RP_NUMDR, "offset, drives 0 to 7") },
+    { BRDATAD (RPDC, rpdc, 8, 16, RP_NUMDR, "desired cylinder, drives 0 to 7") },
+    { BRDATAD (RPER2, rper2, 8, 16, RP_NUMDR, "error status 2, drives 0 to 7") },
+    { BRDATAD (RPER3, rper3, 8, 16, RP_NUMDR, "error status 3, drives 0 to 7") },
+    { BRDATAD (RPEC1, rpec1, 8, 16, RP_NUMDR, "ECC syndrome 1, drives 0 to 7") },
+    { BRDATAD (RPEC2, rpec2, 8, 16, RP_NUMDR, "ECC syndrome 2, drives 0 to 7") },
+    { BRDATAD (RMMR, rpmr, 8, 16, RP_NUMDR, "maintenance register, drives 0 to 7") },
+    { BRDATAD (RMMR2, rmmr2, 8, 16, RP_NUMDR, "maintenance register 2, drives 0 to 7") },
+    { FLDATAD (IFF, rpiff, 0, "transfer complete interrupt request flop") },
+    { FLDATAD (INT, int_req, INT_V_RP, "interrupt pending flag") },
+    { FLDATAD (SC, rpcs1, CSR_V_ERR, "special condition (CSR1<15>)") },
+    { FLDATAD (DONE, rpcs1, CSR_V_DONE, "device done flag (CSR1<7>)") },
+    { FLDATAD (IE, rpcs1, CSR_V_IE, "interrupt enable flag (CSR<6>)") },
+    { DRDATAD (STIME, rp_swait, 24, "seek time, per cylinder"), REG_NZ + PV_LEFT },
+    { DRDATAD (RTIME, rp_rwait, 24, "rotational delay"), REG_NZ + PV_LEFT },
     { URDATA (FNC, rp_unit[0].FUNC, 8, 5, 0, RP_NUMDR, REG_HRO) },
     { URDATA (CAPAC, rp_unit[0].capac, 10, T_ADDR_W, 0,
               RP_NUMDR, PV_LEFT | REG_HRO) },
-    { FLDATA (STOP_IOE, rp_stopioe, 0) },
+    { FLDATAD (STOP_IOE, rp_stopioe, 0, "stop on I/O error") },
     { NULL }
     };
 
@@ -936,6 +933,7 @@ switch (uptr->FUNC) {                                   /* case on function */
             update_rpcs (CS1_DONE | CS1_TRE, drv);      /* set done, err */
             break;
             }
+        /* fall through */
     case FNC_WCHK:                                      /* write check */
     case FNC_READ:                                      /* read */
     case FNC_READH:                                     /* read headers */
@@ -1028,6 +1026,7 @@ switch (uptr->FUNC) {                                   /* case on function */
             clearerr (uptr->fileref);
             return SCPE_IOERR;
             }
+        /* fall through */
 
     case FNC_WRITEH:                                    /* write headers stub */
         update_rpcs (CS1_DONE, drv);                    /* set done */
@@ -1150,7 +1149,7 @@ return SCPE_OK;
 
 /* Device attach */
 
-t_stat rp_attach (UNIT *uptr, char *cptr)
+t_stat rp_attach (UNIT *uptr, CONST char *cptr)
 {
 int32 i, p;
 t_stat r;
@@ -1203,7 +1202,7 @@ return detach_unit (uptr);
 
 /* Set size command validation routine */
 
-t_stat rp_set_size (UNIT *uptr, int32 val, char *cptr, void *desc)
+t_stat rp_set_size (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 int32 dtype = GET_DTYPE (val);
 
@@ -1367,7 +1366,7 @@ if (!(uptr->flags & UNIT_ATT))
 M[FE_RHBASE] = fe_bootrh = rp_dib.ba;
 M[FE_UNIT] = fe_bootunit = unitno;
 
-assert (sizeof(boot_rom_dec) == sizeof(boot_rom_its));
+ASSURE (sizeof(boot_rom_dec) == sizeof(boot_rom_its));
 
 M[FE_KEEPA] = (M[FE_KEEPA] & ~INT64_C(0xFF)) | ((sim_switches & SWMASK ('A'))? 010 : 0);
 

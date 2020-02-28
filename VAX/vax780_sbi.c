@@ -96,7 +96,7 @@
 /* VAX-11/780 boot device definitions */
 
 struct boot_dev {
-    char                *name;
+    const char          *name;
     int32               code;
     int32               let;
     };
@@ -128,30 +128,19 @@ static struct boot_dev boot_tab[] = {
     { NULL }
     };
 
-extern int32 R[16];
-extern int32 PSL;
-extern int32 ASTLVL, SISR;
-extern int32 mapen, pme, trpirq;
-extern int32 in_ie;
-extern int32 mchk_va, mchk_ref;
-extern int32 crd_err, mem_err, hlt_pin;
 extern int32 tmr_int, tti_int, tto_int;
-extern jmp_buf save_env;
-extern int32 p1;
 
 t_stat sbi_reset (DEVICE *dptr);
 const char *sbi_description (DEVICE *dptr);
 void sbi_set_tmo (int32 pa);
 void uba_eval_int (void);
-t_stat vax780_boot (int32 flag, char *ptr);
-t_stat vax780_boot_parse (int32 flag, char *ptr);
-t_stat cpu_boot (int32 unitno, DEVICE *dptr);
+t_stat vax780_boot (int32 flag, CONST char *ptr);
+t_stat vax780_boot_parse (int32 flag, const char *ptr);
 
-extern t_stat vax780_fload (int32 flag, char *cptr);
-extern int32 intexc (int32 vec, int32 cc, int32 ipl, int ei);
+extern t_stat vax780_fload (int32 flag, CONST char *cptr);
 extern int32 iccs_rd (void);
 extern int32 nicr_rd (void);
-extern int32 icr_rd (t_bool interp);
+extern int32 icr_rd (void);
 extern int32 todr_rd (void);
 extern int32 rxcs_rd (void);
 extern int32 rxdb_rd (void);
@@ -331,7 +320,7 @@ switch (rg) {
         break;
 
     case MT_ICR:                                        /* ICR */
-        val = icr_rd (FALSE);
+        val = icr_rd ();
         break;
 
     case MT_TODR:                                       /* TODR */
@@ -398,7 +387,7 @@ switch (rg) {
         break;
 
     default:
-        RSVD_OPND_FAULT;
+        RSVD_OPND_FAULT(ReadIPR);
         }
 
 return val;
@@ -477,7 +466,7 @@ switch (rg) {
 
     case MT_SBIQC:                                      /* SBIQC */
         if (val & SBIQC_MBZ) {
-            RSVD_OPND_FAULT;
+            RSVD_OPND_FAULT(WriteIPR);
             }
         WriteLP (val, 0);
         WriteLP (val + 4, 0);
@@ -488,7 +477,7 @@ switch (rg) {
         break;
 
     default:
-        RSVD_OPND_FAULT;
+        RSVD_OPND_FAULT(WriteIPR);
         }
 
 return;
@@ -629,7 +618,7 @@ return cc;
    Sets up R0-R5, calls SCP boot processor with effective BOOT CPU
 */
 
-t_stat vax780_boot (int32 flag, char *ptr)
+t_stat vax780_boot (int32 flag, CONST char *ptr)
 {
 t_stat r;
 
@@ -641,16 +630,17 @@ if (r != SCPE_OK) {                                     /* error? */
         }
     return r;
     }
-strncpy (cpu_boot_cmd, ptr, CBUFSIZE);                  /* save for reboot */
+strncpy (cpu_boot_cmd, ptr, CBUFSIZE-1);                /* save for reboot */
 return run_cmd (flag, "CPU");
 }
 
 /* Parse boot command, set up registers - also used on reset */
 
-t_stat vax780_boot_parse (int32 flag, char *ptr)
+t_stat vax780_boot_parse (int32 flag, const char *ptr)
 {
 char gbuf[CBUFSIZE];
-char *slptr, *regptr;
+char *slptr;
+const char *regptr;
 int32 i, r5v, unitno;
 uint32 ba;
 DEVICE *dptr;
@@ -660,6 +650,8 @@ t_stat r;
 
 if (!ptr || !*ptr)
     return SCPE_2FARG;
+if ((ptr = get_sim_sw (ptr)) == NULL)                   /* get switches */
+    return SCPE_INVSW;
 regptr = get_glyph (ptr, gbuf, 0);                      /* get glyph */
 if ((slptr = strchr (gbuf, '/'))) {                     /* found slash? */
     regptr = strchr (ptr, '/');                         /* locate orig */
@@ -675,6 +667,7 @@ else
     ba = dibp->ba;
 unitno = (int32) (uptr - dptr->units);
 r5v = 0;
+/* coverity[NULL_RETURNS] */ 
 if ((strncmp (regptr, "/R5:", 4) == 0) ||
     (strncmp (regptr, "/R5=", 4) == 0) ||
     (strncmp (regptr, "/r5:", 4) == 0) ||
@@ -749,7 +742,7 @@ return "Synchronous Backplane Interconnect";
 
 /* Show nexus */
 
-t_stat show_nexus (FILE *st, UNIT *uptr, int32 val, void *desc)
+t_stat show_nexus (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
 fprintf (st, "nexus=%d, address=%X", val, NEXUSBASE + ((1 << REG_V_NEXUS) * val));
 return SCPE_OK;
@@ -833,13 +826,17 @@ for (i = 0; (dptr = sim_devices[i]) != NULL; i++) {     /* loop thru dev */
 return SCPE_OK;
 }
 
-t_stat cpu_set_model (UNIT *uptr, int32 val, char *cptr, void *desc)
+t_stat cpu_set_model (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 if (cptr == NULL) return SCPE_ARG;
-if (strcmp(cptr, "780") == 0)
+if (strcmp(cptr, "780") == 0) {
    sys_model = 0;
-else if (strcmp(cptr, "785") == 0)
+   strcpy (sim_name, "VAX 11/780");
+   }
+else if (strcmp(cptr, "785") == 0) {
    sys_model = 1;
+   strcpy (sim_name, "VAX 11/785");
+   }
 else
    return SCPE_ARG;
 return SCPE_OK;
@@ -863,7 +860,6 @@ fprintf (st, "   RLn        to boot from rln\n");
 fprintf (st, "   RQn        to boot from rqn\n");
 fprintf (st, "   RQBn       to boot from rqbn\n");
 fprintf (st, "   RQCn       to boot from rqcn\n");
-fprintf (st, "   RQDn       to boot from rqdn\n");
-fprintf (st, "   TQn        to boot from tqn\n\n");
+fprintf (st, "   RQDn       to boot from rqdn\n\n");
 return SCPE_OK;
 }

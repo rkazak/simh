@@ -1176,11 +1176,11 @@ long disasm (unsigned char *data, char *output, int segsize, long offset)
 {
     struct itemplate **p, **best_p;
     int length, best_length = 0;
-    char *segover;
+    const char *segover;
     int rep, lock, asize, osize, i, slen, colon;
     unsigned char *origdata;
     int works;
-    insn tmp_ins, ins;
+    insn tmp_ins = { NULL }, ins;
     unsigned long goodness, best;
 
     /*
@@ -1205,10 +1205,14 @@ long disasm (unsigned char *data, char *output, int segsize, long offset)
           case 0x64: segover = "fs"; break;
           case 0x65: segover = "gs"; break;
         }
-    } else if (*data == 0x66)
-        osize = 48 - segsize, data++;
-    else if (*data == 0x67)
-        asize = 48 - segsize, data++;
+    } else if (*data == 0x66) {
+        osize = 48 - segsize;
+        data++;
+    }
+    else if (*data == 0x67) {
+        asize = 48 - segsize;
+        data++;
+    }
     else
         break;
     }

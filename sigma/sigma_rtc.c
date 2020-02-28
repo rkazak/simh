@@ -1,6 +1,6 @@
 /* sigma_rtc.c: Sigma clocks
 
-   Copyright (c) 2007, Robert M. Supnik
+   Copyright (c) 2007-2017, Robert M. Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -24,6 +24,8 @@
    in this Software without prior written authorization from Robert M Supnik.
 
    rtc           clocks
+
+   13-Mar-17    RMS     Fixed bugs in set, show_tps (COVERITY)
 
    The real-time clock includes an internal scheduler for events which need to
    be driven at multiples of the clock frequency, such as console and multiplexor
@@ -74,7 +76,7 @@ static rtcdef_t rtc_tab[RTC_NUM_HZ] = {
 t_stat rtc_svc (UNIT *uptr);
 t_stat rtc_cntr_svc (UNIT *uptr);
 t_stat rtc_reset (DEVICE *dptr);
-t_stat rtc_show_events (FILE *of, UNIT *uptr, int32 val, void *desc);
+t_stat rtc_show_events (FILE *of, UNIT *uptr, int32 val, CONST void *desc);
 
 /* Clock data structures
 
@@ -184,7 +186,7 @@ return SCPE_OK;
 
 /* Set timer ticks */
 
-t_stat rtc_set_tps (UNIT *uptr, int32 val, char *cptr, void *desc)
+t_stat rtc_set_tps (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 uint32 newval, i;
 t_stat r;
@@ -199,7 +201,8 @@ if ((r != SCPE_OK) ||                                   /* error? */
     return SCPE_ARG;
 for (i = 0; i < RTC_NUM_HZ; i++) {                      /* loop thru freqs */
     if (newval == rtc_tab[i].hz) {                      /* found freq? */
-        rtc_tps[val] = i;
+        if (val < RTC_NUM_CNTRS)                        /* for clocks */
+            rtc_tps[val] = i;                           /* save val for reset */
         rtc_indx[val] = i;                              /* save event vals */
         rtc_cntr[val] = rtc_tab[i].cntr_reset;
         rtc_xtra[val] = rtc_tab[i].xtra_reset;
@@ -211,13 +214,13 @@ return SCPE_ARG;
 
 /* Show timer ticks */
 
-t_stat rtc_show_tps (FILE *of, UNIT *uptr, int32 val, void *desc)
+t_stat rtc_show_tps (FILE *of, UNIT *uptr, int32 val, CONST void *desc)
 {
 uint32 idx;
 
 if (val >= RTC_NUM_EVNTS)
     return SCPE_IERR;
-idx = rtc_tps[val];                                     /* ptr to clk defs */
+idx = rtc_indx[val];                                    /* ptr to clk defs */
 if (rtc_tab[idx].hz == 0)
     fprintf (of, "off\n");
 else fprintf (of, "%dHz\n", rtc_tab[idx].hz);
@@ -252,7 +255,7 @@ return SCPE_OK;
 
 /* Show events */
 
-t_stat rtc_show_events (FILE *of, UNIT *uptr, int32 val, void *desc)
+t_stat rtc_show_events (FILE *of, UNIT *uptr, int32 val, CONST void *desc)
 {
 uint32 i;
 

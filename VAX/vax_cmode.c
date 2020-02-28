@@ -1,6 +1,6 @@
 /* vax_cmode.c: VAX compatibility mode
 
-   Copyright (c) 2004-2008, Robert M Supnik
+   Copyright (c) 2004-2016, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -26,6 +26,7 @@
    On a full VAX, this module implements PDP-11 compatibility mode.
    On a subset VAX, this module forces a fault if REI attempts to set PSL<cm>.
 
+   14-Jul-16    RMS     Updated PSL check (found by EVKAE 6.2)
    28-May-08    RMS     Inlined physical memory routines
    25-Jan-08    RMS     Fixed declaration (Mark Pizzolato)
    03-May-06    RMS     Fixed omission of SXT
@@ -39,7 +40,7 @@
 
 #include "vax_defs.h"
 
-#if defined (FULL_VAX)
+#if defined (CMPM_VAX)
 
 #define RdMemB(a)       Read (a, L_BYTE, RA)
 #define RdMemMB(a)      Read (a, L_BYTE, WA)
@@ -48,18 +49,6 @@
 #define BRANCH_B(x)     CMODE_JUMP ((PC + (((x) + (x)) | 0177400)) & WMASK)
 #define CC_XOR_NV(x)    ((((x) & CC_N) != 0) ^ (((x) & CC_V) != 0))
 #define CC_XOR_NC(x)    ((((x) & CC_N) != 0) ^ (((x) & CC_C) != 0))
-
-extern int32 R[16];
-extern int32 PSL;
-extern int32 trpirq;
-extern int32 p1;
-extern int32 fault_PC;
-extern int32 recq[];                                    /* recovery queue */
-extern int32 recqptr;                                   /* recq pointer */
-extern int32 pcq[];
-extern int32 pcq_p;
-extern int32 ibcnt, ppc;
-extern jmp_buf save_env;
 
 int32 GeteaB (int32 spec);
 int32 GeteaW (int32 spec);
@@ -75,7 +64,7 @@ void WrRegW (int32 val, int32 rn);
 
 t_bool BadCmPSL (int32 newpsl)
 {
-if ((newpsl & (PSL_FPD|PSL_IS|PSL_CUR|PSL_PRV|PSL_IPL)) !=
+if ((newpsl & (PSL_FPD|PSL_IS|PSL_CUR|PSL_PRV|PSL_IPL|PSW_DV|PSW_FU|PSW_IV)) !=
     ((USER << PSL_V_CUR) | (USER << PSL_V_PRV)))
     return TRUE;
 else return FALSE;
@@ -1312,8 +1301,6 @@ return;
    Should never get to instruction execution
 */
 
-extern jmp_buf save_env;
-
 t_bool BadCmPSL (int32 newpsl)
 {
 return TRUE;                                            /* always bad */
@@ -1321,7 +1308,7 @@ return TRUE;                                            /* always bad */
 
 int32 op_cmode (int32 cc)
 {
-RSVD_INST_FAULT;
+RSVD_INST_FAULT(0);
 return cc;
 }
 

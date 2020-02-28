@@ -47,7 +47,6 @@
 
 #define KMC_RDX     8
 
-#include <assert.h>
 #include "pdp11_dup.h"
 #include "pdp11_ddcmp.h"
 
@@ -486,15 +485,15 @@ static t_stat kmc_txService(UNIT * txup);
 static t_stat kmc_rxService(UNIT * rxup);
 
 #if KMC_UNITS > 1
-static t_stat kmc_setDeviceCount (UNIT *txup, int32 val, char *cptr, void *desc);
-static t_stat kmc_showDeviceCount (FILE *st, UNIT *txup, int32 val, void *desc);
+static t_stat kmc_setDeviceCount (UNIT *txup, int32 val, CONST char *cptr, void *desc);
+static t_stat kmc_showDeviceCount (FILE *st, UNIT *txup, int32 val, CONST void *desc);
 #endif
-static t_stat kmc_setLineSpeed (UNIT *txup, int32 val, char *cptr, void *desc);
-static t_stat kmc_showLineSpeed (FILE *st, UNIT *txup, int32 val, void *desc);
-static t_stat kmc_showStatus (FILE *st, UNIT *up, int32 v, void *dp);
+static t_stat kmc_setLineSpeed (UNIT *txup, int32 val, CONST char *cptr, void *desc);
+static t_stat kmc_showLineSpeed (FILE *st, UNIT *txup, int32 val, CONST void *desc);
+static t_stat kmc_showStatus (FILE *st, UNIT *up, int32 v, CONST void *dp);
 
-static t_stat kmc_help (FILE *st, struct sim_device *dptr,
-                        struct sim_unit *uptr, int32 flag, const char *cptr); 
+static t_stat kmc_help (FILE *st, DEVICE *dptr,
+                        UNIT *uptr, int32 flag, const char *cptr); 
 static const char *kmc_description (DEVICE *dptr);
 
 /* Global data */
@@ -535,6 +534,35 @@ static UNIT tx_units[MAX_ACTIVE][KMC_UNITS]; /* Line 0 is primary unit.  txup re
 
 
 static UNIT rx_units[MAX_ACTIVE][KMC_UNITS];    /* Secondary unit, used for RX.  rxup references */
+
+DEVICE kmc_int_rxdev = {
+    "KDP-RX", rx_units[0], 
+    NULL,                                       /* Register decode tables */
+    NULL,                                       /* Modifier table */
+    INITIAL_KMCS,                               /* Number of units */
+    KMC_RDX,                                    /* Address radix */
+    13,                                         /* Address width: 18 - <17:13> are 1s, omits UBA */
+    1,                                          /* Address increment */
+    KMC_RDX,                                    /* Data radix */
+    8,                                          /* Data width */
+    NULL,                                       /* examine routine */
+    NULL,                                       /* Deposit routine */
+    NULL,                                       /* reset routine */
+    NULL,                                       /* boot routine */
+    NULL,                                       /* attach routine */
+    NULL,                                       /* detach routine */
+    NULL,                                       /* context */
+    DEV_NOSAVE,                                 /* Flags */
+    0,                                          /* debug control */
+    NULL,                                       /* debug flag table */
+    NULL,                                       /* memory size routine */
+    NULL,                                       /* logical name */
+    NULL,                                       /* help routine */
+    NULL,                                       /* attach help routine */
+    NULL,                                       /* help context */
+    &kmc_description                            /* Device description routine */
+};
+
 
 /* Timers - in usec */
 
@@ -579,9 +607,9 @@ static REG kmc_reg[] = {
     };
 
 MTAB kmc_mod[] = {
-    { MTAB_XTD|MTAB_VDV, 010, "ADDRESS", "ADDRESS",
+    { MTAB_XTD|MTAB_VDV|MTAB_VALR, 010, "ADDRESS", "ADDRESS",
         &set_addr, &show_addr, NULL, "Bus address" },
-    { MTAB_XTD|MTAB_VDV|MTAB_VALR, 0, "VECTOR", "ADDRESS",
+    { MTAB_XTD|MTAB_VDV|MTAB_VALR, 0, "VECTOR", "VECTOR",
         &set_vec, &show_vec, NULL, "Interrupt vector" },
     { MTAB_XTD|MTAB_VDV|MTAB_VALR|MTAB_NMO, 0, "SPEED", "SPEED=dup=bps",
         &kmc_setLineSpeed, &kmc_showLineSpeed, NULL, "Line speed (bps)" },
@@ -738,8 +766,12 @@ static t_stat kmc_reset(DEVICE* dptr) {
             memset (dram, 0xdd, sizeof dram);
             gflags |= FLG_INIT;
             gflags &= ~FLG_UCINI;
+            sim_register_internal_device (&kmc_int_rxdev);
         }
     }
+
+    kmc_int_rxdev.flags &= ~DEV_DIS;                    /* Make internal RX device */
+    kmc_int_rxdev.flags |= (kmc_dev.flags & DEV_DIS);   /* enable/disable track KDP device */
 
     return auto_config (dptr->name, ((dptr->flags & DEV_DIS)? 0: dptr->numunits));  /* auto config */
 }
@@ -998,7 +1030,7 @@ static t_stat kmc_txService (UNIT *txup) {
     dupstate *d = line2dup[txup->unit_line];
     t_bool more;
 
-    assert ((k >= 0) && (k < (int32) kmc_dev.numunits) && (d->kmc == k) &&
+    ASSURE ((k >= 0) && (k < (int32) kmc_dev.numunits) && (d->kmc == k) &&
              (d->line == txup->unit_line));
 
     /* Provide the illusion of progress. */
@@ -1165,8 +1197,8 @@ static t_stat kmc_txService (UNIT *txup) {
              */
         case TXMRDY:                            /* Data with OS-embedded HCRC */
             d->txstate = TXACT; 
-            assert (d->txmsg[d->txslen + 0] != DDCMP_ENQ);
-            assert (((d->txmlen - d->txslen) > 8) &&    /* Data, length should match count */
+            ASSURE (d->txmsg[d->txslen + 0] != DDCMP_ENQ);
+            ASSURE (((d->txmlen - d->txslen) > 8) &&    /* Data, length should match count */
                     (((size_t)(((d->txmsg[d->txslen + 2] & 077) << 8) | d->txmsg[d->txslen + 1])) ==
                                                              (d->txmlen - (d->txslen + 8))));
             if (!dup_put_msg_bytes (d->dupidx, d->txmsg + d->txslen, d->txmlen - d->txslen, TRUE, TRUE)) {
@@ -1179,7 +1211,7 @@ static t_stat kmc_txService (UNIT *txup) {
         case TXRDY:                             /* Control or DATA with KDP-CRCH */
             d->txstate = TXACT;                 /* Note that DUP can complete before returning */
             if (d->txmsg[d->txslen + 0] == DDCMP_ENQ) { /* Control message */
-                assert ((d->txmlen - d->txslen) == 6);
+                ASSURE ((d->txmlen - d->txslen) == 6);
                 if (!dup_put_msg_bytes (d->dupidx, d->txmsg, d->txslen + 6, TRUE, TRUE)) {
                     sim_debug (DF_PKT, &kmc_dev, "KMC%u line %u: DUP%d refused TX packet\n", k, d->line, d->dupidx);
                     TXDELAY (TXRDY, TXDUP_DELAY);
@@ -1188,7 +1220,7 @@ static t_stat kmc_txService (UNIT *txup) {
                 break;
             }
 
-            assert (((d->txmlen - d->txslen) > 6) &&    /* Data, length should match count */
+            ASSURE (((d->txmlen - d->txslen) > 6) &&    /* Data, length should match count */
                     (((size_t)(((d->txmsg[d->txslen + 2] & 077) << 8) | d->txmsg[d->txslen + 1])) ==
                                                              (d->txmlen - (d->txslen + 6))));
             if (!dup_put_msg_bytes (d->dupidx, d->txmsg, d->txslen + 6, TRUE, TRUE)) {
@@ -1217,7 +1249,7 @@ static t_stat kmc_txService (UNIT *txup) {
 #undef TXSTOP
 
     if (d->txstate == TXIDLE) {
-        assert (!d->txavail);
+        ASSURE (!d->txavail);
         if (dup_set_RTS (d->dupidx, FALSE) != SCPE_OK) {
             sim_debug (DF_CTO, &kmc_dev, "KMC%u line %u: dup: %d DUP CSR NXM\n",
                        k, d->line, d->dupidx);
@@ -1270,7 +1302,7 @@ static t_stat kmc_rxService (UNIT *rxup) {
     t_stat r;
     uint16 xrem, seglen;
 
-    assert ((k >= 0) && (k < (int32) kmc_dev.numunits) && (d->kmc == k) &&
+    ASSURE ((k >= 0) && (k < (int32) kmc_dev.numunits) && (d->kmc == k) &&
              (d->line == rxup->unit_line));
 
     if (d->rxstate > RXBDL) {
@@ -1387,7 +1419,7 @@ static t_stat kmc_rxService (UNIT *rxup) {
         if (seglen > d->rx.bd[1]) {
             seglen = d->rx.bd[1];
         }
-        assert (seglen > 0);
+        ASSURE (seglen > 0);
 
         xrem = (uint16)Map_WriteB (d->rx.ba, seglen, d->rxmsg + d->rxused);
         if (xrem != 0) {
@@ -1425,7 +1457,7 @@ static t_stat kmc_rxService (UNIT *rxup) {
             if (d->ctrlFlags & SEL6_CI_ENASS) { /* Note that spec requires first bd >= 6 if SS match enabled */
                 if (!(d->rxmsg[5] == (d->ctrlFlags & SEL6_CI_SADDR))) { /* Also include SELECT? */
                     ASSURE ((bdl = (BDL *)remqueue(d->bdqh.prev, &d->bdavail)) != NULL);
-                    assert (bdl->ba == d->rx.bda);
+                    ASSURE (bdl->ba == d->rx.bda);
                     ASSURE (insqueue (&bdl->hdr, &d->rxqh, &d->rxavail, MAXQUEUE));
                     d->rxstate = RXIDLE;
                     break;
@@ -1512,7 +1544,7 @@ static t_stat kmc_rxService (UNIT *rxup) {
         break;
 
     default:
-        assert (FALSE);
+        ASSURE (FALSE);
     }
 
     if ((d->rxstate != RXIDLE) || d->rxavail) {
@@ -1916,7 +1948,7 @@ void kmc_rxBufferIn(dupstate *d, int32 ba, uint16 sel6v) {
     if (d->line == UNASSIGNED_LINE)
         return;
 
-    assert ((k >= 0) && (((unsigned int)k) < kmc_dev.numunits) && (d->dupidx != -1));
+    ASSURE ((k >= 0) && (((unsigned int)k) < kmc_dev.numunits) && (d->dupidx != -1));
 
     rxup = &rx_units[d->line][k];
 
@@ -1998,9 +2030,9 @@ static void kdp_receive(int32 dupidx, int count) {
     UNIT *rxup;
     UNUSED_ARG (count);
 
-    assert ((dupidx >= 0) && (((size_t)dupidx) < DIM(dupState)));
+    ASSURE ((dupidx >= 0) && (((size_t)dupidx) < DIM(dupState)));
     d = &dupState[dupidx];
-    assert (dupidx == d->dupidx);
+    ASSURE (dupidx == d->dupidx);
     k = d->kmc;
     rxup = &rx_units[d->line][k];
 
@@ -2037,7 +2069,7 @@ void kmc_txBufferIn(dupstate *d, int32 ba, uint16 sel6v) {
     if (d->line == UNASSIGNED_LINE)
         return;
 
-    assert ((k >= 0) && (((unsigned int)k) < kmc_dev.numunits) && (d->dupidx != -1));
+    ASSURE ((k >= 0) && (((unsigned int)k) < kmc_dev.numunits) && (d->dupidx != -1));
 
     if (!kmc_printBufferIn (k, &kmc_dev, d->line, FALSE, d->txavail, ba, sel6v))
         return;
@@ -2106,7 +2138,7 @@ static void kmc_txComplete (int32 dupidx, int status) {
     UNIT *txup;
     int32 k;
 
-    assert ((dupidx >= 0) && (((size_t)dupidx) < DIM(dupState)));
+    ASSURE ((dupidx >= 0) && (((size_t)dupidx) < DIM(dupState)));
 
     d = &dupState[dupidx];
     k = d->kmc;
@@ -2198,7 +2230,7 @@ static t_bool kmc_txAppendBuffer(dupstate *d) {
     if (!d->txmsg || (d->txmsize < d->txmlen+d->tx.bd[1])) {
         d->txmsize = d->txmlen+d->tx.bd[1];
         d->txmsg = (uint8 *)realloc(d->txmsg, d->txmsize);
-        assert (d->txmsg);
+        ASSURE (d->txmsg);
     }
     rem = (uint16)Map_ReadB (d->tx.ba, d->tx.bd[1], d->txmsg+d->txmlen);
     d->tx.bd[1] -= rem;
@@ -2315,7 +2347,7 @@ static void kmc_ctrlOut (int32 k, uint8 code, uint16 rx, uint8 line, uint32 bda)
 static void kmc_modemChange (int32 dupidx) {
   dupstate *d;
 
-  assert ((dupidx >= 0) && (((size_t)dupidx) < DIM(dupState)));
+  ASSURE ((dupidx >= 0) && (((size_t)dupidx) < DIM(dupState)));
   d = &dupState[dupidx];
 
   if (d->dupidx != -1) {
@@ -2764,7 +2796,7 @@ static void *remqueue (QH *entry, int32 *count) {
  */
 
 #if KMC_UNITS > 1
-static t_stat kmc_setDeviceCount (UNIT *txup, int32 val, char *cptr, void *desc) {
+static t_stat kmc_setDeviceCount (UNIT *txup, int32 val, CONST char *cptr, void *desc) {
     int32 newln;
     uint32 dupidx;
     t_stat r;
@@ -2794,7 +2826,7 @@ static t_stat kmc_setDeviceCount (UNIT *txup, int32 val, char *cptr, void *desc)
 /* Report number of configured KMCs */
 
 #if KMC_UNITS > 1
-static t_stat kmc_showDeviceCount (FILE *st, UNIT *txup, int32 val, void *desc) {
+static t_stat kmc_showDeviceCount (FILE *st, UNIT *txup, int32 val, CONST void *desc) {
     DEVICE *dev = find_dev_from_unit(txup);
 
     if (dev->flags & DEV_DIS) {
@@ -2828,7 +2860,7 @@ static t_stat kmc_showDeviceCount (FILE *st, UNIT *txup, int32 val, void *desc) 
  * potential use of that DUP by a KMC.
  */
 
-static t_stat kmc_setLineSpeed (UNIT *txup, int32 val, char *cptr, void *desc) {
+static t_stat kmc_setLineSpeed (UNIT *txup, int32 val, CONST char *cptr, void *desc) {
     dupstate *d;
     int32 dupidx, newspeed;
     char gbuf[CBUFSIZE];
@@ -2859,7 +2891,7 @@ static t_stat kmc_setLineSpeed (UNIT *txup, int32 val, char *cptr, void *desc) {
     return SCPE_OK;
 }
 
-static t_stat kmc_showLineSpeed (FILE *st, UNIT *txup, int32 val, void *desc) {
+static t_stat kmc_showLineSpeed (FILE *st, UNIT *txup, int32 val, CONST void *desc) {
     int dupidx;
 
     fprintf (st, "DUP KMC Line   Speed\n"
@@ -2883,7 +2915,7 @@ static t_stat kmc_showLineSpeed (FILE *st, UNIT *txup, int32 val, void *desc) {
 
 /* Show KMC status */
 
-t_stat kmc_showStatus (FILE *st, UNIT *up, int32 v,  void *dp) {
+t_stat kmc_showStatus (FILE *st, UNIT *up, int32 v,  CONST void *dp) {
     int32 k = up->unit_kmc;
     int32 line;
     t_bool first = TRUE;
@@ -2941,8 +2973,8 @@ t_stat kmc_showStatus (FILE *st, UNIT *up, int32 v,  void *dp) {
  *
  */
 
-static t_stat kmc_help (FILE *st, struct sim_device *dptr,
-                         struct sim_unit *uptr, int32 flag, const char *cptr) {
+static t_stat kmc_help (FILE *st, DEVICE *dptr,
+                         UNIT *uptr, int32 flag, const char *cptr) {
     const char *const text =
 " The KMC11-A is a general purpose microprocessor that is used in\n"
 " several DEC products.  The KDP is an emulation of one of those\n"
@@ -3072,5 +3104,8 @@ static t_stat kmc_help (FILE *st, struct sim_device *dptr,
  * Conventionally last function in the file.
  */
 static const char *kmc_description (DEVICE *dptr) {
-    return "KMC11-A Synchronous line controller supporting only COMM IOP/DUP microcode";
+    if (dptr == &kmc_dev)
+        return "KMC11-A Synchronous line controller supporting only COMM IOP/DUP microcode";
+    else
+        return "KMC pseudo device for receive units";
 }

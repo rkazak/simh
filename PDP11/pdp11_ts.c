@@ -99,7 +99,6 @@
 #else                                                   /* PDP-11 version */
 #include "pdp11_defs.h"
 #define TS_DIS          DEV_DIS                         /* off by default */
-extern uint32 cpu_opt;
 #endif
 
 #include "sim_tape.h"
@@ -268,9 +267,6 @@ extern uint32 cpu_opt;
 #define MAX(a,b)        (((a) >= (b))? (a): (b))
 #define MAX_PLNT        8                               /* max pkt length */
 
-extern int32 int_req[IPL_HLVL];
-extern UNIT cpu_unit;
-
 uint8 *tsxb = NULL;                                     /* xfer buffer */
 int32 tssr = 0;                                         /* status register */
 int32 tsba = 0;                                         /* mem addr */
@@ -289,7 +285,7 @@ t_stat ts_rd (int32 *data, int32 PA, int32 access);
 t_stat ts_wr (int32 data, int32 PA, int32 access);
 t_stat ts_svc (UNIT *uptr);
 t_stat ts_reset (DEVICE *dptr);
-t_stat ts_attach (UNIT *uptr, char *cptr);
+t_stat ts_attach (UNIT *uptr, CONST char *cptr);
 t_stat ts_detach (UNIT *uptr);
 t_stat ts_boot (int32 unitno, DEVICE *dptr);
 int32 ts_updtssr (int32 t);
@@ -354,14 +350,14 @@ MTAB ts_mod[] = {
         NULL, NULL, NULL, "Write enable tape drive" },
     { MTUF_WLK,  MTUF_WLK, "write locked",   "LOCKED", 
         NULL, NULL, NULL, "Write lock tape drive"  },
-    { MTAB_XTD|MTAB_VUN|MTAB_VALR, 0,       "FORMAT", "FORMAT",
-        &sim_tape_set_fmt, &sim_tape_show_fmt, NULL, "Set/Display tape format (SIMH, E11, TPC, P7B)" },
+    { MTAB_XTD|MTAB_VUN|MTAB_VALR, 0, "FORMAT", "FORMAT",
+        &sim_tape_set_fmt, &sim_tape_show_fmt, NULL, "Set/Display tape format (SIMH, E11, TPC, P7B, AWS, TAR)" },
     { MTAB_XTD|MTAB_VUN|MTAB_VALR, 0,       "CAPACITY", "CAPACITY",
         &sim_tape_set_capac, &sim_tape_show_capac, NULL, "Set/Display capacity" },
     { MTAB_XTD|MTAB_VDV|MTAB_VALR, 004,     "ADDRESS", "ADDRESS",
         &set_addr, &show_addr, NULL, "Bus address" },
-    { MTAB_XTD|MTAB_VDV, 0,                 "VECTOR", NULL,
-        NULL, &show_vec, NULL, "Interrupt vector" },
+    { MTAB_XTD|MTAB_VDV|MTAB_VALR, 0,       "VECTOR", "VECTOR",
+        &set_vec, &show_vec, NULL, "Interrupt vector" },
     { 0 }
     };
 
@@ -1080,11 +1076,11 @@ return auto_config (0, 0);
 
 /* Attach */
 
-t_stat ts_attach (UNIT *uptr, char *cptr)
+t_stat ts_attach (UNIT *uptr, CONST char *cptr)
 {
 t_stat r;
 
-r = sim_tape_attach (uptr, cptr);                       /* attach unit */
+r = sim_tape_attach_ex (uptr, cptr, DBG_TAP, 0);        /* attach unit */
 if (r != SCPE_OK)                                       /* error? */
     return r;
 tssr = tssr & ~TSSR_OFL;                                /* clr offline */
@@ -1171,13 +1167,12 @@ static const uint16 boot_rom[] = {
 t_stat ts_boot (int32 unitno, DEVICE *dptr)
 {
 size_t i;
-extern uint16 *M;
 
 sim_tape_rewind (&ts_unit);
 for (i = 0; i < BOOT_LEN; i++)
-    M[(BOOT_START >> 1) + i] = boot_rom[i];
-M[BOOT_CSR0 >> 1] = ts_dib.ba & DMASK;
-M[BOOT_CSR1 >> 1] = (ts_dib.ba & DMASK) + 02;
+    WrMemW (BOOT_START + (2 * i), boot_rom[i]);
+WrMemW (BOOT_CSR0, ts_dib.ba & DMASK);
+WrMemW (BOOT_CSR1, (ts_dib.ba & DMASK) + 02);
 cpu_set_boot (BOOT_START);
 return SCPE_OK;
 }

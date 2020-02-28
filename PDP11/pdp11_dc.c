@@ -78,7 +78,6 @@
 #define DCOCSR_CTS      0000002                         /* clr to send (RO) */
 #define DCOCSR_MNT      0000004                         /* maint (RWNI) */
 
-extern int32 int_req[IPL_HLVL];
 extern int32 tmxr_poll;
 
 uint16 dci_csr[DCX_LINES] = { 0 };                      /* control/status */
@@ -130,9 +129,9 @@ t_stat dcx_wr (int32 data, int32 PA, int32 access);
 t_stat dcx_reset (DEVICE *dptr);
 t_stat dci_svc (UNIT *uptr);
 t_stat dco_svc (UNIT *uptr);
-t_stat dcx_attach (UNIT *uptr, char *cptr);
+t_stat dcx_attach (UNIT *uptr, CONST char *cptr);
 t_stat dcx_detach (UNIT *uptr);
-t_stat dcx_set_lines (UNIT *uptr, int32 val, char *cptr, void *desc);
+t_stat dcx_set_lines (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
 void dcx_enbdis (int32 dis);
 void dci_clr_int (int32 ln);
 void dci_set_int (int32 ln);
@@ -290,7 +289,7 @@ switch ((PA >> 1) & 03) {                               /* decode PA<2:1> */
     case 01:                                            /* dci buf */
         dci_clr_int (ln);
         *data = dci_buf[ln];
-        /* Rechedule the next poll preceisely so that 
+        /* Reschedule the next poll preceisely so that the 
            the programmed input speed is observed. */
         sim_clock_coschedule_abs (&dci_unit, tmxr_poll);
         return SCPE_OK;
@@ -554,7 +553,7 @@ return;
 
 /* Attach master unit */
 
-t_stat dcx_attach (UNIT *uptr, char *cptr)
+t_stat dcx_attach (UNIT *uptr, CONST char *cptr)
 {
 t_stat r;
 
@@ -596,7 +595,7 @@ return;
 
 /* Change number of lines */
 
-t_stat dcx_set_lines (UNIT *uptr, int32 val, char *cptr, void *desc)
+t_stat dcx_set_lines (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 int32 newln, i, t;
 t_stat r;

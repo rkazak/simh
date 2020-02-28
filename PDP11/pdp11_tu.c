@@ -1,6 +1,6 @@
 /* pdp11_tu.c - PDP-11 TM02/TU16 TM03/TU45/TU77 Massbus magnetic tape controller
 
-   Copyright (c) 1993-2013, Robert M Supnik
+   Copyright (c) 1993-2017, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,8 @@
 
    tu           TM02/TM03 magtape
 
+   28-Dec-17    RMS     Read tape mark must set Massbus EXC
+   13-Mar-17    RMS     Annotated fall through in switch
    23-Oct-13    RMS     Revised for new boot setup routine
    18-Apr-11    MP      Fixed t_addr printouts for 64b big-endian systems
    17-May-07    RMS     CS1 DVA resides in device, not MBA
@@ -244,11 +246,11 @@ t_stat tu_mbrd (int32 *data, int32 PA, int32 fmtr);
 t_stat tu_mbwr (int32 data, int32 PA, int32 fmtr);
 t_stat tu_svc (UNIT *uptr);
 t_stat tu_reset (DEVICE *dptr);
-t_stat tu_attach (UNIT *uptr, char *cptr);
+t_stat tu_attach (UNIT *uptr, CONST char *cptr);
 t_stat tu_detach (UNIT *uptr);
 t_stat tu_boot (int32 unitno, DEVICE *dptr);
-t_stat tu_set_fmtr (UNIT *uptr, int32 val, char *cptr, void *desc);
-t_stat tu_show_fmtr (FILE *st, UNIT *uptr, int32 val, void *desc);
+t_stat tu_set_fmtr (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+t_stat tu_show_fmtr (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 t_stat tu_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
 const char *tu_description (DEVICE *dptr);
 t_stat tu_go (int32 drv);
@@ -266,7 +268,8 @@ t_stat tu_map_err (int32 drv, t_stat st, t_bool qdt);
    tu_mod       TU modifier list
 */
 
-DIB tu_dib = { MBA_TU, 0, &tu_mbrd, &tu_mbwr,0, 0, 0, { &tu_abort } };
+#define IOLN_TU         040
+DIB tu_dib = { MBA_AUTO, IOLN_TU, &tu_mbrd, &tu_mbwr,0, 0, 0, { &tu_abort } };
 
 UNIT tu_unit[] = {
     { UDATA (&tu_svc, UNIT_ATTABLE+UNIT_DISABLE+UNIT_ROABLE, 0) },
@@ -316,8 +319,8 @@ MTAB tu_mod[] = {
         NULL, NULL, NULL, "Set drive type to TU45" },
     { UNIT_TYPE, UNIT_TU77, "TU77", "TU77", 
         NULL, NULL, NULL, "Set drive type to TU77" },
-    { MTAB_XTD|MTAB_VUN|MTAB_VALR, 0,       "FORMAT", "FORMAT",
-        &sim_tape_set_fmt, &sim_tape_show_fmt, NULL, "Set/Display tape format (SIMH, E11, TPC, P7B)" },
+    { MTAB_XTD|MTAB_VUN|MTAB_VALR, 0, "FORMAT", "FORMAT",
+        &sim_tape_set_fmt, &sim_tape_show_fmt, NULL, "Set/Display tape format (SIMH, E11, TPC, P7B, AWS, TAR)" },
     { MTAB_XTD|MTAB_VUN|MTAB_VALR, 0,       "CAPACITY", "CAPACITY",
         &sim_tape_set_capac, &sim_tape_show_capac, NULL, "Set unit n capacity to arg MB (0 = unlimited)" },
     { MTAB_XTD|MTAB_VUN|MTAB_NMO, 0,        "CAPACITY", NULL,
@@ -500,6 +503,7 @@ switch (fnc) {                                          /* case on function */
         tufs = tufs & ~(FS_SAT | FS_SSC | FS_ID | FS_ERR);
         sim_cancel (uptr);                              /* reset drive */
         uptr->USTAT = 0;
+        /* fall through */
     case FNC_NOP:
         tucs1 = tucs1 & ~CS1_GO;                        /* no operation */
         return SCPE_OK;
@@ -661,7 +665,7 @@ switch (fnc) {                                          /* case on function */
                 break;
                 }
             } while ((tufc != 0) && !sim_tape_eot (uptr));
-        if (tufc)
+        if (tufc != 0)
             tu_set_er (ER_FCE);
         else tutc = tutc & ~TC_FCS;
         break;
@@ -674,7 +678,7 @@ switch (fnc) {                                          /* case on function */
                 break;
                 }
             } while (tufc != 0);
-        if (tufc)
+        if (tufc != 0)
             tu_set_er (ER_FCE);
         else tutc = tutc & ~TC_FCS;
         break;
@@ -697,8 +701,6 @@ switch (fnc) {                                          /* case on function */
         if ((uptr->UDENS == TC_1600) && sim_tape_bot (uptr))
             tufs = tufs | FS_ID;                        /* PE BOT? ID burst */
         if ((st = sim_tape_rdrecf (uptr, xbuf, &tbc, MT_MAXFR))) {/* read fwd */
-            if (st == MTSE_TMK)                         /* tmk also sets FCE */
-                tu_set_er (ER_FCE);
             r = tu_map_err (drv, st, 1);                /* map error */
             break;                                      /* done */
             }
@@ -761,8 +763,6 @@ switch (fnc) {                                          /* case on function */
     case FNC_WCHKR:                                     /* wcheck = read */
         tufc = 0;                                       /* clear frame count */
         if ((st = sim_tape_rdrecr (uptr, xbuf + 4, &tbc, MT_MAXFR))) {/* read rev */
-            if (st == MTSE_TMK)                         /* tmk also sets FCE */
-                tu_set_er (ER_FCE);
             r = tu_map_err (drv, st, 1);                /* map error */
             break;                                      /* done */
             }
@@ -856,7 +856,9 @@ if (flg & FS_ATA)
 return;
 }
 
-/* Map tape error status */
+/* Map tape error status
+
+   Note that tape mark on a data transfer sets FCE and Massbus EXC */
 
 t_stat tu_map_err (int32 drv, t_stat st, t_bool qdt)
 {
@@ -870,7 +872,11 @@ switch (st) {
         break;
 
     case MTSE_TMK:                                      /* end of file */
-        tufs = tufs | FS_TMK;
+        tufs = tufs | FS_TMK;                           /* set TMK status */
+        if (qdt) {                                      /* data transfer? */
+            tu_set_er (ER_FCE);                         /* set FCE */
+            mba_set_exc (tu_dib.ba);                    /* set exception*/
+            }
         break;
 
     case MTSE_IOERR:                                    /* IO error */
@@ -920,7 +926,7 @@ t_stat tu_reset (DEVICE *dptr)
 int32 u;
 UNIT *uptr;
 
-mba_set_enbdis (MBA_TU, tu_dev.flags & DEV_DIS);
+mba_set_enbdis (dptr);
 tucs1 = 0;
 tufc = 0;
 tuer = 0;
@@ -947,7 +953,7 @@ return auto_config(0, 0);
 
 /* Attach routine */
 
-t_stat tu_attach (UNIT *uptr, char *cptr)
+t_stat tu_attach (UNIT *uptr, CONST char *cptr)
 {
 int32 drv = uptr - tu_dev.units, flg;
 t_stat r;
@@ -979,7 +985,7 @@ return sim_tape_detach (uptr);
 
 /* Set/show formatter type */
 
-t_stat tu_set_fmtr (UNIT *uptr, int32 val, char *cptr, void *desc)
+t_stat tu_set_fmtr (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 DEVICE *dptr = find_dev_from_unit (uptr);
 
@@ -993,7 +999,7 @@ else dptr->flags = dptr->flags & ~DEV_TM03;
 return SCPE_OK;
 }
 
-t_stat tu_show_fmtr (FILE *st, UNIT *uptr, int32 val, void *desc)
+t_stat tu_show_fmtr (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
 DEVICE *dptr = find_dev_from_unit (uptr);
 
@@ -1046,12 +1052,11 @@ static const uint16 boot_rom[] = {
 t_stat tu_boot (int32 unitno, DEVICE *dptr)
 {
 size_t i;
-extern uint16 *M;
 
 for (i = 0; i < BOOT_LEN; i++)
-    M[(BOOT_START >> 1) + i] = boot_rom[i];
-M[BOOT_UNIT >> 1] = unitno & (TU_NUMDR - 1);
-M[BOOT_CSR >> 1] = mba_get_csr (tu_dib.ba) & DMASK;
+    WrMemW (BOOT_START + (2 * i), boot_rom[i]);
+WrMemW (BOOT_UNIT, unitno & (TU_NUMDR - 1));
+WrMemW (BOOT_CSR, mba_get_csr (tu_dib.ba) & DMASK);
 cpu_set_boot (BOOT_ENTRY);
 return SCPE_OK;
 }

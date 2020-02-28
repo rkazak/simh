@@ -35,9 +35,8 @@ int32 int_req[IPL_HLVL] = { 0 };                        /* intr, IPL 14-17 */
 int32 int_vec_set[IPL_HLVL][32] = { 0 };                /* bits to set in vector */
 int32 autcon_enb = 1;                                   /* autoconfig enable */
 
-extern int32 PSL, SISR, trpirq, mem_err, hlt_pin;
-extern int32 p1;
-extern jmp_buf save_env;
+extern int32 vc_mem_rd (int32 pa);
+extern void vc_mem_wr (int32 pa, int32 val, int32 lnt);
 
 int32 eval_int (void);
 t_stat qba_reset (DEVICE *dptr);
@@ -84,6 +83,7 @@ DEVICE qba_dev = {
 
 t_stat (*iodispR[IOPAGESIZE >> 1])(int32 *dat, int32 ad, int32 md);
 t_stat (*iodispW[IOPAGESIZE >> 1])(int32 dat, int32 ad, int32 md);
+DIB *iodibp[IOPAGESIZE >> 1];
 
 /* Interrupt request to interrupt action map */
 
@@ -105,6 +105,9 @@ int32 ReadQb (uint32 pa)
 {
 int32 idx, val;
 
+if (ADDR_IS_QVM (pa))
+    return vc_mem_rd (pa);
+
 idx = (pa & IOPAGEMASK) >> 1;
 if (iodispR[idx]) {
     iodispR[idx] (&val, pa, READ);
@@ -117,6 +120,11 @@ return 0;
 void WriteQb (uint32 pa, int32 val, int32 mode)
 {
 int32 idx;
+
+if (ADDR_IS_QVM (pa)) {
+    vc_mem_wr (pa, val, mode);
+    return;
+    }
 
 idx = (pa & IOPAGEMASK) >> 1;
 if (iodispW[idx]) {
@@ -143,7 +151,8 @@ int32 iod;
 iod = ReadQb (pa);                                      /* wd from Qbus */
 if (lnt < L_LONG)                                       /* bw? position */
     iod = iod << ((pa & 2)? 16: 0);
-else iod = (ReadQb (pa + 2) << 16) | iod;               /* lw, get 2nd wd */
+else
+    iod = (ReadQb (pa + 2) << 16) | iod;               /* lw, get 2nd wd */
 SET_IRQL;
 return iod;
 }
@@ -185,7 +194,8 @@ int32 iod;
 iod = ReadQb (pa);                                      /* wd from Qbus */
 if ((lnt + (pa & 1)) <= 2)                              /* byte or (word & even) */
     iod = iod << ((pa & 2)? 16: 0);                     /* one op */
-else iod = (ReadQb (pa + 2) << 16) | iod;               /* two ops, get 2nd wd */
+else
+    iod = (ReadQb (pa + 2) << 16) | iod;               /* two ops, get 2nd wd */
 SET_IRQL;
 return iod;
 }
@@ -410,7 +420,7 @@ else {
 return 0;
 }
 
-int32 Map_WriteB (uint32 ba, int32 bc, uint8 *buf)
+int32 Map_WriteB (uint32 ba, int32 bc, const uint8 *buf)
 {
 int32 i;
 uint32 ma = ba & 0x3FFFFF;
@@ -435,7 +445,7 @@ else {
 return 0;
 }
 
-int32 Map_WriteW (uint32 ba, int32 bc, uint16 *buf)
+int32 Map_WriteW (uint32 ba, int32 bc, const uint16 *buf)
 {
 int32 i;
 uint32 ma = ba & 0x3FFFFF;

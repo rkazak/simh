@@ -29,6 +29,10 @@
    06-Nov-2013  MB      Increased the speed of v-sync interrupts, which
                         was too slow for some O/S drivers.
    11-Jun-2013  MB      First version
+
+   Related documents:
+
+        AZ-GLFAB-MN - VAXstation II Technical Manual, BA23 Enclosure (Appendix C)
 */
 
 #if !defined(VAX_620)
@@ -36,6 +40,8 @@
 #include "vax_defs.h"
 #include "sim_video.h"
 #include "vax_2681.h"
+#include "vax_lk.h"
+#include "vax_vs.h"
 
 /* CSR - control/status register */
 
@@ -193,13 +199,7 @@ BITFIELD vc_ic_mode_bits[] = {
 
 #define IOLN_QVSS       0100
 
-extern int32 int_req[IPL_HLVL];
 extern int32 tmxr_poll;                                 /* calibrated delay */
-
-extern t_stat lk_wr (uint8 c);
-extern t_stat lk_rd (uint8 *c);
-extern t_stat vs_wr (uint8 c);
-extern t_stat vs_rd (uint8 *c);
 
 struct vc_int_t {
     uint32 ptr;
@@ -230,15 +230,17 @@ uint32 *vc_map;                                         /* Scanline map */
 uint32 *vc_buf = NULL;                                  /* Video memory */
 uint32 *vc_lines = NULL;                                /* Video Display Lines */
 uint8 vc_cur[256];                                      /* Cursor image */
+uint32 vc_palette[2];                                   /* Monochrome palette */
+t_bool vc_active = FALSE;
 
 t_stat vc_rd (int32 *data, int32 PA, int32 access);
 t_stat vc_wr (int32 data, int32 PA, int32 access);
 t_stat vc_svc (UNIT *uptr);
 t_stat vc_reset (DEVICE *dptr);
 t_stat vc_detach (UNIT *dptr);
-t_stat vc_set_enable (UNIT *uptr, int32 val, char *cptr, void *desc);
-t_stat vc_set_capture (UNIT *uptr, int32 val, char *cptr, void *desc);
-t_stat vc_show_capture (FILE* st, UNIT* uptr, int32 val, void* desc);
+t_stat vc_set_enable (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+t_stat vc_set_capture (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+t_stat vc_show_capture (FILE* st, UNIT* uptr, int32 val, CONST void* desc);
 void vc_setint (int32 src);
 int32 vc_inta (void);
 void vc_clrint (int32 src);
@@ -628,9 +630,9 @@ switch (rg) {
                 break;
 
             case 10:                                    /* Control mode bits */
-                vc_intc.mode &= ~0x60 | ((data << 3) & 0x60); /* mode<06:05> = data<03:02> */
+                vc_intc.mode &= ~ICM_M_RP | ((data << 3) & ICM_M_RP); /* mode<06:05> = data<03:02> */
                 if (((data & 0x3) == 0x1) || ((data & 0x3) == 2))
-                    vc_intc.mode &= ~0x80 | ((data << 7) & 0x80);
+                    vc_intc.mode &= ~ICM_MM | ((data << 7) & ICM_MM);
                 break;
 
             case 11:                                    /* Preselect IMR */
@@ -666,38 +668,26 @@ switch (rg) {
 return SCPE_OK;
 }
 
-extern jmp_buf save_env;
-extern int32 p1;
-
 int32 vc_mem_rd (int32 pa)
 {
 uint32 rg = (pa >> 2) & 0xFFFF;
 
-if (!vc_buf)                                            /* QVSS disabled? */
-    MACH_CHECK (MCHK_READ);                             /* Invalid memory reference */
-
-return vc_buf[rg];
+return (pa & 0x2) ? (vc_buf[rg] >> 16) : vc_buf[rg] & WMASK;
 }
 
-void vc_mem_wr (int32 pa, int32 val, int32 lnt)
+void vc_mem_wr (int32 pa, int32 val, int32 mode)
 {
 uint32 rg = (pa >> 2) & 0xFFFF;
-uint32 nval;
+uint32 nval, t;
+int32 lnt = (mode == WRITE) ? 2 : 1;
 int32 i;
-int32 sc;
+int32 sc = (pa & 3) << 3;
 uint32 scrln, bufln;
 uint32 idx;
+uint32 mask = (mode == WRITE)? WMASK : BMASK;
 
-if (!vc_buf)                                            /* QVSS disabled? */
-    MACH_CHECK (MCHK_WRITE);                            /* Invalid memory reference */
-
-if (lnt < L_LONG) {
-    uint32 mask = (lnt == L_WORD)? 0xFFFF: 0xFF;
-    uint32 t = vc_buf[rg];
-    sc = (pa & 3) << 3;
-    nval = ((val & mask) << sc) | (t & ~(mask << sc));
-    }
-else nval = (uint32)val;
+t = vc_buf[rg];
+nval = ((val & mask) << sc) | (t & ~(mask << sc));
 
 if (rg >= 0xFFF8) {                                     /* cursor image */
     idx = (pa << 3) & 0xFF;                             /* get byte index */
@@ -794,7 +784,7 @@ if ((vc_dev.dctrl & DBG_CURSOR) && (vc_dev.dctrl & DBG_TCURSOR)) {
             }
         }
     }
-vid_set_cursor (visible, 16, 16, data, mask);
+vid_set_cursor (visible, 16, 16, data, mask, 0, 0);
 }
 
 void vc_checkint (void)
@@ -803,7 +793,7 @@ uint32 i;
 uint32 msk = (vc_intc.irr & ~vc_intc.imr);              /* unmasked interrutps */
 vc_icsr &= ~(ICSR_GRI|ICSR_M_IRRVEC);                   /* clear GRI & vector */
 
-if ((vc_intc.mode & 0x80) && ~(vc_intc.mode & 0x4)) {   /* group int MM & not polled */
+if ((vc_intc.mode & (ICM_MM | ICM_IM)) == ICM_MM) {     /* group int MM & not polled */
     for (i = 0; i < 8; i++) {
         if (msk & (1u << i)) {
             vc_icsr |= (ICSR_GRI | i);
@@ -879,6 +869,8 @@ return 0;                                               /* no intr req */
 
 t_stat vc_svc (UNIT *uptr)
 {
+SIM_MOUSE_EVENT mev;
+SIM_KEY_EVENT kev;
 t_bool updated = FALSE;                                 /* flag for refresh */
 uint32 lines;
 uint32 ln, col, off;
@@ -918,38 +910,42 @@ vc_cur_v = CUR_V;
 vc_cur_f = CUR_F;
 vc_cur_new_data = FALSE;
 
-xpos = vc_mpos & 0xFF;                                  /* get current mouse position */
-ypos = (vc_mpos >> 8) & 0xFF;
-dx = vid_mouse_xrel;                                    /* get relative movement */
-dy = -vid_mouse_yrel;
-if (dx > VC_MOVE_MAX)                                   /* limit movement */
-    dx = VC_MOVE_MAX;
-else if (dx < -VC_MOVE_MAX)
-    dx = -VC_MOVE_MAX;
-if (dy > VC_MOVE_MAX)
-    dy = VC_MOVE_MAX;
-else if (dy < -VC_MOVE_MAX)
-    dy = -VC_MOVE_MAX;
-xpos += dx;                                             /* add to counters */
-ypos += dy;
-vc_mpos = ((ypos & 0xFF) << 8) | (xpos & 0xFF);         /* update register */
-vid_mouse_xrel -= dx;                                   /* reset counters for next poll */
-vid_mouse_yrel += dy;
+if (vid_poll_kb (&kev) == SCPE_OK)                      /* poll keyboard */
+    lk_event (&kev);                                    /* push event */
+if (vid_poll_mouse (&mev) == SCPE_OK) {                 /* poll mouse */
+    xpos = vc_mpos & 0xFF;                              /* get current mouse position */
+    ypos = (vc_mpos >> 8) & 0xFF;
+    dx = mev.x_rel;                                     /* get relative movement */
+    dy = -mev.y_rel;
+    if (dx > VC_MOVE_MAX)                               /* limit movement */
+        dx = VC_MOVE_MAX;
+    else if (dx < -VC_MOVE_MAX)
+        dx = -VC_MOVE_MAX;
+    if (dy > VC_MOVE_MAX)
+        dy = VC_MOVE_MAX;
+    else if (dy < -VC_MOVE_MAX)
+        dy = -VC_MOVE_MAX;
+    xpos += dx;                                         /* add to counters */
+    ypos += dy;
+    vc_mpos = ((ypos & 0xFF) << 8) | (xpos & 0xFF);     /* update register */
 
-vc_csr |= (CSR_MSA | CSR_MSB | CSR_MSC);                /* reset button states */
-if (vid_mouse_b3)                                       /* set new button states */
-    vc_csr &= ~CSR_MSA;
-if (vid_mouse_b2)
-    vc_csr &= ~CSR_MSB;
-if (vid_mouse_b1)
-    vc_csr &= ~CSR_MSC;
+    vc_csr |= (CSR_MSA | CSR_MSB | CSR_MSC);            /* reset button states */
+    if (mev.b3_state)                                   /* set new button states */
+        vc_csr &= ~CSR_MSA;
+    if (mev.b2_state)
+        vc_csr &= ~CSR_MSB;
+    if (mev.b1_state)
+        vc_csr &= ~CSR_MSC;
+    
+    vs_event (&mev);                                    /* push event */
+    }
 
 lines = 0;
 for (ln = 0; ln < VC_YSIZE; ln++) {
     if ((vc_map[ln] & VCMAP_VLD) == 0) {                /* line invalid? */
         off = vc_map[ln] * 32;                          /* get video buf offset */
         for (col = 0; col < VC_XSIZE; col++)  
-            vc_lines[ln*VC_XSIZE + col] = vid_mono_palette[(vc_buf[off + (col >> 5)] >> (col & 0x1F)) & 1];
+            vc_lines[ln*VC_XSIZE + col] = vc_palette[(vc_buf[off + (col >> 5)] >> (col & 0x1F)) & 1];
                                                         /* 1bpp to 32bpp */
         if (CUR_V &&                                    /* cursor visible && need to draw cursor? */
             (vc_input_captured || (vc_dev.dctrl & DBG_CURSOR))) {
@@ -959,9 +955,9 @@ for (ln = 0; ln < VC_YSIZE; ln++) {
                     if ((CUR_X + col) >= VC_XSIZE)      /* Part of cursor off screen? */
                         continue;                       /* Skip */
                     if (CUR_F)                          /* mask function */
-                        vc_lines[ln*VC_XSIZE + CUR_X + col] = vid_mono_palette[(vc_lines[ln*VC_XSIZE + CUR_X + col] == vid_mono_palette[1]) | (cur[col] & 1)];
+                        vc_lines[ln*VC_XSIZE + CUR_X + col] = vc_palette[(vc_lines[ln*VC_XSIZE + CUR_X + col] == vc_palette[1]) | (cur[col] & 1)];
                     else
-                        vc_lines[ln*VC_XSIZE + CUR_X + col] = vid_mono_palette[(vc_lines[ln*VC_XSIZE + CUR_X + col] == vid_mono_palette[1]) & (~cur[col] & 1)];
+                        vc_lines[ln*VC_XSIZE + CUR_X + col] = vc_palette[(vc_lines[ln*VC_XSIZE + CUR_X + col] == vc_palette[1]) & (~cur[col] & 1)];
                     }
                 }
             }
@@ -1000,7 +996,7 @@ vc_intc.irr = 0;
 vc_intc.imr = 0xFF;
 vc_intc.isr = 0;
 vc_intc.acr = 0;
-vc_intc.mode = 0x80;
+vc_intc.mode = ICM_MM;
 vc_icsr = 0;
 
 vc_csr = (((QVMBASE >> QVMAWIDTH) & ((1<<CSR_S_MA)-1)) << CSR_V_MA) | CSR_MOD;
@@ -1013,17 +1009,22 @@ vc_crtc[CRTC_CSCS] = 0x20;                              /* hide cursor */
 vc_crtc_p = (CRTCP_LPF | CRTCP_VB);
 
 if (dptr->flags & DEV_DIS) {
-    free (vc_buf);
-    vc_buf = NULL;
-    free (vc_lines);
-    vc_lines = NULL;
-    free (vc_map);
-    vc_map = NULL;
-    return vid_close ();
+    if (vc_active) {
+        free (vc_buf);
+        vc_buf = NULL;
+        free (vc_lines);
+        vc_lines = NULL;
+        free (vc_map);
+        vc_map = NULL;
+        vc_active = FALSE;
+        return vid_close ();
+        }
+    else
+        return SCPE_OK;
     }
 
 if (!vid_active)  {
-    r = vid_open (dptr, VC_XSIZE, VC_YSIZE, vc_input_captured ? SIM_VID_INPUTCAPTURED : 0);/* display size & capture mode */
+    r = vid_open (dptr, NULL, VC_XSIZE, VC_YSIZE, vc_input_captured ? SIM_VID_INPUTCAPTURED : 0);/* display size & capture mode */
     if (r != SCPE_OK)
         return r;
     vc_buf = (uint32 *) calloc (VC_MEMSIZE, sizeof (uint32));
@@ -1045,6 +1046,9 @@ if (!vid_active)  {
         vid_close ();
         return SCPE_MEM;
         }
+    vc_palette[0] = vid_map_rgb (0x00, 0x00, 0x00);     /* black */
+    vc_palette[1] = vid_map_rgb (0xFF, 0xFF, 0xFF);     /* white */
+    vc_active = TRUE;
     sim_printf ("QVSS Display Created.  ");
     vc_show_capture (stdout, NULL, 0, NULL);
     if (sim_log)
@@ -1064,12 +1068,12 @@ if ((vc_dev.flags & DEV_DIS) == 0) {
 return SCPE_OK;
 }
 
-t_stat vc_set_enable (UNIT *uptr, int32 val, char *cptr, void *desc)
+t_stat vc_set_enable (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 return cpu_set_model (NULL, 0, (val ? "VAXSTATION" : "MICROVAX"), NULL);
 }
 
-t_stat vc_set_capture (UNIT *uptr, int32 val, char *cptr, void *desc)
+t_stat vc_set_capture (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 if (vid_active)
     return sim_messagef (SCPE_ALATT, "Capture Mode Can't be changed with device enabled\n");
@@ -1077,7 +1081,7 @@ vc_input_captured = val;
 return SCPE_OK;
 }
 
-t_stat vc_show_capture (FILE* st, UNIT* uptr, int32 val, void* desc)
+t_stat vc_show_capture (FILE* st, UNIT* uptr, int32 val, CONST void* desc)
 {
 if (vc_input_captured) {
     fprintf (st, "Captured Input Mode, ");

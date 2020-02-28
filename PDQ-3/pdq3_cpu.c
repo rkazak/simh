@@ -52,8 +52,8 @@ t_stat cpu_ex (t_value *vptr, t_addr addr, UNIT *uptr, int32 sw);
 t_stat cpu_dep (t_value val, t_addr addr, UNIT *uptr, int32 sw);
 t_stat cpu_boot(int32 unitnum, DEVICE *dptr);
 t_stat cpu_reset (DEVICE *dptr);
-t_stat cpu_set_size (UNIT *uptr, int32 val, char *cptr, void *desc);
-t_stat cpu_show_size (FILE *st, UNIT *uptr, int32 val, void *desc);
+t_stat cpu_set_size (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+t_stat cpu_show_size (FILE *st, UNIT *uptr, int32 val, const void *desc);
 
 /* some forwards */
 static t_stat Raise(uint16 err);
@@ -68,8 +68,8 @@ static t_stat DoSIGNAL(uint16 sem);
 static uint16 Get(t_addr addr);
 static void Put(t_addr addr, uint16 val);
 static uint16 GetSIB(uint8 segno);
-static t_stat cpu_set_flag(UNIT *uptr, int32 value, char *cptr, void *desc);
-static t_stat cpu_set_noflag(UNIT *uptr, int32 value, char *cptr, void *desc);
+static t_stat cpu_set_flag(UNIT *uptr, int32 value, CONST char *cptr, void *desc);
+static t_stat cpu_set_noflag(UNIT *uptr, int32 value, CONST char *cptr, void *desc);
 
 static t_stat ssr_read(t_addr ioaddr, uint16 *data);
 static t_stat ssr_write(t_addr ioaddr, uint16 data);
@@ -343,7 +343,9 @@ void cpu_finishAutoload() {
 
 /* CPU reset */
 t_stat cpu_reset (DEVICE *dptr) {
-//  sim_printf("CPU RESET\n");
+  extern void pdq3_vm_init (void);
+  pdq3_vm_init();
+  //  sim_printf("CPU RESET\n");
   sim_brk_types = SWMASK('E')|SWMASK('R')|SWMASK('W');
   sim_brk_dflt = SWMASK('E');
   
@@ -798,6 +800,7 @@ static t_stat taskswitch6() {
       sim_debug(DBG_CPU_CONC3, &cpu_dev, DBG_PCFORMAT0 "Taskswitch6: reg_intpending=%08x\n",DBG_PC, reg_intpending);
       reg_ctp = NIL; /* set no active task */
       level = getIntLevel(); /* obtain highest pending interupt */
+      ASSURE(level >= 0); /* won't happen, as reg_intpending is known to be true */
       vector = int_vectors[level];
       sem = Get(vector);
       sim_debug(DBG_CPU_CONC3, &cpu_dev, DBG_PCFORMAT0 "Taskswitch6: SIGNAL sem=$%04x\n",DBG_PC, sem);
@@ -1600,12 +1603,12 @@ t_stat sim_instr(void)
   return rc;
 }
 
-static t_stat cpu_set_flag(UNIT *uptr, int32 value, char *cptr, void *desc) {
+static t_stat cpu_set_flag(UNIT *uptr, int32 value, CONST char *cptr, void *desc) {
   uptr->flags |= value;
   return SCPE_OK;
 }
 
-static t_stat cpu_set_noflag(UNIT *uptr, int32 value, char *cptr, void *desc) {
+static t_stat cpu_set_noflag(UNIT *uptr, int32 value, CONST char *cptr, void *desc) {
   uptr->flags &= ~value;
   return SCPE_OK;
 }

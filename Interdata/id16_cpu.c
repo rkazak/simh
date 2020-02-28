@@ -1,6 +1,6 @@
 /* id16_cpu.c: Interdata 16b CPU simulator
 
-   Copyright (c) 2000-2008, Robert M. Supnik
+   Copyright (c) 2000-2017, Robert M. Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,7 @@
 
    cpu                  Interdata 16b CPU
 
+   09-Mar-17    RMS     OC to display testing wrong argument (COVERITY)
    28-Apr-07    RMS     Removed clock initialization
    27-Oct-06    RMS     Added idle support
                         Removed separate PASLA clock
@@ -237,11 +238,11 @@ uint32 display (uint32 dev, uint32 op, uint32 dat);
 t_stat cpu_ex (t_value *vptr, t_addr addr, UNIT *uptr, int32 sw);
 t_stat cpu_dep (t_value val, t_addr addr, UNIT *uptr, int32 sw);
 t_stat cpu_reset (DEVICE *dptr);
-t_stat cpu_set_size (UNIT *uptr, int32 val, char *cptr, void *desc);
-t_stat cpu_set_model (UNIT *uptr, int32 val, char *cptr, void *desc);
-t_stat cpu_set_consint (UNIT *uptr, int32 val, char *cptr, void *desc);
-t_stat cpu_set_hist (UNIT *uptr, int32 val, char *cptr, void *desc);
-t_stat cpu_show_hist (FILE *st, UNIT *uptr, int32 val, void *desc);
+t_stat cpu_set_size (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+t_stat cpu_set_model (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+t_stat cpu_set_consint (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+t_stat cpu_set_hist (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+t_stat cpu_show_hist (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 
 extern t_bool devtab_init (void);
 extern void int_eval (void);
@@ -593,7 +594,7 @@ reason = 0;
 
 while (reason == 0) {                                   /* loop until halted */
     uint32 dev, drom, inc, lim, opnd;
-    uint32 op, r1, r1p1, r2, ea, oPC;
+    uint32 op, r1, r1p1, r2, ea = 0, oPC;
     uint32 rslt, t, map;
     uint32 ir1, ir2, ityp;
     int32 sr, st;
@@ -1725,12 +1726,12 @@ switch (op) {
         return BY;                                      /* byte only */
 
     case IO_OC:                                         /* command */
-        op = op & 0xC0;
-        if (op == 0x40) {                               /* x40 = inc */
+        dat = dat & 0xC0;
+        if (dat == 0x40) {                              /* x40 = inc */
             drmod = 1;
             drpos = srpos = 0;                          /* init cntrs */
             }
-        else if (op == 0x80)                            /* x80 = norm */
+        else if (dat == 0x80)                           /* x80 = norm */
             drmod = 0;
         break;
 
@@ -1920,7 +1921,7 @@ return SCPE_OK;
 
 /* Change memory size */
 
-t_stat cpu_set_size (UNIT *uptr, int32 val, char *cptr, void *desc)
+t_stat cpu_set_size (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 int32 mc = 0;
 uint32 i;
@@ -1940,7 +1941,7 @@ return SCPE_OK;
 
 /* Change CPU model */
 
-t_stat cpu_set_model (UNIT *uptr, int32 val, char *cptr, void *desc)
+t_stat cpu_set_model (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 uint32 i;
 
@@ -1955,7 +1956,7 @@ return SCPE_OK;
 
 /* Set console interrupt */
 
-t_stat cpu_set_consint (UNIT *uptr, int32 val, char *cptr, void *desc)
+t_stat cpu_set_consint (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 if ((uptr->flags & (UNIT_716 | UNIT_816 | UNIT_816E)) == 0)
     return SCPE_NOFNC;
@@ -1966,7 +1967,7 @@ return SCPE_OK;
 
 /* Set history */
 
-t_stat cpu_set_hist (UNIT *uptr, int32 val, char *cptr, void *desc)
+t_stat cpu_set_hist (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 uint32 i, lnt;
 t_stat r;
@@ -1997,10 +1998,10 @@ return SCPE_OK;
 
 /* Show history */
 
-t_stat cpu_show_hist (FILE *st, UNIT *uptr, int32 val, void *desc)
+t_stat cpu_show_hist (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
 int32 op, k, di, lnt;
-char *cptr = (char *) desc;
+CONST char *cptr = (CONST char *) desc;
 t_value sim_eval[2];
 t_stat r;
 InstHistory *h;

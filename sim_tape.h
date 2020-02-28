@@ -23,6 +23,11 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
+   18-Jul-16    JDB     Added sim_tape_errecf, sim_tape_errecr functions
+   15-Dec-14    JDB     Added tape density validity flags
+   04-Nov-14    JDB     Added tape density flags
+   11-Oct-14    JDB     Added reverse read half gap, set/show density
+   22-Sep-14    JDB     Added tape runaway support
    23-Jan-12    MP      Added support for Logical EOT detection while positioning
    05-Feb-11    MP      Add Asynch I/O support
    30-Aug-06    JDB     Added erase gap support
@@ -33,6 +38,10 @@
 
 #ifndef SIM_TAPE_H_
 #define SIM_TAPE_H_    0
+
+#ifdef  __cplusplus
+extern "C" {
+#endif
 
 /* SIMH/E11 tape format */
 
@@ -48,11 +57,15 @@ typedef uint32          t_mtrlnt;                       /* magtape rec lnt */
 #define MTR_MAXLEN      0x00FFFFFF                      /* max len is 24b */
 #define MTR_ERF         0x80000000                      /* error flag */
 #define MTR_F(x)        ((x) & MTR_ERF)                 /* record error flg */
-#define MTR_L(x)        ((x) & ~MTR_ERF)                /* record length */
+#define MTR_L(x)        ((t_mtrlnt)((x) & ~MTR_ERF))    /* record length */
 
 /* TPC tape format */
 
 typedef uint16          t_tpclnt;                       /* magtape rec lnt */
+
+#define TPC_TMK         0x0000                          /* tape mark */
+#define TPC_EOM         0xFFFF                          /* end of medium */
+
 
 /* P7B tape format */
 
@@ -62,37 +75,49 @@ typedef uint16          t_tpclnt;                       /* magtape rec lnt */
 #define P7B_DPAR        (P7B_PAR|P7B_DATA)              /* data and parity */
 #define P7B_EOF         0x0F                            /* eof character */
 
-#define TPC_TMK         0x0000                          /* tape mark */
+/* AWS tape format */
+typedef uint16          t_awslnt;                       /* magtape rec lnt */
+typedef struct {
+    t_awslnt    nxtlen;
+    t_awslnt    prelen;
+    t_awslnt    rectyp;
+#define AWS_TMK         0x0040
+#define AWS_REC         0x00A0
+    } t_awshdr;
+
+/* TAR tape format */
+#define TAR_DFLT_RECSIZE     10240                      /* Default Fixed record size */
 
 /* Unit flags */
 
-#define MTUF_V_PNU      (UNIT_V_UF + 0)                 /* position not upd */
-#define MTUF_V_WLK      (UNIT_V_UF + 1)                 /* write locked */
+#define MTUF_V_WLK      (UNIT_V_UF + 0)                 /* write locked */
 #define MTUF_V_FMT      (UNIT_V_UF + 2)                 /* tape file format */
-#define MTUF_W_FMT      3                               /* 3b of formats */
-#define MTUF_N_FMT      (1u << MTUF_W_FMT)              /* number of formats */
-#define MTUF_M_FMT      ((1u << MTUF_W_FMT) - 1)
-#define MTUF_F_STD       0                              /* SIMH format */
-#define MTUF_F_E11       1                              /* E11 format */
-#define MTUF_F_TPC       2                              /* TPC format */
-#define MTUF_F_P7B       3                              /* P7B format */
-#define MUTF_F_TDF       4                              /* TDF format */
-#define MTUF_V_UF       (MTUF_V_FMT + MTUF_W_FMT)
-#define MTUF_PNU        (1u << MTUF_V_PNU)
+#define MTUF_F_STD      0                               /* SIMH format */
+#define MTUF_F_E11      1                               /* E11 format */
+#define MTUF_F_TPC      2                               /* TPC format */
+#define MTUF_F_P7B      3                               /* P7B format */
+#define MTUF_F_AWS      4                               /* AWS format */
+#define MTUF_F_TAR      5                               /* TAR format */
+#define MTUF_F_ANSI     6                               /* ANSI format */
+#define MTUF_F_FIXED    7                               /* FIXED format */
+
+#define MTAT_F_VMS      0                               /* VMS ANSI type */
+#define MTAT_F_RSX11    1                               /* RSX-11 ANSI type */
+#define MTAT_F_RSTS     2                               /* RSTS ANSI type */
+#define MTAT_F_RT11     3                               /* RT-11 ANSI type */
+
+#define MTUF_V_UF       (MTUF_V_WLK + 1)
 #define MTUF_WLK        (1u << MTUF_V_WLK)
-#define MTUF_FMT        (MTUF_M_FMT << MTUF_V_FMT)
 #define MTUF_WRP        (MTUF_WLK | UNIT_RO)
 
-#define MT_F_STD        (MTUF_F_STD << MTUF_V_FMT)
-#define MT_F_E11        (MTUF_F_E11 << MTUF_V_FMT)
-#define MT_F_TPC        (MTUF_F_TPC << MTUF_V_FMT)
-#define MT_F_P7B        (MTUF_F_P7B << MTUF_V_FMT)
-#define MT_F_TDF        (MTUF_F_TDF << MTUF_V_FMT)
-
-#define MT_SET_PNU(u)   (u)->flags = (u)->flags | MTUF_PNU
-#define MT_CLR_PNU(u)   (u)->flags = (u)->flags & ~MTUF_PNU
-#define MT_TST_PNU(u)   ((u)->flags & MTUF_PNU)
-#define MT_GET_FMT(u)   (((u)->flags >> MTUF_V_FMT) & MTUF_M_FMT)
+#define MT_SET_PNU(u)   (u)->dynflags |= UNIT_TAPE_PNU
+#define MT_CLR_PNU(u)   (u)->dynflags &= ~UNIT_TAPE_PNU
+#define MT_TST_PNU(u)   ((u)->dynflags & UNIT_TAPE_PNU)
+#define MT_SET_INMRK(u) (u)->dynflags = (u)->dynflags | UNIT_TAPE_MRK
+#define MT_CLR_INMRK(u) (u)->dynflags = (u)->dynflags & ~UNIT_TAPE_MRK
+#define MT_TST_INMRK(u) ((u)->dynflags & UNIT_TAPE_MRK)
+#define MT_GET_FMT(u)   (((u)->dynflags >> UNIT_V_TAPE_FMT) & ((1 << UNIT_S_TAPE_FMT) - 1))
+#define MT_GET_ANSI_TYP(u)   (((u)->dynflags >> UNIT_V_TAPE_ANSI) & ((1 << UNIT_S_TAPE_ANSI) - 1))
 
 /* sim_tape_position Position Flags */
 #define MTPOS_V_REW     3
@@ -137,19 +162,21 @@ typedef uint16          t_tpclnt;                       /* magtape rec lnt */
 #define MTSE_WRP        9                               /* write protected */
 #define MTSE_LEOT       10                              /* Logical End Of Tape */
 #define MTSE_RUNAWAY    11                              /* tape runaway */
+#define MTSE_MAX_ERR    11
 
 typedef void (*TAPE_PCALLBACK)(UNIT *unit, t_stat status);
 
 /* Tape Internal Debug flags */
 
-#define MTSE_DBG_DAT   0x0400000                        /* Debug Data */
-#define MTSE_DBG_POS   0x0800000                        /* Debug Positioning activities */
-#define MTSE_DBG_STR   0x1000000                        /* Debug Tape Structure */
+#define MTSE_DBG_API   0x10000000                       /* API Trace */
+#define MTSE_DBG_DAT   0x20000000                       /* Debug Data */
+#define MTSE_DBG_POS   0x40000000                       /* Debug Positioning activities */
+#define MTSE_DBG_STR   0x80000000                       /* Debug Tape Structure */
 
 /* Prototypes */
 
-t_stat sim_tape_attach_ex (UNIT *uptr, char *cptr, uint32 dbit, int completion_delay);
-t_stat sim_tape_attach (UNIT *uptr, char *cptr);
+t_stat sim_tape_attach_ex (UNIT *uptr, const char *cptr, uint32 dbit, int completion_delay);
+t_stat sim_tape_attach (UNIT *uptr, CONST char *cptr);
 t_stat sim_tape_detach (UNIT *uptr);
 t_stat sim_tape_attach_help(FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
 t_stat sim_tape_rdrecf (UNIT *uptr, uint8 *buf, t_mtrlnt *bc, t_mtrlnt max);
@@ -166,6 +193,8 @@ t_stat sim_tape_wreomrw (UNIT *uptr);
 t_stat sim_tape_wreomrw_a (UNIT *uptr, TAPE_PCALLBACK callback);
 t_stat sim_tape_wrgap (UNIT *uptr, uint32 gaplen);
 t_stat sim_tape_wrgap_a (UNIT *uptr, uint32 gaplen, TAPE_PCALLBACK callback);
+t_stat sim_tape_errecf (UNIT *uptr, t_mtrlnt bc);
+t_stat sim_tape_errecr (UNIT *uptr, t_mtrlnt bc);
 t_stat sim_tape_sprecf (UNIT *uptr, t_mtrlnt *bc);
 t_stat sim_tape_sprecf_a (UNIT *uptr, t_mtrlnt *bc, TAPE_PCALLBACK callback);
 t_stat sim_tape_sprecsf (UNIT *uptr, uint32 count, uint32 *skipped);
@@ -190,13 +219,20 @@ t_stat sim_tape_reset (UNIT *uptr);
 t_bool sim_tape_bot (UNIT *uptr);
 t_bool sim_tape_wrp (UNIT *uptr);
 t_bool sim_tape_eot (UNIT *uptr);
-t_stat sim_tape_set_fmt (UNIT *uptr, int32 val, char *cptr, void *desc);
-t_stat sim_tape_show_fmt (FILE *st, UNIT *uptr, int32 val, void *desc);
-t_stat sim_tape_set_capac (UNIT *uptr, int32 val, char *cptr, void *desc);
-t_stat sim_tape_show_capac (FILE *st, UNIT *uptr, int32 val, void *desc);
-t_stat sim_tape_set_dens (UNIT *uptr, int32 val, char *cptr, void *desc);
-t_stat sim_tape_show_dens (FILE *st, UNIT *uptr, int32 val, void *desc);
+t_stat sim_tape_set_fmt (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+t_stat sim_tape_show_fmt (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+t_stat sim_tape_set_capac (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+t_stat sim_tape_show_capac (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+t_stat sim_tape_set_dens (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+t_stat sim_tape_show_dens (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+t_stat sim_tape_density_supported (char *string, size_t string_size, int32 valid_bits);
 t_stat sim_tape_set_asynch (UNIT *uptr, int latency);
 t_stat sim_tape_clr_asynch (UNIT *uptr);
+t_stat sim_tape_test (DEVICE *dptr);
+t_stat sim_tape_add_debug (DEVICE *dptr);
+
+#ifdef  __cplusplus
+}
+#endif
 
 #endif

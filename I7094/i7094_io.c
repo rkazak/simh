@@ -1,6 +1,6 @@
 /* i7094_io.c: IBM 7094 I/O subsystem (channels)
 
-   Copyright (c) 2003-2012, Robert M. Supnik
+   Copyright (c) 2003-2017, Robert M. Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,7 @@
 
    chana..chanh         I/O channels
 
+   13-Mar-17    RMS     Annotated fall through in switch
    19-Mar-12    RMS     Fixed declaration of breakpoint variables (Mark Pizzolato)
 
    Notes on channels and CTSS.
@@ -53,7 +54,7 @@
 #define CHAINC(x)       (((x) & ~AMASK) | (((x) + 1) & AMASK))
 
 typedef struct {
-    char        *name;
+    const char  *name;
     uint32      flags;
     } DEV_CHAR;
 
@@ -91,9 +92,9 @@ extern DEVICE com_dev;
 
 t_stat ch_reset (DEVICE *dptr);
 t_stat ch6_svc (UNIT *uptr);
-t_stat ch_set_enable (UNIT *uptr, int32 val, char *cptr, void *desc);
-t_stat ch_set_disable (UNIT *uptr, int32 val, char *cptr, void *desc);
-t_stat ch_show_type (FILE *st, UNIT *uptr, int32 val, void *desc);
+t_stat ch_set_enable (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+t_stat ch_set_disable (UNIT *uptr, int32 val, CONST char *cptr, void *desc);
+t_stat ch_show_type (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
 DEVICE *ch_find_dev (uint32 ch, uint32 unit);
 t_stat ch6_sel (uint32 ch, uint32 sel, uint32 unit, uint32 sta);
 t_bool ch6_rd_putw (uint32 ch);
@@ -1301,6 +1302,7 @@ switch (op) {                                           /* case on opcode */
     case CH6_IOST:                                      /* IOST */
         if (ch_flags[ch] & CHF_EOR)                     /* EOR set? immed ch req */
             ch_req |= REQ_CH (ch);
+        /* fall through */
     case CH6_IOCT:                                      /* IOCT */
         if (ch_wc[ch] == 0) {                           /* wc 0? */
             if (ch_ld)                                  /* load? end now */
@@ -1312,6 +1314,7 @@ switch (op) {                                           /* case on opcode */
     case CH6_IOSP:                                      /* IOSP */
         if (ch_flags[ch] & CHF_EOR)                     /* EOR set? immed ch req */
             ch_req |= REQ_CH (ch);
+        /* fall through */
     case CH6_IOCP:                                      /* IOCP */
         if (ch_wc[ch] == 0)                             /* wc 0? immed ch req */
             ch_req |= REQ_CH (ch);
@@ -1539,7 +1542,7 @@ switch (ch_op[ch]) {                                    /* check initial cond */
     case CH9_SMS:
         if (ch_flags[ch] & (CHF_PRD|CHF_PWR|CHF_RDS|CHF_WRS))
             ch9_eval_int (ch, CHINT_SEQC);              /* not during data */
-                                                        /* fall through */
+        /* fall through */
     case CH9_TCM:                                       /* jumps */
     case CH9_TCH:
     case CH9_TDC:
@@ -1770,7 +1773,7 @@ return SCPE_OK;
 
 /* Show channel type */
 
-t_stat ch_show_type (FILE *st, UNIT *uptr, int32 val, void *desc)
+t_stat ch_show_type (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
 DEVICE *dptr;
 
@@ -1787,7 +1790,7 @@ return SCPE_OK;
 
 /* Enable channel, assign device */
 
-t_stat ch_set_enable (UNIT *uptr, int32 val, char *cptr, void *desc)
+t_stat ch_set_enable (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 DEVICE *dptr, *dptr1;
 char gbuf[CBUFSIZE];
@@ -1848,7 +1851,7 @@ return;
 
 /* Disable channel, deassign device */
 
-t_stat ch_set_disable (UNIT *uptr, int32 val, char *cptr, void *desc)
+t_stat ch_set_disable (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 DEVICE *dptr, *dptr1;
 UNIT *uptr1;
@@ -1879,7 +1882,7 @@ return reset_all (0);
 
 /* Show channel that device is on (tapes, 7289, 7909 only) */
 
-t_stat ch_show_chan (FILE *st, UNIT *uptr, int32 val, void *desc)
+t_stat ch_show_chan (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
 DEVICE *dptr;
 uint32 i;

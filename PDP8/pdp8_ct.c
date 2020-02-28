@@ -156,13 +156,13 @@ static uint8 ct_fnc_tab[SRA_M_FNC + 1] = {
     OP_WRI|OP_FWD, OP_REV, 0,             OP_FWD
     };
 
-DEVICE ct_dev;
 int32 ct70 (int32 IR, int32 AC);
 t_stat ct_svc (UNIT *uptr);
 t_stat ct_reset (DEVICE *dptr);
-t_stat ct_attach (UNIT *uptr, char *cptr);
+t_stat ct_attach (UNIT *uptr, CONST char *cptr);
 t_stat ct_detach (UNIT *uptr);
 t_stat ct_boot (int32 unitno, DEVICE *dptr);
+const char *ct_description (DEVICE *dptr);
 uint32 ct_updsta (UNIT *uptr);
 int32 ct_go_start (int32 AC);
 int32 ct_go_cont (UNIT *uptr, int32 AC);
@@ -188,23 +188,23 @@ UNIT ct_unit[] = {
     };
 
 REG ct_reg[] = {
-    { ORDATA (CTSRA, ct_sra, 8) },
-    { ORDATA (CTSRB, ct_srb, 8) },
-    { ORDATA (CTDB, ct_db, 8) },
-    { FLDATA (CTDF, ct_df, 0) },
-    { FLDATA (RDY, ct_srb, 0) },
-    { FLDATA (WLE, ct_srb, 8) },
-    { FLDATA (WRITE, ct_write, 0) },
-    { FLDATA (INT, int_req, INT_V_CT) },
-    { DRDATA (BPTR, ct_bptr, 17) },
-    { DRDATA (BLNT, ct_blnt, 17) },
-    { DRDATA (STIME, ct_stime, 24), PV_LEFT + REG_NZ },
-    { DRDATA (CTIME, ct_ctime, 24), PV_LEFT + REG_NZ },
-    { FLDATA (STOP_IOE, ct_stopioe, 0) },
-    { URDATA (UFNC, ct_unit[0].FNC, 8, 4, 0, CT_NUMDR, 0), REG_HRO },
-    { URDATA (UST, ct_unit[0].UST, 8, 2, 0, CT_NUMDR, 0), REG_HRO },
-    { URDATA (POS, ct_unit[0].pos, 10, T_ADDR_W, 0,
-              CT_NUMDR, PV_LEFT | REG_RO) },
+    { ORDATAD (CTSRA, ct_sra, 8, "status register A") },
+    { ORDATAD (CTSRB, ct_srb, 8, "status register B") },
+    { ORDATAD (CTDB, ct_db, 8, "data buffer") },
+    { FLDATAD (CTDF, ct_df, 0, "data flag") },
+    { FLDATAD (RDY, ct_srb, 0, "ready flag") },
+    { FLDATAD (WLE, ct_srb, 8, "write lock error") },
+    { FLDATAD (WRITE, ct_write, 0, "TA60 write operation flag") },
+    { FLDATAD (INT, int_req, INT_V_CT, "interrupt request") },
+    { DRDATAD (BPTR, ct_bptr, 17, "buffer pointer") },
+    { DRDATAD (BLNT, ct_blnt, 17, "buffer length") },
+    { DRDATAD (STIME, ct_stime, 24, "operation start time"), PV_LEFT + REG_NZ },
+    { DRDATAD (CTIME, ct_ctime, 24, "character latency"), PV_LEFT + REG_NZ },
+    { FLDATAD (STOP_IOE, ct_stopioe, 0, "stop on I/O errors flag") },
+    { URDATA (UFNC, ct_unit[0].FNC, 8, 4, 0, CT_NUMDR, REG_HRO) },
+    { URDATA (UST, ct_unit[0].UST, 8, 2, 0, CT_NUMDR, REG_HRO) },
+    { URDATAD (POS, ct_unit[0].pos, 10, T_ADDR_W, 0,
+              CT_NUMDR, PV_LEFT | REG_RO, "position, units 0-1") },
     { FLDATA (DEVNUM, ct_dib.dev, 6), REG_HRO },
     { NULL }
     };
@@ -226,7 +226,9 @@ DEVICE ct_dev = {
     CT_NUMDR, 10, 31, 1, 8, 8,
     NULL, NULL, &ct_reset,
     &ct_boot, &ct_attach, &ct_detach,
-    &ct_dib, DEV_DISABLE | DEV_DIS | DEV_DEBUG | DEV_TAPE
+    &ct_dib, DEV_DISABLE | DEV_DIS | DEV_DEBUG | DEV_TAPE,
+    0, NULL, NULL, NULL, NULL, NULL, NULL,
+    &ct_description
     };
 
 /* IOT routines */
@@ -327,8 +329,9 @@ if ((ct_sra & SRA_ENAB) && (uptr->flags & UNIT_ATT)) {  /* enabled, att? */
                 ">>CT skip gap: op=%o, old_sta = %o, pos=%d\n",
                 fnc, uptr->UST, uptr->pos);
             if (uptr->UST)                              /* skip file gap */
-                sim_tape_rdrecr (uptr, ct_xb, &t, CT_MAXFR);
-            else sim_tape_rdrecf (uptr, ct_xb, &t, CT_MAXFR);
+                (void)sim_tape_rdrecr (uptr, ct_xb, &t, CT_MAXFR);
+            else
+                (void)sim_tape_rdrecf (uptr, ct_xb, &t, CT_MAXFR);
             }
         }
     else uptr->UST = 0;
@@ -650,7 +653,7 @@ return SCPE_OK;
 
 /* Attach routine */
 
-t_stat ct_attach (UNIT *uptr, char *cptr)
+t_stat ct_attach (UNIT *uptr, CONST char *cptr)
 {
 t_stat r;
 
@@ -727,4 +730,9 @@ for (i = 0; i < BOOT_LEN; i++)
     M[BOOT_START + i] = boot_rom[i];
 cpu_set_bootpc (BOOT_START);
 return SCPE_OK;
+}
+
+const char *ct_description (DEVICE *dptr)
+{
+return "TA8E/TU60 cassette tape";
 }

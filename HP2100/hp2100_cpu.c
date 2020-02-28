@@ -1,34 +1,69 @@
-/* hp2100_cpu.c: HP 21xx/1000 CPU simulator
+/* hp2100_cpu.c: HP 21xx/1000 Central Processing Unit simulator
 
-   Copyright (c) 1993-2014, Robert M. Supnik
+   Copyright (c) 1993-2016, Robert M. Supnik
+   Copyright (c) 2017-2019, J. David Bryan
 
-   Permission is hereby granted, free of charge, to any person obtaining a
-   copy of this software and associated documentation files (the "Software"),
-   to deal in the Software without restriction, including without limitation
-   the rights to use, copy, modify, merge, publish, distribute, sublicense,
-   and/or sell copies of the Software, and to permit persons to whom the
-   Software is furnished to do so, subject to the following conditions:
+   Permission is hereby granted, free of charge, to any person obtaining a copy
+   of this software and associated documentation files (the "Software"), to deal
+   in the Software without restriction, including without limitation the rights
+   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+   copies of the Software, and to permit persons to whom the Software is
+   furnished to do so, subject to the following conditions:
 
    The above copyright notice and this permission notice shall be included in
    all copies or substantial portions of the Software.
 
    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
-   ROBERT M SUPNIK BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
-   IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
-   CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
+   AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+   ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+   WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-   Except as contained in this notice, the name of Robert M Supnik shall not be
+   Except as contained in this notice, the names of the authors shall not be
    used in advertising or otherwise to promote the sale, use or other dealings
-   in this Software without prior written authorization from Robert M Supnik.
+   in this Software without prior written authorization from the authors.
 
-   CPU          2114C/2115A/2116C/2100A/1000-M/E/F central processing unit
-                12731A memory expansion module
-   MP           12581A/12892B memory protect
-   DMA1,DMA2    12607B/12578A/12895A direct memory access controller
-   DCPC1,DCPC2  12897B dual channel port controller
+   CPU          2114C/2115A/2116C/2100A/1000-M/E/F Central Processing Unit
+                I/O subsystem
+                Power Fail Recovery System
 
+   12-Feb-19    JDB     Worked around idle problem (SIMH issue 622)
+   06-Feb-19    JDB     Corrected trace report for simulation stop
+   05-Feb-19    JDB     sim_dname now takes a const pointer
+   13-Aug-18    JDB     Renamed "ion_defer" to "cpu_interrupt_enable" and flipped sense
+   24-Jul-18    JDB     Removed unneeded "iotrap" parameter from "cpu_iog" routine
+   20-Jul-18    JDB     Moved memory/MEM/MP and DMA into separate source files
+   29-Jun-18    JDB     Fixed "clear_option" return type definition
+   14-Jun-18    JDB     Renamed PRO device to MPPE
+   05-Jun-18    JDB     Revised I/O model
+   21-May-18    JDB     Changed "access" to "mem_access" to avoid clashing
+   07-May-18    JDB     Modified "io_dispatch" to display outbound signals
+   01-May-18    JDB     Multiple consecutive CLC 0 operations are now omitted
+   02-Apr-18    JDB     SET CPU 21MX now configures an M-Series model
+   22-Feb-18    JDB     Reworked "cpu_ibl" into "cpu_copy_loader"
+   11-Aug-17    JDB     MEM must be disabled when DMS is disabled
+   01-Aug-17    JDB     Changed SET/SHOW CPU [NO]IDLE to use sim_*_idle routines
+   22-Jul-17    JDB     Renamed "intaddr" to CIR; added IR
+   18-Jul-17    JDB     Added CPU stops
+   11-Jul-17    JDB     Moved "hp_enbdis_pair" to hp2100_sys.c
+                        Renamed "ibl_copy" to "cpu_ibl"
+   10-Jul-17    JDB     Renamed the global routine "iogrp" to "cpu_iog"
+   07-Jul-17    JDB     Changed "iotrap" from uint32 to t_bool
+   26-Jun-17    JDB     Moved I/O instruction subopcode constants from hp2100_defs.h
+   16-May-17    JDB     Changed REG_A, REG_B to REG_X
+   19-Apr-17    JDB     SET CPU IDLE now omits idle loop tracing
+   04-Apr-17    JDB     Added "cpu_configuration" for symbolic ex/dep validation
+                        Rejected model change no longer changes options
+   21-Mar-17    JDB     IOP is now illegal on the 1000 F-Series
+   27-Feb-17    JDB     Added BBL load for 21xx machines
+                        ibl_copy no longer returns a status code
+   22-Feb-17    JDB     Added DMA tracing
+   21-Feb-17    JDB     Added bus tracing to the I/O dispatcher
+   19-Jan-17    JDB     Added CPU tracing
+                        Consolidated the memory read and write routines
+   05-Aug-16    JDB     Renamed the P register from "PC" to "PR"
+   13-May-16    JDB     Modified for revised SCP API function parameter types
    31-Dec-14    JDB     Corrected devdisp data parameters
    30-Dec-14    JDB     Added S-register parameters to ibl_copy
    24-Dec-14    JDB     Added casts for explicit downward conversions
@@ -162,988 +197,1623 @@
    15-Oct-00    RMS     Added dynamic device number support
 
    References:
-   - 2100A Computer Reference Manual (02100-90001, Dec-1971)
-   - Model 2100A Computer Installation and Maintenance Manual
-        (02100-90002, Aug-1972)
-   - HP 1000 M/E/F-Series Computers Technical Reference Handbook
-        (5955-0282, Mar-1980)
-   - HP 1000 M/E/F-Series Computers Engineering and Reference Documentation
-        (92851-90001, Mar-1981)
-   - HP 1000 M/E/F-Series Computers I/O Interfacing Guide
-        (02109-90006, Sep-1980)
-   - 12607A Direct Memory Access Operating and Service Manual
-        (12607-90002, Jan-1970)
-   - 12578A/12578A-01 Direct Memory Access Operating and Service Manual
-        (12578-9001, Mar-1972)
-   - 12892B Memory Protect Installation Manual (12892-90007, Jun-1978)
+     - 2100A Computer Reference Manual
+         (02100-90001, December 1971)
+     - Model 2100A Computer Installation and Maintenance Manual
+         (02100-90002, August 1972)
+     - HP 1000 M/E/F-Series Computers Technical Reference Handbook
+         (5955-0282, March 1980)
+     - HP 1000 M/E/F-Series Computers Engineering and Reference Documentation
+         (92851-90001, March 1981)
+     - HP 1000 Computer Real-Time Systems
+         (5091-4479, August 1992)
 
 
-   The register state for the HP 2116 CPU is:
+   Hewlett-Packard sold the HP 21xx/1000 family of real-time computers from 1966
+   through 2000.  There are three major divisions within this family: the 21xx
+   core-memory machines, the 1000 (originally 21MX) M/E/F-Series semiconductor-
+   memory machines, and the 1000 L/A-Series machines.  All machines are 16-bit
+   accumulator-oriented CISC machines running the same base instruction set.  A
+   wide range of operating systems run on these machines, from a simple 4K word
+   paper-tape-based monitor to a megaword multi-user, multiprogramming disc-
+   based system and a multi-user time-shared BASIC system.
 
-   AR<15:0>             A register - addressable as location 0
-   BR<15:0>             B register - addressable as location 1
-   PC<14:0>             P register - program counter
-   SR<15:0>             S register - switch register
-   MR<14:0>             M register - memory address
-   TR<15:0>             T register - memory data
-   E                    extend flag (carry out)
-   O                    overflow flag
+   This implementation is a simulator for the 2114, 2115, 2116, 2100, and 1000
+   M/E/F-Series machines.  A large variety of CPU options, device interface
+   cards, and peripherals are provided.  High-speed I/O transfers are performed
+   by Direct Memory Access and Dual-Channel Port Controller options.  This
+   simulator does not model the 1000 L/A-Series machines.
 
-   The 2100 adds memory protection logic:
+   All of the machines support a 15-bit logical address space, addressing a
+   maximum of 32K words, divided into 1K-word pages.  Memory-referencing
+   instructions in the base set can directly address the 1024 words of the base
+   page (page 0) or the 1024 words of the current page (the page containing the
+   instruction).  The instructions in the extended set directly address the
+   32768 words in the full logical address space.  The A and B accumulators may
+   be addressed as logical memory addresses 0 and 1, respectively.
 
-   mp_fence<14:0>       memory fence register
-   mp_viol<15:0>        memory protection violation register (F register)
+   Peripheral devices are connected to the CPU by interface cards installed in
+   the I/O card cages present in the CPU and optional I/O extender chassis.
+   Each slot in the card cage is assigned an address, called a select code, that
+   may be referenced by I/O instructions in the base set.  Select codes range
+   from 0 to 77 octal, with the first eight select codes reserved for the
+   system, providing connections for 56 possible interfaces.
 
-   The 21MX adds a pair of index registers and memory expansion logic:
+   The 211x machines use a hardwired processor providing 70 basic instructions
+   and up to 32K of core memory.  The base instruction set is divided into the
+   Memory Reference Group, the Shift-Rotate Group, the Alter-Skip Group, and the
+   I/O Group.  SRG instruction words may contain from one to four suboperation
+   codes that are executed from left-to-right, and ASG instruction words may
+   contain from one to eight suboperations.  An optional Extended Arithmetic
+   Unit may be added to the 2115 and 2116 that provides hardware multiply and
+   divide, double-load and -store, and double-word shift and rotate
+   instructions.
 
-   XR<15:0>             X register
-   YR<15:0>             Y register
-   dms_sr<15:0>         dynamic memory system status register
-   dms_vr<15:0>         dynamic memory system violation register
+   The 2100 machine uses a microprogrammed processor that provides the 80
+   instructions of the base set and the EAU as standard equipment.  Optional
+   floating-point microcode adds six two-word (single-precision) instructions.
+   User microprogramming is also supported.  When used as part of an HP 2000
+   Time-Shared BASIC system, the CPU designated as the I/O processor may be
+   equipped with microcode implementing 18 additional OS accelerator
+   instructions.
 
-   The original HP 2116 has four instruction formats: memory reference,
-   shift, alter/skip, and I/O.  The HP 2100 added extended memory reference
-   and extended arithmetic.  The HP21MX added extended byte, bit, and word
-   instructions as well as extended memory.
+   The 1000 M/E-Series machines also use microprogrammed processors and extend
+   the 2100 instruction set with two new index registers, X and Y, and a new
+   Extended Instruction Group consisting of 32 index-register instructions and
+   10 word-and-byte-manipulation instructions.  The six 2100 floating-point
+   instructions are also standard.  The 1000 F-Series adds a hardware
+   floating-point processor with 18 new triple- and quad-word instructions.  A
+   number of optional microcode extensions are available with the M/E/F-Series.
 
-   The memory reference format is:
+   1000 CPUs offer the optional Dynamic Mapping System, which provides memory
+   mapping on a page-by-page basis.  The 5-bit page number of a logical memory
+   address selects one of 32 ten-bit map registers containing physical page
+   numbers.  The ten-bit page number combined with the ten-bit page offset
+   yields a 20-bit physical address capable of accessing a location in a
+   one-megaword memory.  DMS provides separate maps for system and user
+   programs, as well as for the two DCPC channels, and includes microcode that
+   implements the 38 Dynamic Mapping Instructions used to manipulate the mapping
+   system.
 
-    15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
-   +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-   |in|     op    |cp|           offset            | memory reference
-   +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+   Optional memory protection is accomplished by dividing the logical address
+   space into protected and unprotected parts.  When protection is enabled, any
+   attempt to write or jump below the fence separating the two parts is
+   inhibited, and an interrupt to the operating system occurs, which aborts the
+   offending user program.  If the DMS option is enabled as well, protection is
+   enhanced by specifying read and write permissions on a page-by-page basis.
 
-   <14:11>      mnemonic        action
+   A note on terminology: the 1000 series of computers was originally called the
+   21MX at introduction.  The 21MX (occasionally, 21MXM) corresponds to the 1000
+   M-Series, and the 21MXE (occasionally, 21XE) corresponds to the 1000
+   E-Series.  The model numbers were changed before the introduction of the 1000
+   F-Series, although some internal HP documentation refers to this machine as
+   the 21MXF.
 
-   0010         AND             A = A & M[MA]
-   0011         JSB             M[MA] = P, P = MA + 1
-   0100         XOR             A = A ^ M[MA]
-   0101         JMP             P = MA
-   0110         IOR             A = A | M[MA]
-   0111         ISZ             M[MA] = M[MA] + 1, skip if M[MA] == 0
-   1000         ADA             A = A + M[MA]
-   1001         ADB             B = B + M[MA]
-   1010         CPA             skip if A != M[MA]
-   1011         CPB             skip if B != M[MA]
-   1100         LDA             A = M[MA]
-   1101         LDB             B = M[MA]
-   1110         STA             M[MA] = A
-   1111         STB             M[MA] = B
-
-   <15,10>      mode            action
-
-   0,0  page zero direct        MA = IR<9:0>
-   0,1  current page direct     MA = PC<14:0>'IR,9:0>
-   1,0  page zero indirect      MA = M[IR<9:0>]
-   1,1  current page indirect   MA = M[PC<14:10>'IR<9:0>]
-
-   Memory reference instructions can access an address space of 32K words.
-   An instruction can directly reference the first 1024 words of memory
-   (called page zero), as well as 1024 words of the current page; it can
-   indirectly access all 32K.
-
-   The shift format is:
-
-    15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
-   +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-   | 0  0  0  0|ab| 0|s1|   op1  |ce|s2|sl|   op2  | shift
-   +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-                 |     | \---+---/ |  |  | \---+---/
-                 |     |     |     |  |  |     |
-                 |     |     |     |  |  |     +---- shift 2 opcode
-                 |     |     |     |  |  +---------- skip if low bit == 0
-                 |     |     |     |  +------------- shift 2 enable
-                 |     |     |     +---------------- clear Extend
-                 |     |     +---------------------- shift 1 opcode
-                 |     +---------------------------- shift 1 enable
-                 +---------------------------------- A/B select
-
-   The alter/skip format is:
-
-    15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
-   +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-   | 0  0  0  0|ab| 1|regop| e op|se|ss|sl|in|sz|rs| alter/skip
-   +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-                 |    \-+-/ \-+-/  |  |  |  |  |  |
-                 |      |     |    |  |  |  |  |  +- reverse skip sense
-                 |      |     |    |  |  |  |  +---- skip if register == 0
-                 |      |     |    |  |  |  +------- increment register
-                 |      |     |    |  |  +---------- skip if low bit == 0
-                 |      |     |    |  +------------- skip if sign bit == 0
-                 |      |     |    +---------------- skip if Extend == 0
-                 |      |     +--------------------- clr/com/set Extend
-                 |      +--------------------------- clr/com/set register
-                 +---------------------------------- A/B select
-
-   The I/O transfer format is:
-
-    15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
-   +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-   | 1  0  0  0|ab| 1|hc| opcode |      device     | I/O transfer
-   +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-                 |     | \---+---/\-------+-------/
-                 |     |     |            |
-                 |     |     |            +--------- device select
-                 |     |     +---------------------- opcode
-                 |     +---------------------------- hold/clear flag
-                 +---------------------------------- A/B select
-
-   The IO transfer instruction controls the specified device.
-   Depending on the opcode, the instruction may set or clear
-   the device flag, start or stop I/O, or read or write data.
-
-   The 2100 added an extended memory reference instruction;
-   the 21MX added extended arithmetic, operate, byte, word,
-   and bit instructions.  Note that the HP 21xx is, despite
-   the right-to-left bit numbering, a big endian system.
-   Bits <15:8> are byte 0, and bits <7:0> are byte 1.
+   The terms MEM (Memory Expansion Module), MEU (Memory Expansion Unit), DMI
+   (Dynamic Mapping Instructions), and DMS (Dynamic Mapping System) are used
+   somewhat interchangeably to refer to the logical-to-physical memory address
+   translation option provided on the 1000-Series.  DMS consists of the MEM card
+   (12731A) and the DMI firmware (13307A).  However, MEM and MEU have been used
+   interchangeably to refer to the mapping card, as have DMI and DMS to refer to
+   the firmware instructions.
 
 
-   The extended memory reference format (HP 2100) is:
+   These CPU hardware registers are present in all machines:
 
-    15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
-   +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-   | 1| 0  0  0|op| 0|            opcode           | extended mem ref
-   +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-   |in|              operand address               |
-   +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+     Name  Width  Description
+     ----  -----  ----------------------------------------------
+      A     16    Accumulator (addressable as memory location 0)
+      B     16    Accumulator (addressable as memory location 1)
+      P     15    Program counter
+      S     16    Switch and display register
+      M     15    Memory address register
+      T     16    Memory data register
+      E      1    Extend flag (arithmetic carry out)
+      O      1    Overflow flag (arithmetic overflow)
 
-   The extended arithmetic format (HP 2100) is:
+   In addition, there are two internal registers that are not visible to the
+   programmer but are used by the hardware:
 
-    15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
-   +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-   | 1| 0  0  0  0  0|dr| 0  0| opcode |shift count| extended arithmetic
-   +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+     Name  Width  Description
+     ----  -----  ----------------------------------------------
+      IR    16    Instruction register
+     CIR     6    Central interrupt register
 
-   The extended operate format (HP 21MX) is:
+   The Instruction Register holds the current instruction, while the Central
+   Interrupt Register holds the select code identifying an interrupting device.
 
-    15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
-   +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-   | 1| 0  0  0|op| 0| 1  1  1  1  1|    opcode    | extended operate
-   +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+   The 1000 Series adds these CPU hardware registers:
 
-   The extended byte and word format (HP 21MX) is:
+     Name  Width  Description
+     ----  -----  ----------------------------------------------
+      X     16    index register
+      Y     16    index register
 
-    15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
-   +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-   | 1| 0  0  0  1  0  1  1  1  1  1  1|   opcode  | extended byte/word
-   +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-   |in|              operand address               |
-   +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-   | 0  0  0  0  0  0  0  0  0  0  0  0  0  0  0  0|
-   +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+   The data types supported by the base instruction set are:
 
-   The extended bit operate format (HP 21MX) is:
+     - 8-bit unsigned byte
+     - 16-bit unsigned integer
+     - 16-bit two's-complement integer
+     - 32-bit two's-complement integer
+     - 32-bit two's-complement floating point
 
-    15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
-   +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-   | 1| 0  0  0  1  0  1  1  1  1  1  1  1| opcode | extended bit operate
-   +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-   |in|              operand address               |
-   +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-   |in|              operand address               |
-   +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+   Multi-word values are stored in memory with the most-significant words in the
+   lowest addresses.  Bytes are stored in memory with the most-significant byte
+   in the upper half of the 16-bit word and the least-significant byte in the
+   lower half.
 
-   General notes:
+   The instruction set is fairly irregular -- a legacy of its original
+   implementation in hardware in the 2116 and the accretion of microprogrammed
+   instructions in the 2100 and 1000 CPUs.  Initially, there were five base-set
+   instruction groups:
 
-   1. Reasons to stop.  The simulator can be stopped by:
+     1. Memory-Reference Group (MRG)
+     2. Shift-Rotate Group (SRG)
+     3. Alter-Skip Group (ASG)
+     4. I/O Group (IOG)
+     5. Macroinstruction Group (MAC)
 
-        HALT instruction
-        breakpoint encountered
-        infinite indirection loop
-        unimplemented instruction and stop_inst flag set
-        unknown I/O device and stop_dev flag set
-        I/O error in I/O simulator
+   All of the instructions added after the 2116 are in the Macroinstruction
+   Group.
 
-   2. Interrupts.  I/O devices are modelled by substituting software states for
-      I/O backplane signals.  Signals generated by I/O instructions and DMA
-      cycles are dispatched to the target device for action.  Backplane signals
-      are processed sequentially, except for the "clear flag" signal, which may
-      be generated in parallel with another signal.  For example, the "STC sc,C"
-      instruction generates the "set control" and the "clear flag" signals
-      concurrently.
+   The 2116 offers two hardware options that extended the instruction set.  The
+   first is the 12579A Extended Arithmetic Unit.  The second is the 2152A
+   Floating Point Processor, which is interfaced through, and therefore
+   requires, the EAU.  The EAU adds 10 instructions including integer multiply
+   and divide and double-word loads, stores, shifts, and rotates.  The FPP adds
+   30 floating-point arithmetic, trigonometric, logarithmic, and exponential
+   instructions.  The 2116 EAU is compatible with the 2100 and 1000 EAU
+   implementations and is provided by the simulator.  The 2116 FPP is unique
+   to that machine and is not simulated.
 
-      CPU interrupt signals are modelled as three parallel arrays:
+   The base set groups are decoded from bits 15-12 and 10, as follows:
 
-        - device request priority as bit vector dev_prl [2] [31..0]
-        - device interrupt requests as bit vector dev_irq [2] [31..0]
-        - device service requests as bit vector dev_srq [2] [31..0]
+     15  14-12  10  Group  Address Ranges
+     --  -----  --  -----  -------------------------------
+      x   nnn    x   MRG   010000-077777 and 110000-177777
+      0   000    0   SRG   000000-001777 and 004000-005777
+      0   000    1   ASG   002000-003777 and 006000-007777
+      1   000    1   IOG   102000-103777 and 106000-107777
+      1   000    0   MAC   100000-101777 and 104000-105777
 
-      Each array forms a 64-bit vector, with bits 0-31 of the first element
-      corresponding to select codes 00-37 octal, and bits 0-31 of the second
-      element corresponding to select codes 40-77 octal.
+   Where:
 
-      The HP 2100 interrupt structure is based on the PRH, PRL, IRQ, and IAK
-      signals.  PRH indicates that no higher-priority device is interrupting.
-      PRL indicates to lower-priority devices that a given device is not
-      interrupting.  IRQ indicates that a given device is requesting an
-      interrupt.  IAK indicates that the given device's interrupt request is
-      being acknowledged.
+     x = don't care
+     n = any combination other than all zeros
 
-      PRH and PRL form a hardware priority chain that extends from interface to
-      interface on the backplane.  We model just PRL, as PRH is calculated from
-      the PRLs of higher-priority devices.
+   The MAC group is subdivided into the Extended Arithmetic Group (EAG) and the
+   User Instruction Group (UIG), based on bits 11, 9, and 8, as follows:
 
-      Typical I/O devices have a flag, flag buffer, and control flip-flop.  If a
-      device's flag, flag buffer, and control bits are set, and the device is
-      the highest priority on the interrupt chain, it requests an interrupt by
-      asserting IRQ.  When the interrupt is acknowledged with IAK, the flag
-      buffer is cleared, preventing further interrupt requests from that device.
-      The combination of flag and control set blocks interrupts from lower
-      priority devices.
+     11   9   8  Group  Address Range
+     --  --  --  -----  -------------
+      0   0   0  EAG    100000-100377
+      0   0   1  EAG    100400-100777
+      0   1   0  EAG    101000-101377
+      0   1   1  UIG-1  101400-101777
+      1   0   0  EAG    104000-104377
+      1   0   1  EAG    104400-104777
+      1   1   0  UIG-0  105000-105377
+      1   1   1  UIG-1  105400-105777
 
-      Service requests are used to trigger the DMA service logic.  Setting the
-      device flag typically also sets SRQ, although SRQ may be calculated
-      independently.
+   All of the 2116 FPP instructions are in the UIG sets: 3 use 10144x opcodes
+   and the rest use 1050xx and 1054xx opcodes.  The 2100 decodes only UIG-0
+   instructions, whereas the 1000s use both UIG sets.  In particular, the
+   105740-105777 range is used by the 1000 Extended Instruction Group (EIG),
+   which is part of the 1000-Series base set.
 
-   3. Non-existent memory.  On the HP 2100, reads to non-existent memory
-      return zero, and writes are ignored.  In the simulator, the
-      largest possible memory is instantiated and initialized to zero.
-      Thus, only writes need be checked against memory size.
+   The 21xx and 1000 M/E/F-Series machines do not trap unimplemented
+   instructions.  In general, unimplemented EAG instructions cause erroneous
+   execution, and unimplemented UIG instructions execute as NOP.  However, there
+   are machine-to-machine variations, and some unimplemented instructions
+   execute as other, defined instructions.
 
-      On the 21xx machines, doing SET CPU LOADERDISABLE decreases available
-      memory size by 64 words.
+   The Memory-Reference Group instructions are encoded as follows:
 
-   4. Adding I/O devices.  These modules must be modified:
+      15  14  13  12  11  10   9   8   7   6   5   4   3   2   1   0
+     +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+     | I |    mem op     | P |            memory address             |  MRG
+     +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
 
-        hp2100_defs.h   add interrupt request definition
-        hp2100_sys.c    add sim_devices table entry
+     +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+     | I |  mem op   | R | P |            memory address             |  MRG
+     +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
 
-   5. Instruction interruptibility.  The simulator is fast enough, compared
-      to the run-time of the longest instructions, for interruptibility not
-      to matter.  But the HP diagnostics explicitly test interruptibility in
-      EIS and DMS instructions, and long indirect address chains.  Accordingly,
-      the simulator does "just enough" to pass these tests.  In particular, if
-      an interrupt is pending but deferred at the beginning of an interruptible
-      instruction, the interrupt is taken at the appropriate point; but there
-      is no testing for new interrupts during execution (that is, the event
-      timer is not called).
+   Where:
 
-   6. Interrupt deferral.  At instruction fetch time, a pending interrupt
-      request will be deferred if the previous instruction was a JMP indirect,
-      JSB indirect, STC, CLC, STF, CLF, or was executing from an interrupt trap
-      cell.  In addition, the following instructions will cause deferral on the
-      1000 series: SFS, SFC, JRS, DJP, DJS, SJP, SJS, UJP, and UJS.
+     I = direct/indirect (0/1)
+     R = A/B register (0/1)
+     P = base/current page (0/1)
 
-      On the HP 1000, the request is always deferred until after the current
-      instruction completes.  On the 21xx, the request is deferred unless the
-      current instruction is an MRG instruction other than JMP or JMP,I or
-      JSB,I.  Note that for the 21xx, SFS and SFC are not included in the
-      deferral criteria.
+   The "mem ops" are encoded as follows:
 
-   7. Terminology.  The 1000 series of computers was originally called the 21MX
-      at introduction.  The 21MX (occasionally, 21MXM) corresponds to the 1000
-      M-Series, and the 21MXE (occasionally, 21XE) corresponds to the 1000
-      E-Series.  The model numbers were changed before the introduction of the
-      1000 F-Series, although some internal HP documentation refers to a 21MXF.
+     14-11  Mnemonic  Action
+     -----  --------  ---------------------------------------------
+     0010     AND     A = A & M [MA]
+     0011     JSB     M [MA] = P, P = MA + 1
+     0100     XOR     A = A ^ M [MA]
+     0101     JMP     P = MA
+     0110     IOR     A = A | M [MA]
+     0111     ISZ     M [MA] = M [MA] + 1, P = P + 2 if M [MA] == 0
+     1000     ADA     A = A + M [MA]
+     1001     ADB     B = B + M [MA]
+     1010     CPA     P = P + 2 if A != M [MA]
+     1011     CPB     P = P + 2 if B != M [MA]
+     1100     LDA     A = M [MA]
+     1101     LDB     B = M [MA]
+     1110     STA     M [MA] = A
+     1111     STB     M [MA] = B
 
-      The terms MEM (Memory Expansion Module), MEU (Memory Expansion Unit), DMI
-      (Dynamic Mapping Instructions), and DMS (Dynamic Mapping System) are used
-      somewhat interchangeably to refer to the logical-to-physical memory
-      address translation option provided on the 1000-Series.  DMS consists of
-      the MEM card (12731A) and the DMI firmware (13307A).  However, MEM and MEU
-      have been used interchangeably to refer to the mapping card, as have DMI
-      and DMS to refer to the firmware instructions.
+   Bits 15 and 10 encode the type of access, as follows:
+
+     15  10   Access Type            Action
+     --- ---  ---------------------  -----------------------------
+      0   0   base page direct       MA = IR <9:0>
+      0   1   current page direct    MA = P <14:10> | IR <9:0>
+      1   0   base page indirect     MA = M [IR <9:0>]
+      1   1   current page indirect  MA = M [P <14:10> | IR <9:0>]
+
+
+   The Shift-Rotate Group instructions are encoded as follows:
+
+      15  14  13  12  11  10   9   8   7   6   5   4   3   2   1   0
+     +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+     | 0 | 0   0   0 | R | 0 | E |   op 1    | C | E | S |   op 2    |  SRG
+     +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+
+   Where:
+
+     R = A/B register (0/1)
+     E = disable/enable op
+     C = CLE
+     S = SL*
+
+   Bits 8-6 and 2-0 each encode one of eight operations, as follows:
+
+     Op N  Operation
+     ----  ---------------------------
+     000   Arithmetic left shift
+     001   Arithmetic right shift
+     010   Rotate left
+     011   Rotate right
+     100   Shift left and clear sign
+     101   Rotate right through Extend
+     110   Rotate left through Extend
+     111   Rotate left four bits
+
+
+   The Alter-Skip Group instructions are encoded as follows:
+
+      15  14  13  12  11  10   9   8   7   6   5   4   3   2   1   0
+     +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+     | 0 | 0   0   0 | R | 1 | r op  | e op  | E | S | L | I | Z | V |  ASG
+     +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+
+   Where:
+
+     R = A/B register (0/1)
+     E = SEZ
+     S = SS*
+     L = SL*
+     I = IN*
+     Z = SZ*
+     V = RSS
+
+   Bits 9-8 and 7-6 each encode one of three operations, as follows:
+
+     9-8  Operation
+     ---  ------------------------
+     01   Clear A/B
+     10   Complement A/B
+     11   Clear and complement A/B
+
+     7-6  Operation
+     ---  ---------------------------
+     01   Clear Extend
+     10   Complement Extend
+     11   Clear and complement Extend
+
+
+   The Input-Output Group instructions are encoded as follows:
+
+      15  14  13  12  11  10   9   8   7   6   5   4   3   2   1   0
+     +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+     | 1 | 0   0   0 | R | 1 | H |  I/O op   |      select code      |  IOG
+     +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+
+   Where:
+
+     R = A/B register (0/1)
+     H = hold/clear flag (0/1)
+
+   There are ten instructions.  Six are encoded directly by bits 8-6, with
+   bits 11 and 9 assuming the definitions above.  The other four are encoded
+   with bits 11 and 9 differentiating, as follows:
+
+     11    9   8-6  Operation
+     ---  ---  ---  ---------------------------
+      x    H   000  Halt
+      x    0   001  Set the flag flip-flop
+      x    1   001  Clear the flag flip-flop
+      x    H   010  Skip if the flag is clear
+      x    H   011  Skip if the flag is set
+      R    H   100  Merge input data into A/B
+      R    H   101  Load input data into A/B
+      R    H   110  Store output data from A/B
+      0    H   111  Set the control flip-flop
+      1    H   111  Clear the control flip-flop
+
+   An I/O group instruction controls the device specified by the select code.
+   Depending on the opcode, the instruction may set or clear the device flag,
+   start or stop I/O, or read or write data.
+
+
+   The Macroinstruction Group instructions are encoded with bits 15-12 and 10 as
+   1 000 0.  Bits 11 and 9-0 determine the specific EAU or UIG instruction.
+
+   The Extended Arithmetic Group instructions are encoded as follows:
+
+      15  14  13  12  11  10   9   8   7   6   5   4   3   2   1   0
+     +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+     | 1 | 0   0   0 | op| 0 |   operation   | 0   0   0   0   0   0 |  EAG
+     +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+
+   Operations:
+
+     11   9-6   Operation
+     ---  ----  -----------------------------------------------------
+      0   0010  Multiply 16 x 16 = 32-bit product
+      0   0100  Divide 32 / 16 = 16-bit quotient and 16-bit remainder
+      1   0010  Double load A and B registers from memory
+      1   0100  Double store A and B registers to memory
+
+   All other encodings are undefined.
+
+     +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+     | 1 | 0   0   0 | 0 | 0 |    shift/rotate op    |  shift count  |  EAG
+     +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+
+   Operations:
+
+      9-4    Operation
+     ------  --------------------------------------------------
+     100001  Arithmetic shift right A and B registers 1-16 bits
+     000001  Arithmetic shift left A and B registers 1-16 bits
+     100010  Logical shift right A and B registers 1-16 bits
+     000010  Logical shift left A and B registers 1-16 bits
+     100100  Rotate right A and B registers 1-16 bits
+     000100  Rotate left A and B registers 1-16 bits
+
+   The shift count encodes the number of bits shifted, with a count of zero
+   representing a shift of 16 bits.
+
+
+   The User Instruction Group instructions are encoded as follows:
+
+      15  14  13  12  11  10   9   8   7   6   5   4   3   2   1   0
+     +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+     | 1 | 0   0   0 | R | 0   1 |      module       |   operation   |  UIG
+     +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+
+   Where:
+
+     R = A/B register (0/1)
+
+   Bits 8-4 encode the microcode module containing the instructions, and bits
+   3-0 encode the specific instructions.  See the individual UIG instruction
+   simulator source files for the specific encodings used.
+
+
+   I/O device interfaces and their connected devices are simulated by
+   substituting software states for I/O backplane signals.  The set of signals
+   generated by I/O instructions and DMA cycles is dispatched to the target
+   interface simulator for action, and the set of signals asserted or denied in
+   response is returned from the call.  Backplane signals are processed
+   sequentially.  For example, the "STC sc,C" instruction generates the "set
+   control" and the "clear flag" signals that are processed in that order.
+
+   The HP 21xx/1000 interrupt structure is based on the PRH, PRL, IEN, IRQ, and
+   IAK signals.  PRH indicates that no higher-priority device is interrupting.
+   PRL indicates to lower-priority devices that a given device is not
+   interrupting.  IEN asserts when the interrupt system is enabled.  IRQ
+   indicates that a given device is requesting an interrupt.  IAK indicates that
+   the given device's interrupt request is being acknowledged.
+
+   Typical I/O interfaces have a flag buffer, a flag, and a control flip-flop.
+   If an interface's flag buffer, flag, and control flip-flops are all set, the
+   interrupt system is enabled, and the interface has the highest priority on
+   the interrupt chain, it requests an interrupt by asserting the IRQ signal.
+   When the interrupt is acknowledged with the IAK signal, the flag buffer is
+   cleared, preventing further interrupt requests from that interface.  The
+   combination of flag set and control set blocks interrupts from lower priority
+   devices.
+
+   Service requests are used to trigger the DMA service logic.  Setting the
+   interface flag flip-flop typically asserts SRQ, although SRQ may be
+   calculated independently.
+
+   Most of the I/O signals are generated by execution of IOG instructions or DMA
+   cycles; the target interface simulator is called explicitly to respond to the
+   signal assertions.  However, two hardware signals (ENF and SIR) are periodic,
+   and a direct simulation would call each interface simulator with these
+   signals after each machine instruction.  Instead, the interface simulator is
+   called only when these signals would have an effect on the state of the
+   interface.  Also, two signals (IEN and PRH) are combinatorial, in that
+   changing either potentially affects all interfaces in the system.  These are
+   handled efficiently by saving the states of each interface in bit vectors, as
+   described below.
+
+   PRH and PRL form a hardware priority chain that extends from interface to
+   interface on the backplane.  For an interface to generate an interrupt, PRH
+   must be asserted by the next-higher-priority interface.  When an interface
+   generates an interrupt, it denies PRL to the next-lower-priority interface.
+   When an interface is not interrupting, it passes PRH to PRL unaltered.  This
+   means that a given interface can interrupt only if all higher-priority
+   devices are receiving PRH asserted and are asserting PRL.  It also means that
+   clearing the interrupt on a given interface, i.e., reasserting PRL, may
+   affect all lower-priority interfaces.
+
+   As an example, assume that the interface at select code 10 ("SC 10") has its
+   flag buffer, flag, and control flip-flops set, that IEN and PRH are asserted,
+   and that no other interfaces have their flag flip-flops set.  SC 10 will
+   assert IRQ and deny PRL.  SC 11 sees its PRH low (because PRL 10 is connected
+   to PRH 11) and so denies PRL, and this action ripples through all of the
+   lower-priority interfaces.
+
+   Then, while the interrupt for SC 10 is being serviced, the interface at
+   select code 17 sets its flag buffer, flag, and control flip-flops.  SC 17 is
+   inhibited from interrupting by PRH denied.
+
+   When the interrupt service routine clears the interrupt by clearing the flag
+   buffer and flag flip-flops, SC 10 reasserts PRL to SC 11, and that signal
+   ripples through the interfaces at select codes 12-16, arriving at SC 17 as
+   PRH assertion.  With PRH asserted, SC 17 generates an interrupt and denies
+   PRL to SC 20 and above.
+
+   A direct simulation of this hardware behavior would require calling all
+   lower-priority interface simulators in ascending select code (and therefore
+   priority) order with the PRH signal and checking for an asserted IRQ signal
+   or a denied PRL signal.  This is inefficient.
+
+   To avoid making a potentially long sequence of calls, each interface
+   simulator returns a "conditional IRQ" signal and a "conditional PRL" signal
+   in addition to the standard IRQ and PRL signals.  The conditional signals
+   are those that would result if the higher-priority interface is asserting
+   PRH and the interrupt system is on.  So, for instance, an interface simulator
+   with its flag buffer, flag, and control flip-flops set will assert its
+   conditional IRQ signal and deny its conditional PRL signal.  If PRH and IEN
+   are asserted, then its "real" IRQ and PRL signals are also asserted and
+   denied respectively.
+
+   For fast assertion checking, the conditional IRQ and PRL signal states are
+   kept in bit vectors, which are updated after each interface simulator call.
+   Each vector is represented as a two-element array of 32-bit unsigned
+   integers, forming a 64-bit vector in which bits 0-31 of the first element
+   correspond to select codes 00-37 octal, and bits 0-31 of the second element
+   correspond to select codes 40-77 octal.  The "interrupt_request_set" array
+   holds conditional IRQ states, and the "priority_holdoff_set" array holds the
+   complement of the conditional PRL states (the complement is used to simplify
+   the priority calculation).  These vectors permit rapid determination of an
+   interrupting interface when a higher-priority interface reasserts PRL or when
+   the interrupt system is reenabled.
+
+
+   The simulator provides three stop conditions related to instruction execution
+   that may be enabled with a SET CPU STOP=<stop> command:
+
+     <stop>  Action
+     ------  ------------------------------------------
+     UNIMPL  stop on an unimplemented instruction
+     UNDEF   stop on an undefined instruction
+     UNSC    stop on an access to an unused select code
+     IOERR   stop on an unreported I/O error
+
+   If an enabled stop condition is detected, execution ceases with the
+   instruction pending, and control returns to the SCP prompt.  When simulation
+   stops, execution may be resumed in two ways.  If the cause of the stop has
+   not been remedied and the stop has not been disabled, resuming execution with
+   CONTINUE, STEP, GO, or RUN will cause the stop to occur again.  Alternately,
+   specifying the "-B" switch with any of the preceding commands will resume
+   execution while bypassing the stop for the current instruction.
+
+   The UNIMPL option stops the simulator if execution is attempted of an
+   instruction provided by a firmware option that is not currently installed
+   (e.g., a DAD instruction when the double-integer firmware is not installed)
+   or of an opcode provided by an installed option but not assigned to an
+   instruction (e.g., opcode 105335 from the double-integer firmware).
+   Bypassing the stop will execute the instruction as a NOP (no-operation).
+
+   The UNDEF option stops the simulator if execution is attempted of an
+   instruction containing a decoded reserved bit pattern other than that defined
+   in the Operating and Reference manual for the CPU.  For example, opcodes
+   101700 and 105700 are not listed as DMS instructions, but they execute as
+   XMM instructions, rather than as NOP.  The intent of this stop is to catch
+   instructions containing reserved fields with values that change the meaning
+   of those instructions.  Bypassing the stop will decode and execute the
+   instruction in the same manner as the selected CPU.
+
+   The UNSC option stops the simulator if an I/O instruction addresses a select
+   code that is not assigned to an enabled device (equivalent to an empty
+   hardware I/O backplane slot).  Bypassing the stop will read the floating
+   S-bus or I/O-bus for LIA/B and MIA/B instructions or do nothing for all other
+   instructions.
+
+   The IOERR option stops the simulator if an I/O error condition exists for a
+   device that does not report this status to the CPU.  For example, the paper
+   tape reader device (PTR) does not report "no tape loaded" status, and the
+   processor interconnect device (IPL) does not report "cable disconnected."  In
+   both cases, I/O to the device will simply hang with no indication of the
+   problem.  Enabling the IOERR option will stop the simulator with an error
+   indication for these devices.
+
+   In addition, a simulation stop will occur if an indirect addressing chain
+   exceeds the maximum length specified by a SET CPU INDIR=<limit> command.
+   Memory addresses may be indirect to indicate that the values point to the
+   target addresses rather than contain the target addresses.  The target of an
+   indirect address may itself be indirect, and the CPU follows this chain of
+   addresses until it finds a direct address.  Indirect addressing is typically
+   only one or two levels deep, but if the chain loops back on itself (e.g., if
+   an indirect address points at itself), then instruction execution will hang.
+
+   The limit may be set to any number of levels up to 32,768.  This is the
+   absolute maximum number of levels that can be created without an infinite
+   loop -- each location in memory points to the next one except for the last,
+   which contains the target value.  In practice, anything over a few levels
+   likely represents a programming error.  The default setting is 16 levels.
+
+
+   The CPU simulator provides extensive tracing capabilities that may be enabled
+   with the SET DEBUG <filename> and SET CPU DEBUG=<trace> commands.  The trace
+   options that may be specified are:
+
+     Trace  Action
+     -----  -------------------------------------------
+     INSTR  trace instructions executed
+     DATA   trace memory data accesses
+     FETCH  trace memory instruction fetches
+     REG    trace registers
+     OPND   trace instruction operands
+     EXEC   trace matching instruction execution states
+
+   A section of an example trace is:
+
+     >>CPU instr: S 0002 05735  103101  CLO
+     >>CPU fetch: S 0002 05736  000036    instruction fetch
+     >>CPU   reg: - **** 01011  042200    A 177777, B 000000, X 177777, Y 000000, e o i
+     >>CPU instr: S 0002 05736  000036  SLA,ELA
+     >>CPU fetch: S 0002 05737  102101    instruction fetch
+     >>CPU   reg: - **** 01011  042200    A 177776, B 000000, X 177777, Y 000000, E o i
+     >>CPU instr: S 0002 05737  102101  STO
+     >>CPU fetch: S 0002 05740  002400    instruction fetch
+     >>CPU   reg: - **** 01011  042200    A 177776, B 000000, X 177777, Y 000000, E O i
+     >>CPU instr: S 0002 05755  102100  STF 0
+     >>CPU fetch: S 0002 05756  102705    instruction fetch
+     >>CPU   reg: - **** 01011  042200    A 177777, B 177777, X 177777, Y 000000, E O I
+     >>CPU instr: S 0002 05756  102705  STC 5
+     >>CPU fetch: S 0002 05757  105736    instruction fetch
+     >>CPU   reg: P **** 01011  042200    A 177777, B 177777, X 177777, Y 000000, E O I
+     >>CPU instr: S 0002 05757  105736  UJP 2111
+     >>CPU fetch: S 0002 05760  002111    instruction fetch
+     >>CPU fetch: U 0001 02111  026111    instruction fetch
+     >>CPU   reg: P **** 01011  042200    A 177777, B 177777, X 177777, Y 000000, E O I
+     >>CPU instr: U 0001 02111  026111  JMP 2111
+     >>CPU instr: U 0001 02111  000011  interrupt
+     >>CPU fetch: S 0000 00011  115013    instruction fetch
+     >>CPU   reg: - **** 01011  042200    A 177777, B 177777, X 177777, Y 000000, E O I
+     >>CPU   reg: - **** *****  ******    MPF 000000, MPV 002111, MES 163011, MEV 030000
+     >>CPU instr: S 0000 00011  115013  JSB 1013,I
+     >>CPU  data: S 0000 01013  005557    data read
+     >>CPU  data: S 0002 05557  002111    data write
+     >>CPU fetch: S 0002 05560  103100    instruction fetch
+     >>CPU   reg: - **** 01011  042200    A 177777, B 177777, X 177777, Y 000000, E O I
+     >>CPU instr: S 0002 05560  103100  CLF 0
+     >>CPU fetch: S 0002 05561  105714    instruction fetch
+     >>CPU   reg: - **** 01011  042200    A 177777, B 177777, X 177777, Y 000000, E O i
+     >>CPU  exec: ********************
+     >>CPU   reg: P **** 01567  000000    A 100036, B 000100, X 000100, Y 074000, E o I
+     >>CPU instr: U 0220 07063  105240  .PMAP
+     >>CPU  data: U 0000 01776  000227    unprotected read
+     >>CPU  data: U 0227 76100  000233    data read
+     >>CPU  opnd: * **** 07065  105240    return location is P+2 (no error)
+     >>CPU fetch: U 0220 07065  127055    instruction fetch
+     >>CPU   reg: P **** 01567  000000    A 100037, B 000101, X 000100, Y 074000, e o I
+
+   The INSTR option traces instruction executions and interrupts.  Each
+   instruction is printed in symbolic form before it is executed.
+
+   The DATA option traces reads from and writes to memory.  Each access is
+   classified by its usage type as "data" (using the current or alternate map
+   with access protection) or "unprotected" (using a specified map without
+   protection).
+
+   The FETCH option traces instruction fetches from memory.  Reads of the
+   additional words in a multiword instruction, such as the target address of a
+   DLD (double load) instruction, are also classified as fetches.
+
+   The REG option traces register values.  Two sets of registers are printed.
+   After executing each instruction, the working registers (A, B, E, O, S, and,
+   for 1000 CPUs, X and Y) and the state of the interrupt system (on or off) are
+   printed.  After executing an instruction that may alter the Memory Protect or
+   Memory Expansion Module state, the MP fence and violation registers, the MEM
+   status and violation registers, and the current protection state are printed.
+
+   The OPND option traces operand values.  Some instructions that take memory
+   and register operands that are difficult to decode from DATA or REG traces
+   present the operand values in a higher-level format.  The operand data and
+   value presented are specific to the instruction; see the instruction executor
+   comments for details.
+
+   The EXEC option traces the execution of instructions that match
+   user-specified criteria.  When a match occurs, all CPU trace options are
+   turned on for the duration of the execution of the matched instruction.  The
+   prior trace settings are restored when a match fails.  This option allows
+   detailed tracing of specified instructions while minimizing the log file size
+   compared to a full instruction trace.
+
+   The various trace formats are interpreted as follows:
+
+     >>CPU instr: U 0045 10341  016200  LDA 11200
+                  ~ ~~~~ ~~~~~  ~~~~~~  ~~~~~~~~~
+                  |   |    |       |       |
+                  |   |    |       |       +-- instruction mnemonic
+                  |   |    |       +---------- octal data (instruction opcode)
+                  |   |    +------------------ octal logical address (P register)
+                  |   +----------------------- octal physical page number
+                  +--------------------------- memory map (S/U/- system/user/disabled)
+
+     >>CPU instr: U 0045 10341  000011  interrupt
+                  ~ ~~~~ ~~~~~  ~~~~~~  ~~~~~~~~~
+                  |   |    |       |       |
+                  |   |    |       |       +-- interrupt classification
+                  |   |    |       +---------- octal device number (CIR register)
+                  |   |    +------------------ octal logical address at interrupt (P register)
+                  |   +----------------------- octal physical page number at interrupt
+                  +--------------------------- memory map (S/U/- system/user/disabled)
+
+     >>CPU fetch: - 0000 10341  016200    instruction fetch
+     >>CPU  data: U 0013 01200  123003    data read
+     >>CPU  data: S 0013 01200  017200    unprotected write
+                  ~ ~~~~ ~~~~~  ~~~~~~    ~~~~~~~~~~~~~~~~~
+                  |   |    |       |         |
+                  |   |    |       |         +-- memory access classification
+                  |   |    |       +------------ octal data (memory contents)
+                  |   |    +-------------------- octal logical address (effective address)
+                  |   +------------------------- octal physical page number
+                  +----------------------------- memory map (S/U/A/B/- system/user/port A/port B/disabled)
+
+     >>CPU   reg: P **** 01535  040013    A 123003, B 001340, X 000000, Y 000000, e O I
+                  ~ ~~~~ ~~~~~  ~~~~~~    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                  |   |    |       |         |
+                  |   |    |       |         +-- A, B, X, Y, E, O, interrupt system registers
+                  |   |    |       |             (lower/upper case = 0/1 or off/on)
+                  |   |    |       +------------ S register
+                  |   |    +-------------------- MEM fence
+                  |   +------------------------- (place holder)
+                  +----------------------------- protection state (P/- protected/unprotected)
+
+     >>CPU   reg: P **** *****  ******    MPF 00000, MPV 000000, MES 000000, MEV 000000
+                  ~ ~~~~ ~~~~~  ~~~~~~    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                  |   |    |       |         |
+                  |   |    |       |         +-- memory protect fence and violation registers
+                  |   |    |       |             memory expansion status and violation registers
+                  |   |    |       +------------ (place holder)
+                  |   |    +-------------------- (place holder)
+                  |   +------------------------- (place holder)
+                  +----------------------------- protection state (P/- protected/unprotected)
+
+
+
+     >>CPU  opnd: . **** 36002  101475    return location is P+3 (error EM21)
+     >>CPU  opnd: . **** 22067  105355    entry is for a dynamic mapping violation
+                         ~~~~~  ~~~~~~    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                           |       |         |
+                           |       |         +-- operand-specific value
+                           |       +------------ operand-specific octal data
+                           +-------------------- octal logical address (P register)
+
+
+   Implementation notes:
+
+    1. The simulator is fast enough, compared to the run-time of the longest
+       instructions, for interruptibility not to matter.  However, the HP
+       diagnostics explicitly test interruptibility in the EIS and DMS
+       instructions and in long indirect address chains.  Accordingly, the
+       simulator does "just enough" to pass these tests.  In particular, if an
+       interrupt is pending but deferred at the beginning of an interruptible
+       instruction, the interrupt is taken at the appropriate point; but there
+       is no testing for new interrupts during execution (that is, the event
+       timer is not called).
+
+    2. The Power Fail option is not currently implemented.
+
+    3. Idling with 4.x simulator framework versions after June 14, 2018 (git
+       commit ID d3986466) loses TBG ticks.  This causes the DOS/RTE/TSB system
+       clock to run slowly, losing about one second per minute.  A workaround is
+       to prevent "sim_interval" from going negative on return from "sim_idle".
+       Issue 622 on the SIMH site describes the problem.
 */
 
+
+
+#include <setjmp.h>
 
 #include "hp2100_defs.h"
 #include "hp2100_cpu.h"
-#include "hp2100_cpu1.h"
+#include "hp2100_cpu_dmm.h"
 
 
-/* Memory protect constants */
 
-#define UNIT_V_MP_JSB   (UNIT_V_UF + 0)                 /* MP jumper W5 */
-#define UNIT_V_MP_INT   (UNIT_V_UF + 1)                 /* MP jumper W6 */
-#define UNIT_V_MP_SEL1  (UNIT_V_UF + 2)                 /* MP jumper W7 */
-#define UNIT_MP_JSB     (1 << UNIT_V_MP_JSB)            /* 1 = W5 is out */
-#define UNIT_MP_INT     (1 << UNIT_V_MP_INT)            /* 1 = W6 is out */
-#define UNIT_MP_SEL1    (1 << UNIT_V_MP_SEL1)           /* 1 = W7 is out */
+/* Lost time workaround */
 
-/* DMA channels */
-
-typedef enum { ch1, ch2 } CHANNEL;                      /* channel number */
-
-#define DMA_CHAN_COUNT  2                               /* number of DMA channels */
-
-#define DMA_OE          020000000000                    /* byte packing odd/even flag */
-#define DMA1_STC        0100000                         /* DMA - issue STC */
-#define DMA1_PB         0040000                         /* DMA - pack bytes */
-#define DMA1_CLC        0020000                         /* DMA - issue CLC */
-#define DMA2_OI         0100000                         /* DMA - output/input */
-
-typedef struct {
-    FLIP_FLOP control;                                  /* control flip-flop */
-    FLIP_FLOP flag;                                     /* flag flip-flop */
-    FLIP_FLOP flagbuf;                                  /* flag buffer flip-flop */
-    FLIP_FLOP xferen;                                   /* transfer enable flip-flop */
-    FLIP_FLOP select;                                   /* register select flip-flop */
-
-    uint32    cw1;                                      /* device select */
-    uint32    cw2;                                      /* direction, address */
-    uint32    cw3;                                      /* word count */
-    uint32    packer;                                   /* byte-packer holding reg */
-    } DMA_STATE;
-
-#define DMA_1_REQ       (1 << ch1)                      /* channel 1 request */
-#define DMA_2_REQ       (1 << ch2)                      /* channel 2 request */
+#if (SIM_MAJOR >= 4)
+  #define sim_idle(timer,decrement) \
+            if (sim_idle (timer, decrement) == TRUE     /* [workaround] idle the simulator; if idling occurred */ \
+              && sim_interval < 0)                      /* [workaround]   and the time interval is negative */ \
+                sim_interval = 0                        /* [workaround]     then reset it to zero */
+#endif
 
 
-/* Command line switches */
 
-#define ALL_BKPTS       (SWMASK('E')|SWMASK('N')|SWMASK('S')|SWMASK('U'))
-#define ALL_MAPMODES    (SWMASK('S')|SWMASK('U')|SWMASK('P')|SWMASK('Q'))
+/* CPU program constants */
 
+/* Alter-Skip Group instruction register fields */
 
-/* RTE base-page addresses. */
+#define IR_CMx              0001000u            /* CMA/B */
+#define IR_CLx              0000400u            /* CLA/B */
+#define IR_CME              0000200u            /* CME */
+#define IR_CLE              0000100u            /* CLE */
+#define IR_SEZ              0000040u            /* SEZ */
+#define IR_SSx              0000020u            /* SSA/B */
+#define IR_SLx              0000010u            /* SLA/B */
+#define IR_INx              0000004u            /* INA/B */
+#define IR_SZx              0000002u            /* SZA/B */
+#define IR_RSS              0000001u            /* RSS */
 
-static const uint32 xeqt = 0001717;                     /* XEQT address */
-static const uint32 tbg  = 0001674;                     /* TBG address */
+#define IR_SSx_SLx_RSS      (IR_SSx | IR_SLx | IR_RSS)          /* a special case */
+#define IR_ALL_SKIPS        (IR_SEZ | IR_SZx | IR_SSx_SLx_RSS)  /* another special case */
 
-/* DOS base-page addresses. */
+/* Shift-Rotate Group instruction register micro-ops */
 
-static const uint32 m64  = 0000040;                     /* constant -64 address */
-static const uint32 p64  = 0000067;                     /* constant +64 address */
+#define IR_xLS              0000000u            /* ALS/BLS */
+#define IR_xRS              0000001u            /* ARS/BRS */
+#define IR_RxL              0000002u            /* RAL/RBL */
+#define IR_RxR              0000003u            /* RAR/RBR */
+#define IR_xLR              0000004u            /* ALR/BLR */
+#define IR_ERx              0000005u            /* ERA/ERB */
+#define IR_ELx              0000006u            /* ELA/ELB */
+#define IR_xLF              0000007u            /* ALF/BLF */
 
-/* CPU local data */
+#define SRG_DIS             0000000u            /* micro-op disable */
+#define SRG1_EN             0000010u            /* micro-op 1 enable */
+#define SRG2_EN             0000020u            /* micro-op 2 enable */
 
-static uint32 jsb_plb = 2;                              /* protected lower bound for JSB */
-static uint32 saved_MR = 0;                             /* between executions */
-static uint32 fwanxm = 0;                               /* first word addr of nx mem */
+/* Instruction register masks */
 
-/* CPU global data */
+#define IR_MRG              (MRG | AB_MASK)     /* MRG instructions mask */
+#define IR_MRG_I            (IR_MRG | IR_IND)   /* MRG indirect instructions mask */
 
-uint16 *M = NULL;                                       /* memory */
-uint16 ABREG[2];                                        /* A/B registers */
-uint32 PC = 0;                                          /* P register */
-uint32 SR = 0;                                          /* S register */
-uint32 MR = 0;                                          /* M register */
-uint32 TR = 0;                                          /* T register */
-uint32 XR = 0;                                          /* X register */
-uint32 YR = 0;                                          /* Y register */
-uint32 E = 0;                                           /* E register */
-uint32 O = 0;                                           /* O register */
-FLIP_FLOP ion = CLEAR;                                  /* interrupt enable */
-t_bool ion_defer = FALSE;                               /* interrupt defer */
-uint32 intaddr = 0;                                     /* interrupt addr */
-uint32 stop_inst = 1;                                   /* stop on ill inst */
-uint32 stop_dev = 0;                                    /* stop on ill dev */
-uint16 pcq[PCQ_SIZE] = { 0 };                           /* PC queue */
-uint32 pcq_p = 0;                                       /* PC queue ptr */
-REG *pcq_r = NULL;                                      /* PC queue reg ptr */
+#define IR_JSB              0014000u            /* JSB instruction */
+#define IR_JSB_I            (IR_JSB | IR_IND)   /* JSB,I instruction */
+#define IR_JMP              0024000u            /* JMP instruction */
 
-uint32 dev_prl [2] = { ~(uint32) 0, ~(uint32) 0 };      /* device priority low bit vector */
-uint32 dev_irq [2] = { 0, 0 };                          /* device interrupt request bit vector */
-uint32 dev_srq [2] = { 0, 0 };                          /* device service request bit vector */
+#define IR_HLT_MASK         0172700u            /* I/O group mask for HLT[,C] instruction */
+#define IR_CLC_MASK         0176700u            /* I/O group mask for a CLC[,C] instruction */
 
-/* Memory protect global data */
-
-FLIP_FLOP mp_control = CLEAR;                           /* MP control flip-flop */
-FLIP_FLOP mp_flag = CLEAR;                              /* MP flag flip-flop */
-FLIP_FLOP mp_flagbuf = CLEAR;                           /* MP flag buffer flip-flop */
-FLIP_FLOP mp_mevff = CLEAR;                             /* memory expansion violation flip-flop */
-FLIP_FLOP mp_evrff = SET;                               /* enable violation register flip-flop */
-
-uint32 mp_fence = 0;                                    /* MP fence register  */
-uint32 mp_viol = 0;                                     /* MP violation register */
-
-uint32 iop_sp = 0;                                      /* iop stack reg */
-uint32 ind_max = 16;                                    /* iadr nest limit */
-uint32 err_PC = 0;                                      /* error PC */
-jmp_buf save_env;                                       /* MP abort handler */
-
-/* DMA global data */
-
-DMA_STATE dma [DMA_CHAN_COUNT];                         /* per-channel state */
-
-/* Dynamic mapping system global data */
-
-uint32 dms_enb = 0;                                     /* dms enable */
-uint32 dms_ump = 0;                                     /* dms user map */
-uint32 dms_sr = 0;                                      /* dms status reg */
-uint32 dms_vr = 0;                                      /* dms violation reg */
-uint16 dms_map[MAP_NUM * MAP_LNT] = { 0 };              /* dms maps */
-
-/* External data */
-
-extern DIB clk_dib;                                     /* CLK DIB for idle check */
-extern const BOOT_ROM ptr_rom, dq_rom, ms_rom, ds_rom;  /* boot ROMs for cpu_boot routine */
-
-/* CPU local routines */
-
-static t_stat Ea (uint32 IR, uint32 *addr, uint32 irq);
-static uint16 ReadTAB (uint32 va);
-static uint32 dms (uint32 va, uint32 map, uint32 prot);
-static uint32 shift (uint32 inval, uint32 flag, uint32 oper);
-static t_stat dma_cycle (CHANNEL chan, uint32 map);
-static uint32 calc_dma (void);
-static t_bool dev_conflict (void);
-static uint32 devdisp (uint32 select_code, IOCYCLE signal_set, uint16 data);
-
-/* CPU global routines */
-
-t_stat cpu_ex (t_value *vptr, t_addr addr, UNIT *uptr, int32 sw);
-t_stat cpu_dep (t_value val, t_addr addr, UNIT *uptr, int32 sw);
-t_stat cpu_reset (DEVICE *dptr);
-t_stat cpu_boot (int32 unitno, DEVICE *dptr);
-t_stat mp_reset (DEVICE *dptr);
-t_stat dma_reset (DEVICE *dptr);
-t_stat cpu_set_size (UNIT *uptr, int32 new_size, char *cptr, void *desc);
-t_stat cpu_set_model (UNIT *uptr, int32 new_model, char *cptr, void *desc);
-t_stat cpu_show_model (FILE *st, UNIT *uptr, int32 val, void *desc);
-t_stat cpu_set_opt (UNIT *uptr, int32 option, char *cptr, void *desc);
-t_stat cpu_clr_opt (UNIT *uptr, int32 option, char *cptr, void *desc);
-t_stat cpu_set_ldr (UNIT *uptr, int32 enable, char *cptr, void *desc);
-t_stat cpu_set_idle  (UNIT *uptr, int32 option, char *cptr, void *desc);
-t_stat cpu_show_idle (FILE *st, UNIT *uptr, int32 val, void *desc);
-void hp_post_cmd (t_bool from_scp);
-
-IOHANDLER cpuio;
-IOHANDLER ovflio;
-IOHANDLER pwrfio;
-IOHANDLER protio;
-IOHANDLER dmapio;
-IOHANDLER dmasio;
-IOHANDLER nullio;
+#define IR_HLT              0102000u            /* HLT instruction */
+#define IR_CLC              0106700u            /* CLC instruction */
 
 
-/* Table of CPU features by model.
+/* CPU unit flags and accessors.
 
-   Fields:
-    - typ:    standard features plus typically configured options.
-    - opt:    complete list of optional features.
-    - maxmem: maximum configurable memory in 16-bit words.
+      31  30  29  28  27  26  25  24  23  22  21  20  19  18  17  16
+     +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+     | r | - | G | V | O | E | D | F | M | I | P | U |   CPU model   |
+     +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
 
-   Features in the "typical" list are enabled when the CPU model is selected.
-   If a feature appears in the "typical" list but NOT in the "optional" list,
-   then it is standard equipment and cannot be disabled.  If a feature appears
-   in the "optional" list, then it may be enabled or disabled as desired by the
-   user.
+   Where:
+
+     r = reserved
+     G = SIGNAL/1000 firmware is present
+     V = Vector Instruction Set firmware is present
+     O = RTE-6/VM VMA and OS firmware is present
+     E = RTE-IV EMA firmware is present
+     D = Double Integer firmware is present
+     F = Fast FORTRAN Processor firmware is present
+     M = Dynamic Mapping System firmware is present
+     I = 2000 I/O Processor firmware is present
+     P = Floating Point hardware or firmware is present
+     U = Extended Arithmetic Unit is present
 */
 
-struct FEATURE_TABLE {                                  /* CPU model feature table: */
-    uint32      typ;                                    /*  - typical features */
-    uint32      opt;                                    /*  - optional features */
-    uint32      maxmem;                                 /*  - maximum memory */
-    };
+#define UNIT_MODEL_SHIFT    (UNIT_V_UF + 0)     /* bits 0- 3: CPU model (OPTION_ID value) */
+#define UNIT_OPTION_SHIFT   (UNIT_V_UF + 4)     /* bits 4-15: CPU options installed */
 
-static struct FEATURE_TABLE cpu_features[] = {          /* features in UNIT_xxxx order*/
-  { UNIT_DMA | UNIT_MP,                                 /* UNIT_2116 */
+#define UNIT_MODEL_MASK     0000017u            /* model ID mask */
+#define UNIT_OPTION_MASK    0003777u            /* option ID mask */
+
+#define UNIT_MODEL_FIELD    (UNIT_MODEL_MASK  << UNIT_MODEL_SHIFT)
+#define UNIT_OPTION_FIELD   (UNIT_OPTION_MASK << UNIT_OPTION_SHIFT)
+
+#define UNIT_MODEL(f)       ((f) >> UNIT_MODEL_SHIFT & UNIT_MODEL_MASK)
+#define UNIT_OPTION(f)      ((f) >> UNIT_OPTION_SHIFT & UNIT_OPTION_MASK)
+
+#define TO_UNIT_OPTION(id)  (1u << UNIT_OPTION_SHIFT + (id) - Option_BASE - 1)
+
+/* Unit models */
+
+#define UNIT_2116           (Option_2116   << UNIT_MODEL_SHIFT)
+#define UNIT_2115           (Option_2115   << UNIT_MODEL_SHIFT)
+#define UNIT_2114           (Option_2114   << UNIT_MODEL_SHIFT)
+#define UNIT_2100           (Option_2100   << UNIT_MODEL_SHIFT)
+#define UNIT_1000_M         (Option_1000_M << UNIT_MODEL_SHIFT)
+#define UNIT_1000_E         (Option_1000_E << UNIT_MODEL_SHIFT)
+#define UNIT_1000_F         (Option_1000_F << UNIT_MODEL_SHIFT)
+
+/* Unit options */
+
+#define UNIT_EAU            TO_UNIT_OPTION (Option_EAU)
+#define UNIT_FP             TO_UNIT_OPTION (Option_FP)
+#define UNIT_IOP            TO_UNIT_OPTION (Option_IOP)
+#define UNIT_DMS            TO_UNIT_OPTION (Option_DMS)
+#define UNIT_FFP            TO_UNIT_OPTION (Option_FFP)
+#define UNIT_DBI            TO_UNIT_OPTION (Option_DBI)
+#define UNIT_EMA            TO_UNIT_OPTION (Option_EMA)
+#define UNIT_VMAOS          TO_UNIT_OPTION (Option_VMAOS)
+#define UNIT_VIS            TO_UNIT_OPTION (Option_VIS)
+#define UNIT_SIGNAL         TO_UNIT_OPTION (Option_SIGNAL)
+#define UNIT_DS             TO_UNIT_OPTION (Option_DS)
+
+#define UNIT_EMA_VMA        (UNIT_EMA | UNIT_VMAOS)
+
+/* Unit conversions to CPU options */
+
+#define TO_CPU_MODEL(f)     (CPU_OPTION) (1u << UNIT_MODEL (f))
+#define TO_CPU_OPTION(f)    (CPU_OPTION) (UNIT_OPTION (f) << CPU_OPTION_SHIFT)
+
+/* "Pseudo-option" flags used only for option testing; never set into the UNIT structure */
+
+#define UNIT_V_PFAIL        (UNIT_V_UF - 1)                 /* Power fail is installed */
+#define UNIT_V_DMA          (UNIT_V_UF - 2)                 /* DMA is installed */
+#define UNIT_V_MP           (UNIT_V_UF - 3)                 /* Memory protect is installed */
+
+#define UNIT_PFAIL          (1 << UNIT_V_PFAIL)
+#define UNIT_DMA            (1 << UNIT_V_DMA)
+#define UNIT_MP             (1 << UNIT_V_MP)
+
+
+/* CPU global SCP data definitions */
+
+REG *sim_PC = NULL;                             /* the pointer to the P register */
+
+
+/* CPU global data structures */
+
+
+/* CPU registers */
+
+HP_WORD ABREG [2] = { 0, 0 };                   /* A and B registers */
+
+HP_WORD PR  = 0;                                /* P register */
+HP_WORD SR  = 0;                                /* S register */
+HP_WORD MR  = 0;                                /* M register */
+HP_WORD TR  = 0;                                /* T register */
+HP_WORD XR  = 0;                                /* X register */
+HP_WORD YR  = 0;                                /* Y register */
+
+uint32  E   = 0;                                /* E register */
+uint32  O   = 0;                                /* O register */
+
+HP_WORD IR  = 0;                                /* Instruction Register */
+HP_WORD CIR = 0;                                /* Central Interrupt Register */
+HP_WORD SPR = 0;                                /* 1000 Stack Pointer Register / 2100 F Register */
+
+
+/* CPU global state */
+
+FLIP_FLOP      cpu_interrupt_enable  = SET;     /* interrupt enable flip-flop */
+uint32         cpu_pending_interrupt = 0;       /* pending interrupt select code or zero if none */
+
+t_stat         cpu_ss_unimpl   = SCPE_OK;       /* status return for unimplemented instruction execution */
+t_stat         cpu_ss_undef    = SCPE_OK;       /* status return for undefined instruction execution */
+t_stat         cpu_ss_unsc     = SCPE_OK;       /* status return for I/O to an unassigned select code */
+t_stat         cpu_ss_ioerr    = SCPE_OK;       /* status return for an unreported I/O error */
+t_stat         cpu_ss_inhibit  = SCPE_OK;       /* CPU stop inhibition mask */
+UNIT           *cpu_ioerr_uptr = NULL;          /* pointer to a unit with an unreported I/O error */
+
+HP_WORD        err_PR         = 0;              /* error PC */
+uint16         pcq [PCQ_SIZE] = { 0 };          /* PC queue (must be 16-bits wide for REG array entry) */
+uint32         pcq_p          = 0;              /* PC queue pointer */
+REG            *pcq_r         = NULL;           /* PC queue register pointer */
+
+CPU_OPTION_SET cpu_configuration;               /* the current CPU option set and model */
+uint32         cpu_speed = 1;                   /* the CPU speed, expressed as a multiplier of a real machine */
+
+
+/* CPU local state.
+
+
+   Implementation notes:
+
+    1. The "is_1000" variable is used to index into tables where the row
+       selected depends on whether or not the CPU is a 1000 M/E/F-series model.
+       For logical tests that depend on this, it is faster (by one x86 machine
+       instruction) to test the "cpu_configuration" variable for the presence of
+       one of the three 1000 model flags.
+*/
+
+static jmp_buf   abort_environment;             /* microcode abort environment */
+
+static FLIP_FLOP interrupt_system  = CLEAR;     /* interrupt system */
+static uint32    interrupt_request = 0;         /* the currently interrupting select code or zero if none */
+
+static uint32    interrupt_request_set [2] = { 0, 0 };  /* device interrupt request bit vector */
+static uint32    priority_holdoff_set  [2] = { 0, 0 };  /* device priority holdoff bit vector */
+
+static uint32    exec_mask        = 0;          /* the current instruction execution trace mask */
+static uint32    exec_match       = D16_UMAX;   /* the current instruction execution trace matching value */
+static uint32    indirect_limit   = 16;         /* the indirect chain length limit */
+
+static t_bool    is_1000          = FALSE;      /* TRUE if the CPU is a 1000 M/E/F-Series */
+static t_bool    mp_is_present    = FALSE;      /* TRUE if Memory Protect is present */
+static uint32    last_select_code = 0;          /* the last select code sent over the I/O backplane */
+static HP_WORD   saved_MR         = 0;          /* the M-register value between SCP commands */
+
+static DEVICE    *loader_rom [4]  = { NULL };   /* the four boot loader ROM sockets in a 1000 CPU */
+
+
+/* CPU local data structures */
+
+
+/* CPU features table.
+
+   The feature table is used to validate CPU feature changes within the subset
+   of features supported by a given CPU.  Features in the typical list are
+   enabled when the CPU model is selected.  If a feature appears in the typical
+   list but NOT in the optional list, then it is standard equipment and cannot
+   be disabled.  If a feature appears in the optional list, then it may be
+   enabled or disabled as desired by the user.
+*/
+
+typedef struct {                                /* CPU model feature table */
+    uint32      typ;                            /*   standard features plus typically configured options */
+    uint32      opt;                            /*   complete list of optional features */
+    uint32      maxmem;                         /*   maximum configurable memory in 16-bit words */
+    } FEATURE_TABLE;
+
+static const FEATURE_TABLE cpu_features [] = {          /* CPU features indexed by OPTION_ID */
+  { UNIT_DMA | UNIT_MP,                                 /*   Option_2116 */
     UNIT_PFAIL | UNIT_DMA | UNIT_MP | UNIT_EAU,
-    32768 },
-  { UNIT_DMA,                                           /* UNIT_2115 */
+    32 * 1024
+    },
+
+  { UNIT_DMA,                                           /*   Option_2115 */
     UNIT_PFAIL | UNIT_DMA | UNIT_EAU,
-    8192 },
-  { UNIT_DMA,                                           /* UNIT_2114 */
+    8 * 1024
+    },
+
+  { UNIT_DMA,                                           /*   Option_2114 */
     UNIT_PFAIL | UNIT_DMA,
-    16384 },
-  { 0, 0, 0 },
-  { UNIT_PFAIL | UNIT_MP | UNIT_DMA | UNIT_EAU,         /* UNIT_2100 */
+    16 * 1024
+    },
+
+  { UNIT_PFAIL | UNIT_MP | UNIT_DMA | UNIT_EAU,         /*   Option_2100 */
     UNIT_DMA   | UNIT_FP | UNIT_IOP | UNIT_FFP,
-    32768 },
-  { 0, 0, 0 },
-  { 0, 0, 0 },
-  { 0, 0, 0 },
-  { UNIT_MP | UNIT_DMA | UNIT_EAU | UNIT_FP | UNIT_DMS, /* UNIT_1000_M */
+    32 * 1024
+    },
+
+  { UNIT_MP | UNIT_DMA | UNIT_EAU | UNIT_FP | UNIT_DMS, /*   Option_1000_M */
     UNIT_PFAIL | UNIT_DMA | UNIT_MP | UNIT_DMS |
     UNIT_IOP   | UNIT_FFP | UNIT_DS,
-    1048576 },
-  { UNIT_MP | UNIT_DMA | UNIT_EAU | UNIT_FP | UNIT_DMS, /* UNIT_1000_E */
+    1024 * 1024
+    },
+
+  { UNIT_MP | UNIT_DMA | UNIT_EAU | UNIT_FP | UNIT_DMS, /*   Option_1000_E */
     UNIT_PFAIL | UNIT_DMA | UNIT_MP  | UNIT_DMS |
     UNIT_IOP   | UNIT_FFP | UNIT_DBI | UNIT_DS  | UNIT_EMA_VMA,
-    1048576 },
-  { UNIT_MP  | UNIT_DMA | UNIT_EAU | UNIT_FP |          /* UNIT_1000_F */
+    1024 * 1024
+    },
+
+  { UNIT_MP  | UNIT_DMA | UNIT_EAU | UNIT_FP |          /*   Option_1000_F */
     UNIT_FFP | UNIT_DBI | UNIT_DMS,
-    UNIT_PFAIL | UNIT_DMA | UNIT_MP     | UNIT_VIS |
-    UNIT_IOP   | UNIT_DS  | UNIT_SIGNAL | UNIT_EMA_VMA,
-    1048576 }
+    UNIT_PFAIL | UNIT_DMA | UNIT_MP     | UNIT_DMS |
+    UNIT_VIS   | UNIT_DS  | UNIT_SIGNAL | UNIT_EMA_VMA,
+    1024 * 1024
+    }
   };
 
 
-/* Null device information block */
+/* CPU local SCP support routine declarations */
 
-DIB null_dib = { &nullio, 0 };
+static INTERFACE cpu_interface;
+static INTERFACE ovf_interface;
+static INTERFACE pwr_interface;
 
-/* CPU data structures
+static t_stat cpu_examine (t_value *eval, t_addr address, UNIT *uptr, int32 switches);
+static t_stat cpu_deposit (t_value value, t_addr address, UNIT *uptr, int32 switches);
 
-   cpu_dib      CPU device information block
-   cpu_dev      CPU device descriptor
-   cpu_unit     CPU unit descriptor
-   cpu_reg      CPU register list
-   cpu_mod      CPU modifiers list
-   cpu_deb      CPU debug flags
+static t_stat cpu_reset (DEVICE *dptr);
+static t_stat cpu_boot  (int32  unitno, DEVICE *dptr);
+
+static t_stat set_stops    (UNIT *uptr, int32 option,    CONST char *cptr, void *desc);
+static t_stat set_size     (UNIT *uptr, int32 new_size,  CONST char *cptr, void *desc);
+static t_stat set_model    (UNIT *uptr, int32 new_model, CONST char *cptr, void *desc);
+static t_stat set_option   (UNIT *uptr, int32 option,    CONST char *cptr, void *desc);
+static t_stat clear_option (UNIT *uptr, int32 option,    CONST char *cptr, void *desc);
+static t_stat set_loader   (UNIT *uptr, int32 enable,    CONST char *cptr, void *desc);
+static t_stat set_roms     (UNIT *uptr, int32 option,    CONST char *cptr, void *desc);
+static t_stat set_exec     (UNIT *uptr, int32 option,    CONST char *cptr, void *desc);
+
+static t_stat show_stops (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+static t_stat show_model (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+static t_stat show_roms  (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+static t_stat show_cage  (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+static t_stat show_exec  (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+static t_stat show_speed (FILE *st, UNIT *uptr, int32 val, CONST void *desc);
+
+
+/* CPU local utility routine declarations */
+
+static t_stat  mrg_address         (void);
+static HP_WORD srg_uop             (HP_WORD value, HP_WORD operation);
+static t_stat  machine_instruction (t_bool int_ack, uint32 *idle_save);
+static t_bool  reenable_interrupts (void);
+
+
+/* CPU SCP data structures */
+
+
+/* Device information blocks */
+
+static DIB cpu_dib = {                          /* CPU (select code 0) */
+    &cpu_interface,                             /*   the device's I/O interface function pointer */
+    CPU,                                        /*   the device's select code (02-77) */
+    0,                                          /*   the card index */
+    NULL,                                       /*   the card description */
+    NULL                                        /*   the ROM description */
+    };
+
+static DIB ovfl_dib = {                         /* Overflow (select code 1) */
+    &ovf_interface,                             /*   the device's I/O interface function pointer */
+    OVF,                                        /*   the device's select code (02-77) */
+    0,                                          /*   the card index */
+    NULL,                                       /*   the card description */
+    NULL                                        /*   the ROM description */
+    };
+
+static DIB pwrf_dib = {                         /* Power Fail (select code 4) */
+    &pwr_interface,                             /*   the device's I/O interface function pointer */
+    PWR,                                        /*   the device's select code (02-77) */
+    0,                                          /*   the card index */
+    NULL,                                       /*   the card description */
+    NULL                                        /*   the ROM description */
+    };
+
+
+/* Unit list.
+
+   The CPU unit "capac" field is set to the current main memory capacity in
+   16-bit words by the "set_size" utility routine.  The CPU does not use a unit
+   event service routine.
 */
 
-DIB cpu_dib = { &cpuio, CPU };
+static UNIT cpu_unit [] = {
+    { UDATA (NULL, UNIT_FIX | UNIT_BINK, 0) }
+    };
 
-UNIT cpu_unit = { UDATA (NULL, UNIT_FIX + UNIT_BINK, 0) };
 
-REG cpu_reg[] = {
-    { ORDATA (P, PC, 15) },
-    { ORDATA (A, AR, 16), REG_FIT },
-    { ORDATA (B, BR, 16), REG_FIT },
-    { ORDATA (M, MR, 15) },
-    { ORDATA (T, TR, 16), REG_RO },
-    { ORDATA (X, XR, 16) },
-    { ORDATA (Y, YR, 16) },
-    { ORDATA (S, SR, 16) },
-    { FLDATA (E, E, 0) },
-    { FLDATA (O, O, 0) },
-    { FLDATA (ION, ion, 0) },
-    { FLDATA (ION_DEFER, ion_defer, 0) },
-    { ORDATA (CIR, intaddr, 6) },
-    { FLDATA (DMSENB, dms_enb, 0) },
-    { FLDATA (DMSCUR, dms_ump, VA_N_PAG) },
-    { ORDATA (DMSSR, dms_sr, 16) },
-    { ORDATA (DMSVR, dms_vr, 16) },
-    { BRDATA (DMSMAP, dms_map, 8, 16, MAP_NUM * MAP_LNT) },
-    { ORDATA (IOPSP, iop_sp, 16) },
-    { FLDATA (STOP_INST, stop_inst, 0) },
-    { FLDATA (STOP_DEV, stop_dev, 1) },
-    { DRDATA (INDMAX, ind_max, 16), REG_NZ + PV_LEFT },
-    { BRDATA (PCQ, pcq, 8, 15, PCQ_SIZE), REG_RO+REG_CIRC },
-    { ORDATA (PCQP, pcq_p, 6), REG_HRO },
-    { ORDATA (JSBPLB, jsb_plb, 32), REG_HRO },
-    { ORDATA (SAVEDMR, saved_MR, 32), REG_HRO },
-    { ORDATA (FWANXM, fwanxm, 32), REG_HRO },
-    { ORDATA (WRU, sim_int_char, 8), REG_HRO },
-    { ORDATA (BRK, sim_brk_char, 8), REG_HRO },
-    { ORDATA (DEL, sim_del_char, 8), REG_HRO },
-    { BRDATA (PRL, dev_prl, 8, 32, 2), REG_HRO },
-    { BRDATA (IRQ, dev_irq, 8, 32, 2), REG_HRO },
-    { BRDATA (SRQ, dev_srq, 8, 32, 2), REG_HRO },
+/* Register list.
+
+   The CPU register list exposes the machine registers for user inspection and
+   modification.
+
+
+   Implementation notes:
+
+    1. All registers that reference variables of type HP_WORD must have the
+       REG_FIT flag for proper access if HP_WORD is a 16-bit type.
+
+    2. The REG_X flag indicates that the register may be displayed in symbolic
+       form.
+
+    3. The T register cannot be modified.  To change a memory location value,
+       the DEPOSIT CPU command must be used.
+*/
+
+static REG cpu_reg [] = {
+/*    Macro   Name     Location            Radix  Width   Offset       Depth                Flags       */
+/*    ------  -------  ------------------  -----  -----  --------  -----------------  ----------------- */
+    { ORDATA (P,       PR,                         15)                                                  },
+    { ORDATA (A,       AR,                         16),                               REG_X             },
+    { ORDATA (B,       BR,                         16),                               REG_X             },
+    { ORDATA (M,       MR,                         15)                                                  },
+    { ORDATA (T,       TR,                         16),                               REG_RO | REG_X    },
+    { ORDATA (X,       XR,                         16),                               REG_X             },
+    { ORDATA (Y,       YR,                         16),                               REG_X             },
+    { ORDATA (S,       SR,                         16),                               REG_X             },
+    { FLDATA (E,       E,                                   0)                                          },
+    { FLDATA (O,       O,                                   0)                                          },
+    { ORDATA (CIR,     CIR,                         6)                                                  },
+
+    { FLDATA (INTSYS,  interrupt_system,                    0)                                          },
+    { FLDATA (INTEN,   cpu_interrupt_enable,                0)                                          },
+
+    { ORDATA (IOPSP,   SPR,                        16)                                                  },
+    { BRDATA (PCQ,     pcq,                  8,    15,             PCQ_SIZE),         REG_CIRC | REG_RO },
+
+    { ORDATA (IR,      IR,                         16),                               REG_HRO           },
+    { ORDATA (SAVEDMR, saved_MR,                   32),                               REG_HRO           },
+    { ORDATA (PCQP,    pcq_p,                       6),                               REG_HRO           },
+
+    { ORDATA (EMASK,   exec_mask,                  16),                               REG_HRO           },
+    { ORDATA (EMATCH,  exec_match,                 16),                               REG_HRO           },
+    { DRDATA (ILIMIT,  indirect_limit,             16),                               REG_HRO           },
+    { ORDATA (FWANXM,  mem_end,                    32),                               REG_HRO           },
+    { ORDATA (CONFIG,  cpu_configuration,          32),                               REG_HRO           },
+    { BRDATA (ROMS,    loader_rom,           8,    32,                 4),            REG_HRO           },
+
+    { FLDATA (IS1000,  is_1000,                             0),                       REG_HRO           },
+    { ORDATA (INTREQ,  interrupt_request,           6),                               REG_HRO           },
+    { ORDATA (LASTSC,  last_select_code,            6),                               REG_HRO           },
+
+    { ORDATA (WRU,     sim_int_char,                8),                               REG_HRO           },
+    { ORDATA (BRK,     sim_brk_char,                8),                               REG_HRO           },
+    { ORDATA (DEL,     sim_del_char,                8),                               REG_HRO           },
+
     { NULL }
     };
 
-/* CPU modifier table.
 
-   The 21MX monikers are deprecated in favor of the 1000 designations.  See the
-   "HP 1000 Series Naming History" on the back inside cover of the Technical
-   Reference Handbook. */
+/* Modifier list.
 
-MTAB cpu_mod[] = {
-    { UNIT_MODEL_MASK, UNIT_2116,   "",   "2116",   &cpu_set_model, &cpu_show_model, (void *) "2116"   },
-    { UNIT_MODEL_MASK, UNIT_2115,   "",   "2115",   &cpu_set_model, &cpu_show_model, (void *) "2115"   },
-    { UNIT_MODEL_MASK, UNIT_2114,   "",   "2114",   &cpu_set_model, &cpu_show_model, (void *) "2114"   },
-    { UNIT_MODEL_MASK, UNIT_2100,   "",   "2100",   &cpu_set_model, &cpu_show_model, (void *) "2100"   },
-    { UNIT_MODEL_MASK, UNIT_1000_E, "",   "1000-E", &cpu_set_model, &cpu_show_model, (void *) "1000-E" },
-    { UNIT_MODEL_MASK, UNIT_1000_E, NULL, "21MX-E", &cpu_set_model, &cpu_show_model, (void *) "1000-E" },
-    { UNIT_MODEL_MASK, UNIT_1000_M, "",   "1000-M", &cpu_set_model, &cpu_show_model, (void *) "1000-M" },
-    { UNIT_MODEL_MASK, UNIT_1000_M, NULL, "21MX-M", &cpu_set_model, &cpu_show_model, (void *) "1000-M" },
+
+   Implementation notes:
+
+    1. The 21MX monikers are deprecated in favor of the 1000 designations.  See
+       the "HP 1000 Series Naming History" on the back inside cover of the
+       Technical Reference Handbook.
+
+    2. The string descriptors are used by the "show_model" routine to print the
+       CPU model numbers prior to appending "loader enabled" or "loader
+       disabled" to the report.
+
+    3. Each CPU option requires three modifiers.  The two regular modifiers
+       control the setting and printing of the option, while the extended
+       modifier controls clearing the option.  The latter is necessary because
+       the option must be checked before confirming the change, and so the
+       option value must be passed to the validation routine.
+*/
+
+static MTAB cpu_mod [] = {
+/*    Mask Value        Match Value  Print String  Match String  Validation     Display      Descriptor        */
+/*    ----------------  -----------  ------------  ------------  -------------  -----------  ----------------- */
+    { UNIT_MODEL_FIELD, UNIT_2116,   "",           "2116",       &set_model,    &show_model, (void *) "2116"   },
+    { UNIT_MODEL_FIELD, UNIT_2115,   "",           "2115",       &set_model,    &show_model, (void *) "2115"   },
+    { UNIT_MODEL_FIELD, UNIT_2114,   "",           "2114",       &set_model,    &show_model, (void *) "2114"   },
+    { UNIT_MODEL_FIELD, UNIT_2100,   "",           "2100",       &set_model,    &show_model, (void *) "2100"   },
+    { UNIT_MODEL_FIELD, UNIT_1000_E, "",           "1000-E",     &set_model,    &show_model, (void *) "1000-E" },
+    { UNIT_MODEL_FIELD, UNIT_1000_M, "",           "1000-M",     &set_model,    &show_model, (void *) "1000-M" },
 
 #if defined (HAVE_INT64)
-    { UNIT_MODEL_MASK, UNIT_1000_F, "",   "1000-F", &cpu_set_model, &cpu_show_model, (void *) "1000-F" },
+    { UNIT_MODEL_FIELD, UNIT_1000_F, "",           "1000-F",     &set_model,    &show_model, (void *) "1000-F" },
 #endif
 
-    { MTAB_XTD | MTAB_VDV, 1, "IDLE", "IDLE",   &cpu_set_idle, &cpu_show_idle, NULL },
-    { MTAB_XTD | MTAB_VDV, 0, NULL,   "NOIDLE", &cpu_set_idle, NULL,           NULL },
+    { UNIT_MODEL_FIELD, UNIT_1000_M, NULL,         "21MX-M",     &set_model,    &show_model, (void *) "1000-M" },
+    { UNIT_MODEL_FIELD, UNIT_1000_E, NULL,         "21MX-E",     &set_model,    &show_model, (void *) "1000-E" },
 
-    { MTAB_XTD | MTAB_VDV, 1, NULL, "LOADERENABLE",  &cpu_set_ldr, NULL, NULL },
-    { MTAB_XTD | MTAB_VDV, 0, NULL, "LOADERDISABLE", &cpu_set_ldr, NULL, NULL },
+    { UNIT_EAU,         UNIT_EAU,    "EAU",        "EAU",        &set_option,   NULL,        NULL              },
+    { UNIT_EAU,         0,           "no EAU",     NULL,         NULL,          NULL,        NULL              },
+    { MTAB_XDV,         UNIT_EAU,     NULL,        "NOEAU",      &clear_option, NULL,        NULL              },
 
-    { UNIT_EAU,     UNIT_EAU,   "EAU",        "EAU",      &cpu_set_opt, NULL, NULL },
-    { UNIT_EAU,     0,          "no EAU",     NULL,       NULL,         NULL, NULL },
-    { MTAB_XTD | MTAB_VDV, UNIT_EAU,    NULL, "NOEAU",    &cpu_clr_opt, NULL, NULL },
+    { UNIT_FP,          UNIT_FP,     "FP",         "FP",         &set_option,   NULL,        NULL              },
+    { UNIT_FP,          0,           "no FP",      NULL,         NULL,          NULL,        NULL              },
+    { MTAB_XDV,         UNIT_FP,      NULL,        "NOFP",       &clear_option, NULL,        NULL              },
 
-    { UNIT_FP,      UNIT_FP,    "FP",         "FP",       &cpu_set_opt, NULL, NULL },
-    { UNIT_FP,      0,          "no FP",      NULL,       NULL,         NULL, NULL },
-    { MTAB_XTD | MTAB_VDV, UNIT_FP,     NULL, "NOFP",     &cpu_clr_opt, NULL, NULL },
+    { UNIT_IOP,         UNIT_IOP,    "IOP",        "IOP",        &set_option,   NULL,        NULL              },
+    { UNIT_IOP,         0,           "no IOP",     NULL,         NULL,          NULL,        NULL              },
+    { MTAB_XDV,         UNIT_IOP,     NULL,        "NOIOP",      &clear_option, NULL,        NULL              },
 
-    { UNIT_IOP,     UNIT_IOP,   "IOP",        "IOP",      &cpu_set_opt, NULL, NULL },
-    { UNIT_IOP,     0,          "no IOP",     NULL,       NULL,         NULL, NULL },
-    { MTAB_XTD | MTAB_VDV, UNIT_IOP,    NULL, "NOIOP",    &cpu_clr_opt, NULL, NULL },
+    { UNIT_DMS,         UNIT_DMS,    "DMS",        "DMS",        &set_option,   NULL,        NULL              },
+    { UNIT_DMS,         0,           "no DMS",     NULL,         NULL,          NULL,        NULL              },
+    { MTAB_XDV,         UNIT_DMS,     NULL,        "NODMS",      &clear_option, NULL,        NULL              },
 
-    { UNIT_DMS,     UNIT_DMS,   "DMS",        "DMS",      &cpu_set_opt, NULL, NULL },
-    { UNIT_DMS,     0,          "no DMS",     NULL,       NULL,         NULL, NULL },
-    { MTAB_XTD | MTAB_VDV, UNIT_DMS,    NULL, "NODMS",    &cpu_clr_opt, NULL, NULL },
+    { UNIT_FFP,         UNIT_FFP,    "FFP",        "FFP",        &set_option,   NULL,        NULL              },
+    { UNIT_FFP,         0,           "no FFP",     NULL,         NULL,          NULL,        NULL              },
+    { MTAB_XDV,         UNIT_FFP,     NULL,        "NOFFP",      &clear_option, NULL,        NULL              },
 
-    { UNIT_FFP,     UNIT_FFP,   "FFP",        "FFP",      &cpu_set_opt, NULL, NULL },
-    { UNIT_FFP,     0,          "no FFP",     NULL,       NULL,         NULL, NULL },
-    { MTAB_XTD | MTAB_VDV, UNIT_FFP,    NULL, "NOFFP",    &cpu_clr_opt, NULL, NULL },
+    { UNIT_DBI,         UNIT_DBI,    "DBI",        "DBI",        &set_option,   NULL,        NULL              },
+    { UNIT_DBI,         0,           "no DBI",     NULL,         NULL,          NULL,        NULL              },
+    { MTAB_XDV,         UNIT_DBI,     NULL,        "NODBI",      &clear_option, NULL,        NULL              },
 
-    { UNIT_DBI,     UNIT_DBI,   "DBI",        "DBI",      &cpu_set_opt, NULL, NULL },
-    { UNIT_DBI,     0,          "no DBI",     NULL,       NULL,         NULL, NULL },
-    { MTAB_XTD | MTAB_VDV, UNIT_DBI,    NULL, "NODBI",    &cpu_clr_opt, NULL, NULL },
+    { UNIT_EMA_VMA,     UNIT_EMA,    "EMA",        "EMA",        &set_option,   NULL,        NULL              },
+    { MTAB_XDV,         UNIT_EMA,     NULL,        "NOEMA",      &clear_option, NULL,        NULL              },
 
-    { UNIT_EMA_VMA, UNIT_EMA,   "EMA",        "EMA",      &cpu_set_opt, NULL, NULL },
-    { MTAB_XTD | MTAB_VDV, UNIT_EMA,    NULL, "NOEMA",    &cpu_clr_opt, NULL, NULL },
+    { UNIT_EMA_VMA,     UNIT_VMAOS,  "VMA",        "VMA",        &set_option,   NULL,        NULL              },
+    { MTAB_XDV,         UNIT_VMAOS,   NULL,        "NOVMA",      &clear_option, NULL,        NULL              },
 
-    { UNIT_EMA_VMA, UNIT_VMAOS, "VMA",        "VMA",      &cpu_set_opt, NULL, NULL },
-    { MTAB_XTD | MTAB_VDV, UNIT_VMAOS,  NULL, "NOVMA",    &cpu_clr_opt, NULL, NULL },
-
-    { UNIT_EMA_VMA, 0,          "no EMA/VMA", NULL,       &cpu_set_opt, NULL, NULL },
+    { UNIT_EMA_VMA,     0,           "no EMA/VMA", NULL,         &set_option,   NULL,        NULL              },
 
 #if defined (HAVE_INT64)
-    { UNIT_VIS,     UNIT_VIS,   "VIS",        "VIS",      &cpu_set_opt, NULL, NULL },
-    { UNIT_VIS,     0,          "no VIS",     NULL,       NULL,         NULL, NULL },
-    { MTAB_XTD | MTAB_VDV, UNIT_VIS,    NULL, "NOVIS",    &cpu_clr_opt, NULL, NULL },
+    { UNIT_VIS,         UNIT_VIS,    "VIS",        "VIS",        &set_option,   NULL,        NULL              },
+    { UNIT_VIS,         0,           "no VIS",     NULL,         NULL,          NULL,        NULL              },
+    { MTAB_XDV,         UNIT_VIS,     NULL,        "NOVIS",      &clear_option, NULL,        NULL              },
 
-    { UNIT_SIGNAL,  UNIT_SIGNAL,"SIGNAL",     "SIGNAL",   &cpu_set_opt, NULL, NULL },
-    { UNIT_SIGNAL,  0,          "no SIGNAL",  NULL,       NULL,         NULL, NULL },
-    { MTAB_XTD | MTAB_VDV, UNIT_SIGNAL, NULL, "NOSIGNAL", &cpu_clr_opt, NULL, NULL },
+    { UNIT_SIGNAL,      UNIT_SIGNAL, "SIGNAL",     "SIGNAL",     &set_option,   NULL,        NULL              },
+    { UNIT_SIGNAL,      0,           "no SIGNAL",  NULL,         NULL,          NULL,        NULL              },
+    { MTAB_XDV,         UNIT_SIGNAL,  NULL,        "NOSIGNAL",   &clear_option, NULL,        NULL              },
 #endif
 
 /* Future microcode support.
-    { UNIT_DS,      UNIT_DS,    "DS",         "DS",       &cpu_set_opt, NULL, NULL },
-    { UNIT_DS,      0,          "no DS",      NULL,       NULL,         NULL, NULL },
-    { MTAB_XTD | MTAB_VDV, UNIT_DS,     NULL, "NODS",     &cpu_clr_opt, NULL, NULL },
+    { UNIT_DS,          UNIT_DS,     "DS",         "DS",         &set_option,   NULL,        NULL              },
+    { UNIT_DS,          0,           "no DS",      NULL,         NULL,          NULL,        NULL              },
+    { MTAB_XDV,         UNIT_DS,      NULL,        "NODS",       &clear_option, NULL,        NULL              },
 */
 
-    { MTAB_XTD | MTAB_VDV,    4096, NULL, "4K",    &cpu_set_size, NULL, NULL },
-    { MTAB_XTD | MTAB_VDV,    8192, NULL, "8K",    &cpu_set_size, NULL, NULL },
-    { MTAB_XTD | MTAB_VDV,   12288, NULL, "12K",   &cpu_set_size, NULL, NULL },
-    { MTAB_XTD | MTAB_VDV,   16384, NULL, "16K",   &cpu_set_size, NULL, NULL },
-    { MTAB_XTD | MTAB_VDV,   24576, NULL, "24K",   &cpu_set_size, NULL, NULL },
-    { MTAB_XTD | MTAB_VDV,   32768, NULL, "32K",   &cpu_set_size, NULL, NULL },
-    { MTAB_XTD | MTAB_VDV,   65536, NULL, "64K",   &cpu_set_size, NULL, NULL },
-    { MTAB_XTD | MTAB_VDV,  131072, NULL, "128K",  &cpu_set_size, NULL, NULL },
-    { MTAB_XTD | MTAB_VDV,  262144, NULL, "256K",  &cpu_set_size, NULL, NULL },
-    { MTAB_XTD | MTAB_VDV,  524288, NULL, "512K",  &cpu_set_size, NULL, NULL },
-    { MTAB_XTD | MTAB_VDV, 1048576, NULL, "1024K", &cpu_set_size, NULL, NULL },
+/*    Entry Flags             Value     Print String  Match String     Validation     Display         Descriptor */
+/*    -------------------  -----------  ------------  ---------------  -------------  --------------  ---------- */
+    { MTAB_XDV,                 0,      "IDLE",       "IDLE",          &sim_set_idle, &sim_show_idle, NULL       },
+    { MTAB_XDV,                 0,      NULL,         "NOIDLE",        &sim_clr_idle, NULL,           NULL       },
+
+    { MTAB_XDV,                 1,      NULL,         "LOADERENABLE",  &set_loader,   NULL,           NULL       },
+    { MTAB_XDV,                 0,      NULL,         "LOADERDISABLE", &set_loader,   NULL,           NULL       },
+
+    { MTAB_XDV,               4 * 1024, NULL,         "4K",            &set_size,     NULL,           NULL       },
+    { MTAB_XDV,               8 * 1024, NULL,         "8K",            &set_size,     NULL,           NULL       },
+    { MTAB_XDV,              12 * 1024, NULL,         "12K",           &set_size,     NULL,           NULL       },
+    { MTAB_XDV,              16 * 1024, NULL,         "16K",           &set_size,     NULL,           NULL       },
+    { MTAB_XDV,              24 * 1024, NULL,         "24K",           &set_size,     NULL,           NULL       },
+    { MTAB_XDV,              32 * 1024, NULL,         "32K",           &set_size,     NULL,           NULL       },
+    { MTAB_XDV,              64 * 1024, NULL,         "64K",           &set_size,     NULL,           NULL       },
+    { MTAB_XDV,             128 * 1024, NULL,         "128K",          &set_size,     NULL,           NULL       },
+    { MTAB_XDV,             256 * 1024, NULL,         "256K",          &set_size,     NULL,           NULL       },
+    { MTAB_XDV,             512 * 1024, NULL,         "512K",          &set_size,     NULL,           NULL       },
+    { MTAB_XDV,            1024 * 1024, NULL,         "1024K",         &set_size,     NULL,           NULL       },
+
+    { MTAB_XDV | MTAB_NMO,      0,      "ROMS",       "ROMS",          &set_roms,     &show_roms,     NULL       },
+    { MTAB_XDV | MTAB_NMO,      0,      "IOCAGE",     NULL,            NULL,          &show_cage,     NULL       },
+
+    { MTAB_XDV | MTAB_NMO,      1,      "STOPS",      "STOP",          &set_stops,    &show_stops,    NULL       },
+    { MTAB_XDV,                 0,      NULL,         "NOSTOP",        &set_stops,    NULL,           NULL       },
+    { MTAB_XDV | MTAB_NMO,      2,      "INDIR",      "INDIR",         &set_stops,    &show_stops,    NULL       },
+
+    { MTAB_XDV | MTAB_NMO,      1,      "EXEC",       "EXEC",          &set_exec,     &show_exec,     NULL       },
+    { MTAB_XDV,                 0,      NULL,         "NOEXEC",        &set_exec,     NULL,           NULL       },
+
+    { MTAB_XDV | MTAB_NMO,      0,      "SPEED",      NULL,            NULL,          &show_speed,    NULL       },
+
     { 0 }
     };
 
-DEBTAB cpu_deb[] = {
-    { "OS",    DEB_OS },
-    { "OSTBG", DEB_OSTBG },
-    { "VMA",   DEB_VMA },
-    { "EMA",   DEB_EMA },
-    { "VIS",   DEB_VIS },
-    { "SIG",   DEB_SIG },
+
+/* Trace list */
+
+static DEBTAB cpu_deb [] = {
+    { "INSTR", TRACE_INSTR },                   /* trace instruction executions */
+    { "DATA",  TRACE_DATA  },                   /* trace memory data accesses */
+    { "FETCH", TRACE_FETCH },                   /* trace memory instruction fetches */
+    { "REG",   TRACE_REG   },                   /* trace register values */
+    { "OPND",  TRACE_OPND  },                   /* trace instruction operands */
+    { "EXEC",  TRACE_EXEC  },                   /* trace matching instruction execution states */
+    { "NOOS",  DEBUG_NOOS  },                   /* RTE-6/VM will not use OS firmware */
     { NULL,    0 }
     };
 
+
+/* Simulation stop list.
+
+   The simulator can be configured to detect certain machine instruction
+   conditions and stop execution when one of them occurs.  Stops may be enabled
+   or disabled individually with these commands:
+
+     SET CPU STOP=<option>[;<option]
+     SET CPU NOSTOP=<option>[;<option]
+
+   The CPU stop table is used to parse the commands and set the appropriate
+   variables to enable or disable the stops.
+
+
+   Implementation notes:
+
+    1. To avoid the testing of stop conditions at run time, they are implemented
+       by setting individual stop status variables either to the appropriate
+       stop code (if enabled) or to SCPE_OK (if disabled).  This allows the
+       affected routines to return the status value unconditionally and cause
+       either a simulator stop or continued execution without a run-time test.
+
+    2. SCPE_IOERR is not actually returned for unreported I/O errors.  Instead,
+       it is simply a flag that a stop code specific to the detected error
+       should be returned.
+
+    3. To permit stops to be bypassed for one instruction execution, routines
+       use the STOP macro to return the value of the applicable stop variable
+       ANDed with the complement of the value of the "cpu_ss_inhibit" variable.
+       The latter is set in the instruction prelude to SS_INHIBIT (i.e., all
+       ones) if a bypass is requested or to SCPE_OK (i.e., all zeros) if not,
+       and is reset to SCPE_OK after each instruction execution.  The effect is
+       that SCPE_OK is returned instead of a simulator stop if a stop condition
+       occurs when a bypass is specified.  This action depends on the value of
+       SCPE_OK being zero (which is guaranteed).
+*/
+
+typedef struct {
+    const char  *name;                          /* stop name */
+    t_stat      *status;                        /* pointer to the stop status variable */
+    t_stat      value;                          /* stop status return value */
+    } STOPTAB;
+
+static STOPTAB cpu_stop [] = {
+    { "UNIMPL", &cpu_ss_unimpl, STOP_UNIMPL },  /* stop on an unimplemented instruction */
+    { "UNDEF",  &cpu_ss_undef,  STOP_UNDEF  },  /* stop on an undefined instruction */
+    { "UNSC",   &cpu_ss_unsc,   STOP_UNSC   },  /* stop on I/O to an unassigned select code */
+    { "IOERR",  &cpu_ss_ioerr,  SCPE_IOERR  },  /* stop on an unreported I/O error */
+    { NULL,     NULL,           0           }
+    };
+
+
+/* Device descriptor */
+
 DEVICE cpu_dev = {
-    "CPU",                                  /* device name */
-    &cpu_unit,                              /* unit array */
-    cpu_reg,                                /* register array */
-    cpu_mod,                                /* modifier array */
-    1,                                      /* number of units */
-    8,                                      /* address radix */
-    PA_N_SIZE,                              /* address width */
-    1,                                      /* address increment */
-    8,                                      /* data radix */
-    16,                                     /* data width */
-    &cpu_ex,                                /* examine routine */
-    &cpu_dep,                               /* deposit routine */
-    &cpu_reset,                             /* reset routine */
-    &cpu_boot,                              /* boot routine */
-    NULL,                                   /* attach routine */
-    NULL,                                   /* detach routine */
-    &cpu_dib,                               /* device information block */
-    DEV_DEBUG,                              /* device flags */
-    0,                                      /* debug control flags */
-    cpu_deb,                                /* debug flag name table */
-    NULL,                                   /* memory size change routine */
-    NULL };                                 /* logical device name */
+    "CPU",                                      /* device name */
+    cpu_unit,                                   /* unit array */
+    cpu_reg,                                    /* register array */
+    cpu_mod,                                    /* modifier array */
+    1,                                          /* number of units */
+    8,                                          /* address radix */
+    PA_WIDTH,                                   /* address width */
+    1,                                          /* address increment */
+    8,                                          /* data radix */
+    16,                                         /* data width */
+    &cpu_examine,                               /* examine routine */
+    &cpu_deposit,                               /* deposit routine */
+    &cpu_reset,                                 /* reset routine */
+    &cpu_boot,                                  /* boot routine */
+    NULL,                                       /* attach routine */
+    NULL,                                       /* detach routine */
+    &cpu_dib,                                   /* device information block pointer */
+    DEV_DEBUG,                                  /* device flags */
+    0,                                          /* debug control flags */
+    cpu_deb,                                    /* debug flag name table */
+    NULL,                                       /* memory size change routine */
+    NULL                                        /* logical device name */
+    };
 
-/* Overflow device information block */
 
-DIB ovfl_dib = { &ovflio, OVF };
 
-/* Powerfail device information block */
+/* I/O subsystem local data structures */
 
-DIB pwrf_dib = { &pwrfio, PWR };
 
-/* Memory protect data structures
+/* Signal names */
 
-   mp_dib       MP device information block
-   mp_dev       MP device descriptor
-   mp_unit      MP unit descriptor
-   mp_reg       MP register list
-   mp_mod       MP modifiers list
+static const BITSET_NAME inbound_names [] = {   /* Inbound signal names, in INBOUND_SIGNAL order */
+    "PON",                                      /*   000000000001 */
+    "IOI",                                      /*   000000000002 */
+    "IOO",                                      /*   000000000004 */
+    "SFS",                                      /*   000000000010 */
+    "SFC",                                      /*   000000000020 */
+    "STC",                                      /*   000000000040 */
+    "CLC",                                      /*   000000000100 */
+    "STF",                                      /*   000000000200 */
+    "CLF",                                      /*   000000000400 */
+    "EDT",                                      /*   000000001000 */
+    "CRS",                                      /*   000000002000 */
+    "POPIO",                                    /*   000000004000 */
+    "IAK",                                      /*   000000010000 */
+    "ENF",                                      /*   000000020000 */
+    "SIR",                                      /*   000000040000 */
+    "IEN",                                      /*   000000100000 */
+    "PRH"                                       /*   000000200000 */
+    };
+
+static const BITSET_FORMAT inbound_format =     /* names, offset, direction, alternates, bar */
+    { FMT_INIT (inbound_names, 0, lsb_first, no_alt, no_bar) };
+
+
+static const BITSET_NAME outbound_names [] = {  /* Outbound signal names, in OUTBOUND_SIGNAL order */
+    "SKF",                                      /*   000000000001 */
+    "PRL",                                      /*   000000000002 */
+    "FLG",                                      /*   000000000004 */
+    "IRQ",                                      /*   000000000010 */
+    "SRQ"                                       /*   000000000020 */
+    };
+
+static const BITSET_FORMAT outbound_format =    /* names, offset, direction, alternates, bar */
+    { FMT_INIT (outbound_names, 0, lsb_first, no_alt, no_bar) };
+
+
+/* I/O signal tables.
+
+   These tables contain the set of I/O signals that are appropriate for each I/O
+   operation.  Two tables are defined.
+
+   The first table defines the backplane signals generated by each I/O Group
+   operation.  A signal set is sent to the device interface associated with the
+   select code specified in an IOG instruction to direct the operation of the
+   interface.  Backplane signals map closely to IOG instructions.  For example,
+   the SFS instruction asserts the SFS backplane signal to the interface card.
+
+   The hardware ENF and SIR signals are periodic.  In simulation, they are
+   asserted only when the flag buffer or the flag and control flip-flops are
+   changed, respectively.
+
+   The second table defines the signals generated in addition to the explicitly
+   asserted signal.  Specifically, asserting PON also asserts POPIO and CRS,
+   and asserting POPIO also asserts CRS.  The ENF and SIR signals are asserted
+   when necessary as described above.
 */
 
-DIB mp_dib = { &protio, PRO };
+static const INBOUND_SET control_set [] = {     /* indexed by IO_GROUP_OP */
+    ioNONE,                                     /*   iog_HLT */
+    ioSTF  | ioENF | ioSIR,                     /*   iog_STF */
+    ioSFC,                                      /*   iog_SFC */
+    ioSFS,                                      /*   iog_SFS */
+    ioIOI,                                      /*   iog_MIx */
+    ioIOI,                                      /*   iog_LIx */
+    ioIOO,                                      /*   iog_OTx */
+    ioSTC          | ioSIR,                     /*   iog_STC */
 
-UNIT mp_unit = { UDATA (NULL, UNIT_MP_SEL1, 0) };       /* default is JSB in, INT in, SEL1 out */
+    ioNONE | ioCLF | ioSIR,                     /*   iog_HLT_C */
+    ioCLF          | ioSIR,                     /*   iog_CLF */
+    ioSFC  | ioCLF | ioSIR,                     /*   iog_SFC_C */
+    ioSFS  | ioCLF | ioSIR,                     /*   iog_SFS_C */
+    ioIOI  | ioCLF | ioSIR,                     /*   iog_MIx_C */
+    ioIOI  | ioCLF | ioSIR,                     /*   iog_LIx_C */
+    ioIOO  | ioCLF | ioSIR,                     /*   iog_OTx_C */
+    ioSTC  | ioCLF | ioSIR,                     /*   iog_STC_C */
 
-REG mp_reg[] = {
-    { FLDATA (CTL, mp_control, 0) },
-    { FLDATA (FLG, mp_flag, 0) },
-    { FLDATA (FBF, mp_flagbuf, 0) },
-    { ORDATA (FR, mp_fence, 15) },
-    { ORDATA (VR, mp_viol, 16) },
-    { FLDATA (EVR, mp_evrff, 0) },
-    { FLDATA (MEV, mp_mevff, 0) },
-    { NULL }
+    ioCLC          | ioSIR,                     /*   iog_CLC */
+    ioCLC  | ioCLF | ioSIR                      /*   iog_CLC_C */
     };
 
-MTAB mp_mod[] = {
-    { UNIT_MP_JSB, UNIT_MP_JSB, "JSB (W5) out", "JSBOUT", NULL },
-    { UNIT_MP_JSB, 0, "JSB (W5) in", "JSBIN", NULL },
-    { UNIT_MP_INT, UNIT_MP_INT, "INT (W6) out", "INTOUT", NULL },
-    { UNIT_MP_INT, 0, "INT (W6) in", "INTIN", NULL },
-    { UNIT_MP_SEL1, UNIT_MP_SEL1, "SEL1 (W7) out", "SEL1OUT", NULL },
-    { UNIT_MP_SEL1, 0, "SEL1 (W7) in", "SEL1IN", NULL },
-    { 0 }
+static const INBOUND_SET assert_set [] = {      /* indexed by IO_ASSERTION */
+    ioENF                             | ioSIR,  /*   ioa_ENF */
+    ioSIR,                                      /*   ioa_SIR */
+    ioPON   | ioPOPIO | ioCRS | ioENF | ioSIR,  /*   ioa_PON */
+    ioPOPIO | ioCRS           | ioENF | ioSIR,  /*   ioa_POPIO */
+    ioCRS                     | ioENF | ioSIR,  /*   ioa_CRS */
+    ioIAK                             | ioSIR   /*   ioa_IAK */
     };
 
-DEVICE mp_dev = {
-    "MP",                                   /* device name */
-    &mp_unit,                               /* unit array */
-    mp_reg,                                 /* register array */
-    mp_mod,                                 /* modifier array */
-    1,                                      /* number of units */
-    8,                                      /* address radix */
-    1,                                      /* address width */
-    1,                                      /* address increment */
-    8,                                      /* data radix */
-    16,                                     /* data width */
-    NULL,                                   /* examine routine */
-    NULL,                                   /* deposit routine */
-    &mp_reset,                              /* reset routine */
-    NULL,                                   /* boot routine */
-    NULL,                                   /* attach routine */
-    NULL,                                   /* detach routine */
-    &mp_dib,                                /* device information block */
-    DEV_DISABLE | DEV_DIS,                  /* device flags */
-    0,                                      /* debug control flags */
-    NULL,                                   /* debug flag name table */
-    NULL,                                   /* memory size change routine */
-    NULL };                                 /* logical device name */
 
-/* DMA controller data structures
+/* Interrupt enable table.
 
-   dmax_dib     DMAx device information block
-   dmax_dev     DMAx device descriptor
-   dmax_reg     DMAx register list
+   I/O Group instructions that alter the interrupt priority chain must delay
+   recognition of interrupts until the following instruction completes.  The HP
+   1000 microcode does this by executing an IOFF micro-order to clear the
+   interrupt enable (INTEN) flip-flop.  The table below gives the INTEN state
+   for each I/O instruction; CLEAR corresponds to an IOFF micro-order, while SET
+   corresponds to ION.  The table is also indexed by the "is_1000" selector, as
+   the disable rules are different for the 21xx and 1000 machines.
 */
 
-DIB dmap1_dib = { &dmapio, DMA1,   ch1 };
-DIB dmas1_dib = { &dmasio, DMALT1, ch1 };
+static const t_bool enable_map [2] [18] = {             /* interrupt enable table, indexed by is_1000 and IO_GROUP_OP */
+/*    HLT    STF    SFC    SFS    MIx    LIx    OTx    STC   */
+/*    HLT_C  CLF    SFC_C  SFS_C  MIx_C  LIx_C  OTx_C  STC_C */
+/*    CLC    CLC_C                                           */
+/*    -----  -----  -----  -----  -----  -----  -----  ----- */
+    { CLEAR, CLEAR, SET,   SET,   SET,   SET,   SET,   CLEAR,   /* 21xx */
+      CLEAR, CLEAR, SET,   SET,   SET,   SET,   SET,   CLEAR,   /* 21xx */
+      CLEAR, CLEAR },
 
-UNIT dma1_unit = { UDATA (NULL, 0, 0) };
-
-REG dma1_reg[] = {
-    { FLDATA (XFR,    dma [ch1].xferen,   0) },
-    { FLDATA (CTL,    dma [ch1].control,  0) },
-    { FLDATA (FLG,    dma [ch1].flag,     0) },
-    { FLDATA (FBF,    dma [ch1].flagbuf,  0) },
-    { FLDATA (CTL2,   dma [ch1].select,   0) },
-    { ORDATA (CW1,    dma [ch1].cw1,     16) },
-    { ORDATA (CW2,    dma [ch1].cw2,     16) },
-    { ORDATA (CW3,    dma [ch1].cw3,     16) },
-    { FLDATA (BYTE,   dma [ch1].packer,  31) },
-    { ORDATA (PACKER, dma [ch1].packer,   8) },
-    { NULL }
+    { CLEAR, CLEAR, CLEAR, CLEAR, SET,   SET,   SET,   CLEAR,   /* 1000 */
+      CLEAR, CLEAR, CLEAR, CLEAR, SET,   SET,   SET,   CLEAR,   /* 1000 */
+      CLEAR, CLEAR }
     };
 
-DEVICE dma1_dev = {
-    "DMA1",                                 /* device name */
-    &dma1_unit,                             /* unit array */
-    dma1_reg,                               /* register array */
-    NULL,                                   /* modifier array */
-    1,                                      /* number of units */
-    8,                                      /* address radix */
-    1,                                      /* address width */
-    1,                                      /* address increment */
-    8,                                      /* data radix */
-    16,                                     /* data width */
-    NULL,                                   /* examine routine */
-    NULL,                                   /* deposit routine */
-    &dma_reset,                             /* reset routine */
-    NULL,                                   /* boot routine */
-    NULL,                                   /* attach routine */
-    NULL,                                   /* detach routine */
-    &dmap1_dib,                             /* device information block */
-    DEV_DISABLE,                            /* device flags */
-    0,                                      /* debug control flags */
-    NULL,                                   /* debug flag name table */
-    NULL,                                   /* memory size change routine */
-    NULL };                                 /* logical device name */
 
-DIB dmap2_dib = { &dmapio, DMA2,   ch2 };
-DIB dmas2_dib = { &dmasio, DMALT2, ch2 };
+/* I/O access table.
 
-UNIT dma2_unit = { UDATA (NULL, 0, 0) };
+   I/O signals are directed to specific interface cards by specifying their
+   locations in the I/O card cage.  Each location is assigned a number, called a
+   select code, that is specified by I/O Group instructions to indicate the
+   interface card to activate.
 
-REG dma2_reg[] = {
-    { FLDATA (XFR,    dma [ch2].xferen,   0) },
-    { FLDATA (CTL,    dma [ch2].control,  0) },
-    { FLDATA (FLG,    dma [ch2].flag,     0) },
-    { FLDATA (FBF,    dma [ch2].flagbuf,  0) },
-    { FLDATA (CTL2,   dma [ch2].select,   0) },
-    { ORDATA (CW1,    dma [ch2].cw1,     16) },
-    { ORDATA (CW2,    dma [ch2].cw2,     16) },
-    { ORDATA (CW3,    dma [ch2].cw3,     16) },
-    { FLDATA (BYTE,   dma [ch2].packer,  31) },
-    { ORDATA (PACKER, dma [ch2].packer,   8) },
-    { NULL }
+   In simulation, the select code corresponding to each interface is stored in
+   the corresponding Device Information Block (DIB).  To avoid having to scan
+   the device list each time an I/O instruction is executed, an I/O access table
+   is filled in as part of I/O initialization in the instruction execution
+   prelude.  The table is indexed by select code (00-77 octal) and contains
+   pointers to the device and DIB structures associated with each index.
+
+   Initialization is performed during each "sim_instr" call, as the select code
+   assignments may have been changed by the user at the SCP prompt.
+
+
+   Implementation notes:
+
+    1. The entries for select codes 0 and 1 (the CPU and Overflow Register,
+       respectively) are initialized here, as they are always present (i.e.,
+       cannot be disabled) and cannot change.
+
+    2. The table contains constant pointers, but "const" cannot be used here, as
+       "hp_trace" calls "sim_dname", which takes a variable device pointer even
+       though it does not change anything.
+
+    3. The "references" entries are used only during table initialization to
+       ensure that each select code is referenced by only one device.
+*/
+
+typedef struct {                            /* I/O access table entry */
+    DEVICE *devptr;                         /*   a pointer to the DEVICE structure */
+    DIB    *dibptr;                         /*   a pointer to the DIB structure */
+    uint32 references;                      /*   a count of the references to this select code */
+    } IO_TABLE;
+
+static IO_TABLE iot [SC_MAX + 1] = {         /* index by select code for I/O instruction dispatch */
+    { &cpu_dev, &cpu_dib,  0 },              /*   select code 00 = interrupt system */
+    { &cpu_dev, &ovfl_dib, 0 }               /*   select code 01 = overflow register */
     };
 
-DEVICE dma2_dev = {
-    "DMA2",                                 /* device name */
-    &dma2_unit,                             /* unit array */
-    dma2_reg,                               /* register array */
-    NULL,                                   /* modifier array */
-    1,                                      /* number of units */
-    8,                                      /* address radix */
-    1,                                      /* address width */
-    1,                                      /* address increment */
-    8,                                      /* data radix */
-    16,                                     /* data width */
-    NULL,                                   /* examine routine */
-    NULL,                                   /* deposit routine */
-    &dma_reset,                             /* reset routine */
-    NULL,                                   /* boot routine */
-    NULL,                                   /* attach routine */
-    NULL,                                   /* detach routine */
-    &dmap2_dib,                             /* device information block */
-    DEV_DISABLE,                            /* device flags */
-    0,                                      /* debug control flags */
-    NULL,                                   /* debug flag name table */
-    NULL,                                   /* memory size change routine */
-    NULL };                                 /* logical device name */
 
-static DEVICE *dma_dptrs [] = { &dma1_dev, &dma2_dev };
+/* I/O subsystem local utility routine declarations */
+
+static t_bool initialize_io (t_bool is_executing);
 
 
-/* Interrupt deferral table (1000 version) */
-/* Deferral for I/O subops:    soHLT, soFLG, soSFC, soSFS, soMIX, soLIX, soOTX, soCTL */
-static t_bool defer_tab [] = { FALSE,  TRUE,  TRUE,  TRUE, FALSE, FALSE, FALSE,  TRUE };
 
-/* Device I/O dispatch table */
-
-DIB *dtab [64] = { &cpu_dib, &ovfl_dib };               /* init with immutable devices */
-
+/* CPU global SCP support routines */
 
 
 /* Execute CPU instructions.
 
-   This routine is the instruction decode routine for the HP 2100.  It is called
-   from the simulator control program to execute instructions in simulated
-   memory, starting at the simulated PC.  It runs until 'reason' is set to a
-   status other than SCPE_OK.
-*/
+   This is the instruction decode routine for the HP 21xx/1000 simulator.  It is
+   called from the simulator control program (SCP) to execute instructions in
+   simulated memory, starting at the simulated program counter.  It runs until
+   the status to be returned is set to a value other than SCPE_OK.
 
-t_stat sim_instr (void)
-{
-uint32 intrq, dmarq;                                    /* set after setjmp */
-uint32 iotrap = 0;                                      /* set after setjmp */
-t_stat reason = SCPE_OK;                                /* set after setjmp */
-int32 i;                                                /* temp */
-DEVICE *dptr;                                           /* temp */
-DIB *dibptr;                                            /* temp */
-int abortval;
+   On entry, P points to the instruction to execute, and the "sim_switches"
+   global contains any command-line switches included with the RUN command.  On
+   exit, P points at the next instruction to execute.
 
-/* Restore register state */
+   Execution is divided into four phases.
 
-if (dev_conflict ())                                    /* check device assignment consistency */
-    return SCPE_STOP;                                   /* conflict; stop execution */
+   First, the instruction prelude configures the simulation state to resume
+   execution.  This involves verifying that there are no device conflicts (e.g.,
+   two devices with the same select code) and initializing the I/O state.  These
+   actions accommodate reconfiguration of the I/O device settings and program
+   counter while the simulator was stopped.  The prelude also checks for one
+   command-line switch: if "-B" is specified, the current set of simulation stop
+   conditions is bypassed for the first instruction executed.
 
-err_PC = PC = PC & VAMASK;                              /* load local PC */
+   Second, the memory protect option is initialized.  MP aborts utilize the
+   "setjmp/longjmp" mechanism to transfer control out of the instruction
+   executors without returning through the call stack.  This allows an
+   instruction to be aborted part-way through execution when continuation is
+   impossible due to a memory access violation.  An MP abort returns to the main
+   instruction loop at the "setjmp" routine.
 
-/* Restore I/O state */
+   Third, the instruction execution loop decodes instructions and calls the
+   individual executors in turn until a condition occurs that prevents further
+   execution.  Examples of such conditions include execution of a HLT
+   instruction, a user stop request (CTRL+E) from the simulation console, a
+   recoverable device error (such as an improperly formatted tape image), a
+   user-specified breakpoint, and a simulation stop condition (such as execution
+   of an unimplemented instruction).  The execution loop also polls for I/O
+   events and device interrupts, and runs DMA channel cycles.  During
+   instruction execution, the IR register contains the currently executing
+   instruction, and the P register points to the memory location containing the
+   next instruction.
 
-dev_prl [0] = dev_prl [1] = ~(uint32) 0;                /* set all priority lows */
-dev_irq [0] = dev_irq [1] = 0;                          /* clear all interrupt requests */
-dev_srq [0] = dev_srq [1] = 0;                          /* clear all service requests */
-
-for (i = OPTDEV; i <= MAXDEV; i++)                      /* default optional devices */
-    dtab [i] = &null_dib;
-
-dtab [PWR] = &pwrf_dib;                                 /* for now, powerfail is always present */
-
-for (i = 0; sim_devices [i] != NULL; i++) {             /* loop thru dev */
-    dptr = sim_devices [i];
-    dibptr = (DIB *) dptr->ctxt;                        /* get DIB */
-
-    if (dibptr && !(dptr->flags & DEV_DIS)) {           /* handler exists and device is enabled? */
-        dtab [dibptr->select_code] = dibptr;            /* set DIB pointer into dispatch table */
-        dibptr->io_handler (dibptr, ioSIR, 0);          /* set interrupt request state */
-        }
-    }
-
-if (dtab [DMA1] != &null_dib)                           /* first DMA channel enabled? */
-    dtab [DMALT1] = &dmas1_dib;                         /* set up secondary device handler */
-
-if (dtab [DMA2] != &null_dib)                           /* second DMA channel enabled? */
-    dtab [DMALT2] = &dmas2_dib;                         /* set up secondary device handler */
-
-/* Configure interrupt deferral table */
-
-if (UNIT_CPU_FAMILY == UNIT_FAMILY_21XX)                /* 21xx series? */
-    defer_tab [soSFC] = defer_tab [soSFS] = FALSE;      /* SFC/S doesn't defer */
-else                                                    /* 1000 series */
-    defer_tab [soSFC] = defer_tab [soSFS] = TRUE;       /* SFC/S does defer */
+   Fourth, the instruction postlude updates the simulation state in preparation
+   for returning to the SCP command prompt.  Devices that maintain an internal
+   state different from their external state, such as the MEM status and
+   violation registers, are updated so that their internal and external states
+   are fully consistent.  This ensures that the state visible to the user during
+   the simulation stop is correct.  It also ensures that the program counter
+   points correctly at the next instruction to execute upon resumption.
 
 
-/* Set MP abort handling.
+   The instruction execution loop starts by checking for event timer expiration.
+   If one occurs, the associated device's service routine is called by the
+   "sim_process_event" routine.  Then a check for DMA service requests is made.
+   If a request is active, the "dma_service" routine is called to process it.
 
-   If an abort occurs in memory protection, the relocation routine executes a
-   longjmp to this area OUTSIDE the main simulation loop.  Memory protection
-   errors are the only sources of aborts in the HP 2100.  All referenced
-   variables must be globals, and all sim_instr scoped automatics must be set
-   after the setjmp.
-
-   To initiate an MP abort, use the MP_ABORT macro and pass the violation
-   address.  MP_ABORT should only be called if "mp_control" is SET, as aborts do
-   not occur if MP is turned off.
-
-   An MP interrupt (SC 05) is qualified by "ion" but not by "ion_defer".  If the
-   interrupt system is off when an MP violation is detected, the violating
-   instruction will be aborted, even though no interrupt occurs.  In this case,
-   neither the flag nor flag buffer are set, and EVR is not cleared.
-
-   Implementation notes:
-
-    1. The protected lower bound address for the JSB instruction depends on the
-       W5 jumper setting.  If W5 is in, then the lower bound is 2, allowing JSBs
-       to the A and B registers.  If W5 is out, then the lower bound is 0, just
-       as with JMP.
-
-    2. The violation address is passed to enable the MEM violation register to
-       be updated.  The "longjmp" routine will not pass a value of 0; it is
-       converted internally to 1.  This is OK, because only the page number
-       of the address value is used, and locations 0 and 1 are both on page 0.
-
-    3. This routine is used both for MP and MEM violations.  The MEV flip-flop
-       will be clear for the former and set for the latter.  The MEV violation
-       register will be updated by "dms_upd_vr" only if the call is NOT for an
-       MEM violation; if it is, then the VR has already been set and should not
-       be disturbed.
-*/
-
-jsb_plb = (mp_unit.flags & UNIT_MP_JSB) ? 0 : 2;        /* set protected lower bound for JSB */
-
-abortval = setjmp (save_env);                           /* set abort hdlr */
-
-if (abortval) {                                         /* memory protect abort? */
-    dms_upd_vr (abortval);                              /* update violation register (if not MEV) */
-
-    if (ion)                                            /* interrupt system on? */
-        protio (dtab [PRO], ioENF, 0);                  /* set flag */
-    }
-
-dmarq = calc_dma ();                                    /* initial recalc of DMA masks */
-intrq = calc_int ();                                    /* initial recalc of interrupts */
-
-
-/* Main instruction fetch/decode loop */
-
-while (reason == SCPE_OK) {                             /* loop until halted */
-    uint32 IR, MA, absel, v1, t, skip;
-
-    err_PC = PC;                                        /* save PC for error recovery */
-
-    if (sim_interval <= 0) {                            /* event timeout? */
-        reason = sim_process_event ();                  /* process event service */
-
-        if (reason != SCPE_OK)                          /* service failed? */
-            break;                                      /* stop execution */
-
-        dmarq = calc_dma ();                            /* recalc DMA reqs */
-        intrq = calc_int ();                            /* recalc interrupts */
-        }
-
-/* DMA cycles are requested by an I/O card asserting its SRQ signal.  If a DMA
-   channel is programmed to respond to that card's select code, a DMA cycle will
-   be initiated.  A DMA cycle consists of a memory cycle and an I/O cycle.
-   These cycles are synchronized with the control processor on the 21xx CPUs.
-   On the 1000s, memory cycles are asynchronous, while I/O cycles are
-   synchronous.  Memory cycle time is about 40% of the I/O cycle time.
+   DMA cycles are requested by an I/O card asserting its SRQ signal.  If a DMA
+   channel is programmed to respond to that card's select code, the channel's
+   service request flag is set in the "dma_request_set".  On each pass through
+   the instruction execution loop, "dma_request_set" is checked; if it is
+   non-zero, a DMA cycle will be initiated.  A DMA cycle consists of a memory
+   cycle and an I/O cycle.  These cycles are synchronized with the control
+   processor on the 21xx CPUs.  On the 1000s, memory cycles are asynchronous,
+   while I/O cycles are synchronous.  Memory cycle time is about 40% of the I/O
+   cycle time.
 
    With properly designed interface cards, DMA is capable of taking consecutive
    I/O cycles.  On all machines except the 1000 M-Series, a DMA cycle freezes
@@ -1152,7 +1822,10 @@ while (reason == SCPE_OK) {                             /* loop until halted */
    memory cycle.  An interleaved memory cycle is allowed.  Otherwise, the
    control processor is allowed to run.  Therefore, during consecutive DMA
    cycles, the M-Series CPU will run until an IOG instruction is attempted,
-   whereas the other CPUs will freeze completely.
+   whereas the other CPUs will freeze completely.  This is simulated by skipping
+   instruction execution if "dma_request_set" is still non-zero after servicing
+   the current request, i.e., if the device asserted SRQ again as a result of
+   the DMA cycle.
 
    All DMA cards except the 12607B provide two independent channels.  If both
    channels are active simultaneously, channel 1 has priority for I/O cycles
@@ -1164,911 +1837,1088 @@ while (reason == SCPE_OK) {                             /* loop until halted */
    channel 1 is asserted continuously when both channels are active, then no
    channel 2 cycles will occur until channel 1 completes.
 
+   After DMA servicing, a check for pending interrupt requests is made.
+
+   Interrupt recognition in the HP 1000 CPU is controlled by three state
+   variables: "interrupt_system", "cpu_interrupt_enable", and
+   "interrupt_request".  "interrupt_system" corresponds to the INTSYS flip-flop
+   in the 1000 CPU, "cpu_interrupt_enable" corresponds to the INTEN flip-flop,
+   and "interrupt_request" corresponds to the NRMINT flip-flop.  STF 00 and CLF
+   00 set and clear INTSYS, turning the interrupt system on and off.  Microcode
+   instructions ION and IOFF set and clear INTEN, enabling or disabling certain
+   interrupts.  An IRQ signal from a device, qualified by the corresponding PRH
+   and IEN signals, will set NRMINT to request a normal interrupt; an IOFF or
+   IAK will clear it.
+
+   Under simulation, "interrupt_system" is controlled by STF/CLF 00.
+   "cpu_interrupt_enable" is set or cleared as appropriate by the individual
+   instruction simulators.  "interrupt_request" is set to the successfully
+   interrupting device's select code, or to zero if there is no qualifying
+   interrupt request.
+
+   The rules controlling interrupt recognition are:
+
+    1. Power fail (SC 04) may interrupt if "cpu_interrupt_enable" is set; this
+       is not conditional on "interrupt_system" being set.
+
+    2. Memory protect (SC 05) may interrupt if "interrupt_system" is set; this
+       is not conditional on "cpu_interrupt_enable" being set.
+
+    3. Parity error (SC 05) may interrupt always; this is not conditional on
+       either "interrupt_system" or "cpu_interrupt_enable" being set.
+
+    4. All other devices (SC 06 and up) may interrupt only if both
+      "interrupt_system" and "cpu_interrupt_enable" are set.
+
+   Qualification with "interrupt_system" is performed by the I/O dispatcher,
+   which asserts IEN to the device interface if the interrupt system is on.  All
+   interfaces other than Power Fail or Parity Error assert IRQ only if IEN is
+   asserted.  If IEN is denied, i.e., the interrupt system is off, then only
+   Power Fail and Parity Error will assert IRQ and thereby set the
+   "interrupt_request" value to their respective select codes.  Therefore, we
+   need only qualify by "cpu_interrupt_enable" here.
+
+   At instruction fetch time, a pending interrupt request will be deferred if
+   the previous instruction was a JMP indirect, JSB indirect, STC, CLC, STF,
+   CLF, or, for a 1000-series CPU, an SFS, SFC, JRS, DJP, DJS, SJP, SJS, UJP, or
+   UJS.  The executors for these instructions clear the "cpu_interrupt_enable"
+   flag, which is then set unilaterally when each instruction is dispatched.
+   The flag is also cleared by an interrupt acknowledgement, deferring
+   additional interrupts until after the instruction in the trap cell is
+   executed.
+
+   On the HP 1000, an interrupt request is always deferred until after the
+   current instruction completes.  On the 21xx, the request is deferred unless
+   the current instruction is an MRG instruction other than JMP or JMP,I or
+   JSB,I.  Note that for the 21xx, SFS and SFC are not included in the deferral
+   criteria.  In simulation, the "reenable_interrupts" routine is called to
+   handle this case.
+
+
+   When a status other than SCPE_OK is returned from an instruction executor or
+   event service routine, the instruction execution loop exits into the
+   instruction postlude.  The set of debug trace flags is restored if it had
+   been changed by an active execution trace or idle trace suppression.  This
+   ensures that the simulation stop does not exit with the flags set improperly.
+   If the simulation stopped for a programmed halt, the 21xx binary loader area
+   is protected in case it had been unprotected to run the loader.  The MEU
+   status and violation registers and the program counter queue pointer are
+   updated to present the proper values to the user interface.  The default
+   breakpoint type is updated to reflect the current MEU state (disabled, system
+   map enabled, or user map enabled).  Finally, the P register is reset if the
+   current instruction is to be reexecuted on reentry (for example, on an
+   unimplemented instruction stop).
+
+
    Implementation notes:
 
-    1. CPU freeze is simulated by skipping instruction execution during the
+    1. While the Microsoft VC++ "setjmp" documentation says, "All variables
+       (except register variables) accessible to the routine receiving control
+       contain the values they had when longjmp was called," the ISO C99
+       standard says, "All accessible objects have values...as of the time the
+       longjmp function was called, except that the values of objects of
+       automatic storage duration that are local to the function containing the
+       invocation of the corresponding setjmp macro that do not have
+       volatile-qualified type and have been changed between the setjmp
+       invocation and longjmp call are indeterminate."
+
+       Therefore, the "exec_save" and "idle_save" variables are marked static
+       to ensure that they are reloaded after a longjmp caused by a memory
+       protect abort (they are not marked volatile to save redundant reloads
+       within the instruction execution loop).  Also, "status" and "exec_test"
+       are set before reentering the instruction loop after an abort.  This is
+       done solely to reassure the compiler that the values are not clobbered,
+       even though in both cases the values are reestablished after an abort
+       before they are used.
+
+    2. The C standard requires that the "setjmp" call be made from a frame that
+       is still active (i.e., still on the stack) when "longjmp" is called.
+       Consequently, we must call "setjmp" from this routine rather than a
+       subordinate routine that will have exited (to return to this routine)
+       when the "longjmp" call is made.
+
+    3. The -P switch is removed from the set of command line switches to ensure
+       that internal calls to the device reset routines are not interpreted as
+       "power-on" resets.
+
+    4. A CPU freeze is simulated by skipping instruction execution during the
        current loop cycle.
 
-    2. If both channels have SRQ asserted, DMA priority is simulated by skipping
-       the channel 2 cycle if channel 1's SRQ is still asserted at the end of
-       its cycle.  If it is not, then channel 2 steals the next cycle from the
-       CPU.
-
-    3. The 1000 M-Series allows some CPU processing concurrently with
+    5. The 1000 M-Series allows some CPU processing concurrently with
        continuous DMA cycles, whereas all other CPUs freeze.  The processor
        freezes if an I/O cycle is attempted, including an interrupt
        acknowledgement.  Because some microcode extensions (e.g., Access IOP,
        RTE-6/VM OS) perform I/O cycles, advance detection of I/O cycles is
        difficult.  Therefore, we freeze all processing for the M-Series as well.
+
+    6. EXEC tracing is active when exec_save is non-zero.  "exec_save" saves the
+       current state of the trace flags when an EXEC trace match occurs.  For
+       this to happen, at least TRACE_EXEC must be set, so "exec_save" will be
+       set non-zero when a match is active.
+
+    7. The execution trace (TRACE_EXEC) match test is performed in two parts to
+       display the register values both before and after the instruction
+       execution.  Consequently, the enable test is done before the register
+       trace, and the disable test is done after.
+
+    8. A simulation stop bypass is inactivated after the first instruction
+       execution by the expedient of setting the stop inhibition mask to the
+       execution status result.  This must be SCPE_OK (i.e., zero) for execution
+       to continue, which removes the stop inhibition.  If a non-zero status
+       value is returned, then the inhibition mask will be set improperly, but
+       that is irrelevant, as execution will stop in this case.
+
+    9. In hardware, the IAK signal is asserted to all devices in the I/O card
+       cage, as well as to the Memory Protect card.  Only the interrupting
+       device will respond to IAK.  In simulation, IAK is dispatched to the
+       interrupting device and, if that device is not the MP card, then to the
+       MP device as well.
+
+   10. In hardware, execution of the instruction in the trap cell does not use
+       the FTCH micro-order to avoid changing the MP violation register during
+       an MP interrupt.  In simulation, we use a Fetch classification to label
+       the access correctly in a trace listing.  This is OK because the Enable
+       Violation Register flip-flop has already been reset if this is an MP
+       interrupt, so the Fetch will not alter the MP VR.
+
+   11. The "meu_assert_IAK" routine sets the "meu_indicator" and "meu_page"
+       values for the P register before switching to the system map.  Therefore,
+       on return, they indicate the prior map and page in use when the interrupt
+       occurred.
 */
 
-    if (dmarq) {
-        if (dmarq & DMA_1_REQ) {                                /* DMA channel 1 request? */
-            reason = dma_cycle (ch1, PAMAP);                    /* do one DMA cycle using port A map */
+t_stat sim_instr (void)
+{
+static uint32 exec_save;                                /* the trace flag settings saved by an EXEC match */
+static uint32 idle_save;                                /* the trace flag settings saved by an idle match */
+MICRO_ABORT abort_reason;
+t_bool      exec_test;                                  /* set after setjmp */
+t_bool      interrupt_acknowledge;                      /* set after setjmp */
+t_stat      status;                                     /* set after setjmp */
 
-            if (reason == SCPE_OK)                              /* cycle OK? */
-                dmarq = calc_dma ();                            /* recalc DMA requests */
-            else
-                break;                                          /* cycle failed, so stop */
-            }
 
-        if ((dmarq & (DMA_1_REQ | DMA_2_REQ)) == DMA_2_REQ) {   /* DMA channel 1 idle and channel 2 request? */
-            reason = dma_cycle (ch2, PBMAP);                    /* do one DMA cycle using port B map */
+/* Instruction prelude */
 
-            if (reason == SCPE_OK)                              /* cycle OK? */
-                dmarq = calc_dma ();                            /* recalc DMA requests */
-            else
-                break;                                          /* cycle failed, so stop */
-            }
+if (sim_switches & SWMASK ('B'))                        /* if a simulation stop bypass was requested */
+    cpu_ss_inhibit = SS_INHIBIT;                        /*   then inhibit stops for the first instruction only */
+else                                                    /* otherwise */
+    cpu_ss_inhibit = SCPE_OK;                           /*   clear the inhibition mask */
 
-        if (dmarq)                                              /* DMA request still pending? */
-            continue;                                           /* service it before instruction execution */
+sim_switches &= ~SWMASK ('P');                          /* clear the power-on switch to prevent interference */
 
-        intrq = calc_int ();                                    /* recalc interrupts */
+if (initialize_io (TRUE) == FALSE)                      /* set up the I/O table; if there's a select code conflict */
+    return SCPE_STOP;                                   /*   then inhibit execution */
+
+mp_is_present = mp_initialize ();                       /* set up memory protect */
+
+exec_save = 0;                                          /* clear the EXEC match */
+idle_save = 0;                                          /*   and idle match trace flags */
+
+cpu_ioerr_uptr = NULL;                                  /* clear the I/O error unit pointer */
+
+
+/* Microcode abort processor */
+
+abort_reason = (MICRO_ABORT) setjmp (abort_environment);    /* set the microcode abort handler */
+
+switch (abort_reason) {                                 /* dispatch on the abort reason */
+
+    case Memory_Protect:                                /* a memory protect abort */
+        status = SCPE_OK;                               /*   continues execution with FLG 5 asserted */
+        break;
+
+
+    case Interrupt:                                     /* an interrupt in an indirect chain */
+        PR = err_PR;                                    /*   backs out of the instruction */
+        status = SCPE_OK;                               /*     and then continues execution to service the interrupt */
+        break;
+
+
+    case Indirect_Loop:                                 /* an indirect chain length exceeding the limit */
+        status = STOP_INDIR;                            /*   causes a simulator stop */
+        break;
+
+
+    default:                                            /* anything else */
+        status = SCPE_OK;                               /*   continues execution */
+        break;
+    }
+
+exec_test = FALSE;                                      /* clear the execution test flag */
+
+
+/* Instruction execution loop */
+
+while (status == SCPE_OK) {                             /* execute until simulator status prevents continuation */
+
+    err_PR = PR;                                        /* save P for error recovery */
+
+    if (sim_interval <= 0) {                            /* if an event is pending */
+        status = sim_process_event ();                  /*   then call the event service */
+
+        if (status != SCPE_OK)                          /* if the service failed */
+            break;                                      /*   then stop execution */
         }
 
-    if (intrq && ion_defer)                                     /* interrupt pending but deferred? */
-        ion_defer = calc_defer ();                              /* confirm deferral */
+    if (dma_request_set) {                              /* if a DMA service request is pending */
+        dma_service ();                                 /*   then service the active channel(s) */
 
-/* Check for pending interrupt request.
+        if (dma_request_set)                            /* if a DMA request is still pending */
+            continue;                                   /*   then service it before instruction execution */
+        }
 
-   Interrupt recognition is controlled by three state variables: "ion",
-   "ion_defer", and "intrq".  "ion" corresponds to the INTSYS flip-flop in the
-   1000 CPU, "ion_defer" corresponds to the INTEN flip-flop, and "intrq"
-   corresponds to the NRMINT flip-flop.  STF 00 and CLF 00 set and clear INTSYS,
-   turning the interrupt system on and off.  Micro-orders ION and IOFF set and
-   clear INTEN, deferring or allowing certain interrupts.  An IRQ signal from a
-   device, qualified by the corresponding PRL signal, will set NRMINT to request
-   a normal interrupt; an IOFF or IAK will clear it.
-
-   Under simulation, "ion" is controlled by STF/CLF 00.  "ion_defer" is set or
-   cleared as appropriate by the individual instruction simulators.  "intrq" is
-   set to the successfully interrupting device's select code, or to zero if
-   there is no qualifying interrupt request.
-
-   Presuming PRL is set to allow priority to an interrupting device:
-
-    1. Power fail (SC 04) may interrupt if "ion_defer" is clear; this is not
-       conditional on "ion" being set.
-
-    2. Memory protect (SC 05) may interrupt if "ion" is set; this is not
-       conditional on "ion_defer" being clear.
-
-    3. Parity error (SC 05) may interrupt always; this is not conditional on
-       "ion" being set or "ion_defer" being clear.
-
-    4. All other devices (SC 06 and up) may interrupt if "ion" is set and
-       "ion_defer" is clear.
-
-   Qualification with "ion" is performed by "calc_int", except for case 2, which
-   is qualified by the MP abort handler above (because qualification occurs on
-   the MP card, rather than in the CPU).  Therefore, we need only qualify by
-   "ion_defer" here.
-*/
-
-    if (intrq && ((intrq == PRO) || !ion_defer)) {      /* interrupt request? */
-        if (sim_brk_summ &&                             /* any breakpoints? */
-            sim_brk_test (intrq, SWMASK ('E') |         /* unconditional or right type for DMS? */
-              (dms_enb ? SWMASK ('S') : SWMASK ('N')))) {
-            reason = STOP_IBKPT;                        /* stop simulation */
+    if (interrupt_request                                       /* if an interrupt request is pending */
+      && (cpu_interrupt_enable || reenable_interrupts ())) {    /*   and is enabled or reenabled */
+        if (sim_brk_summ                                        /*     then if any breakpoints are defined */
+          && sim_brk_test (interrupt_request,                   /*       and an unconditional breakpoint */
+                           SWMASK ('E')                         /*         or a breakpoint matching */
+                             | meu_breakpoint_type (TRUE))) {   /*           the current MEM map is set */
+            status = STOP_BRKPNT;                               /*             then stop simulation */
             break;
             }
 
-        intaddr = intrq;                                /* save int addr in CIR */
-        intrq = 0;                                      /* clear request */
-        ion_defer = TRUE;                               /* defer interrupts */
-        iotrap = 1;                                     /* mark as I/O trap cell instr */
+        CIR = (HP_WORD) interrupt_request;              /* set the CIR to the select code of the interrupting device */
+        interrupt_request = 0;                          /*   and then clear the request */
 
-        if (dms_enb)                                    /* dms enabled? */
-            dms_sr = dms_sr | MST_ENBI;                 /* set in status */
-        else                                            /* not enabled */
-            dms_sr = dms_sr & ~MST_ENBI;                /* clear in status */
+        cpu_interrupt_enable = CLEAR;                   /* inhibit interrupts */
+        interrupt_acknowledge = TRUE;                   /*   while in an interrupt acknowledge cycle */
 
-        if (dms_ump) {                                  /* user map enabled at interrupt? */
-            dms_sr = dms_sr | MST_UMPI;                 /* set in status */
-            dms_ump = SMAP;                             /* switch to system map */
+        if (idle_save != 0) {                           /* if idle loop tracing is suppressed */
+            cpu_dev.dctrl = idle_save;                  /*   then restore the saved trace flag set */
+            idle_save = 0;                              /*     and indicate that we are out of the idle loop */
             }
-        else                                            /* system map enabled at interrupt */
-            dms_sr = dms_sr & ~MST_UMPI;                /* clear in status */
 
-        IR = ReadW (intaddr);                           /* get trap cell instruction */
+        meu_assert_IAK ();                              /* assert IAK to the MEM to switch to the system map */
 
-        devdisp (intaddr, ioIAK, (uint16) IR);          /* acknowledge interrupt */
+        tprintf (cpu_dev, TRACE_INSTR, DMS_FORMAT "interrupt\n",
+                 meu_indicator, meu_page, PR, CIR);
 
-        if (intaddr != PRO)                             /* not MP interrupt? */
-            protio (dtab [intaddr], ioIAK, IR);         /* send IAK for device to MP too */
+        io_assert (iot [CIR].devptr, ioa_IAK);          /* acknowledge the interrupt */
+
+        if (CIR != MPPE)                                /* if the MP is not interrupting */
+            io_assert (iot [MPPE].devptr, ioa_IAK);     /*   then notify MP of the IAK too */
+
+        IR = ReadF (CIR);                               /* fetch the trap cell instruction */
         }
 
-    else {                                              /* normal instruction */
-        iotrap = 0;                                     /* not a trap cell instruction */
+    else {                                              /* otherwise this is a normal instruction execution */
+        interrupt_acknowledge = FALSE;                  /*   so clear the interrupt acknowledgement status */
 
-        if (sim_brk_summ &&                             /* any breakpoints? */
-            sim_brk_test (PC, SWMASK ('E') |            /* unconditional or */
-                              (dms_enb ?                /*   correct type for DMS state? */
-                                (dms_ump ?
-                                  SWMASK ('U') : SWMASK ('S')) :
-                                SWMASK ('N')))) {
-            reason = STOP_IBKPT;                        /* stop simulation */
+        if (sim_brk_summ                                        /* if any breakpoints are defined */
+          && sim_brk_test (PR, SWMASK ('E')                     /*   and an unconditional breakpoint or a */
+                             | meu_breakpoint_type (FALSE))) {  /*     breakpoint matching the current map is set */
+            status = STOP_BRKPNT;                               /*       then stop simulation */
             break;
             }
 
-        if (mp_evrff)                                   /* violation register enabled */
-            mp_viol = PC;                               /* update with current PC */
+        IR = ReadF (PR);                                /* fetch the instruction */
+        PR = PR + 1 & LA_MASK;                          /*   and point at the next memory location */
 
-        IR = ReadW (PC);                                /* fetch instr */
-        PC = (PC + 1) & VAMASK;
-        ion_defer = FALSE;
+        cpu_interrupt_enable = SET;                     /* enable interrupts */
         }
 
-    sim_interval = sim_interval - 1;                    /* count instruction */
 
-/* Instruction decode.  The 21MX does a 256-way decode on IR<15:8>
-
-   15 14 13 12 11 10 09 08      instruction
-
-    x <-!= 0->  x  x  x  x      memory reference
-    0  0  0  0  x  0  x  x      shift
-    0  0  0  0  x  0  x  x      alter-skip
-    1  0  0  0  x  1  x  x      IO
-    1  0  0  0  0  0  x  0      extended arithmetic
-    1  0  0  0  0  0  0  1      divide (decoded as 100400)
-    1  0  0  0  1  0  0  0      double load (decoded as 104000)
-    1  0  0  0  1  0  0  1      double store (decoded as 104400)
-    1  0  0  0  1  0  1  0      extended instr group 0 (A/B must be set)
-    1  0  0  0  x  0  1  1      extended instr group 1 (A/B ignored) */
-
-    absel = (IR & I_AB) ? 1 : 0;                        /* get A/B select */
-
-    switch ((IR >> 8) & 0377) {                         /* decode IR<15:8> */
-
-/* Memory reference instructions */
-
-    case 0020:case 0021:case 0022:case 0023:
-    case 0024:case 0025:case 0026:case 0027:
-    case 0220:case 0221:case 0222:case 0223:
-    case 0224:case 0225:case 0226:case 0227:
-        reason = Ea (IR, &MA, intrq);                   /* AND */
-
-        if (reason != SCPE_OK)                          /* address failed to resolve? */
-            break;                                      /* stop execution */
-
-        AR = AR & ReadW (MA);
-        break;
-
-/* JSB is a little tricky.  It is possible to generate both an MP and a DM
-   violation simultaneously, as the MP and MEM cards validate in parallel.
-   Consider a JSB to a location under the MP fence and on a write-protected
-   page.  This situation must be reported as a DM violation, because it has
-   priority (SFS 5 and SFC 5 check only the MEVFF, which sets independently of
-   the MP fence violation).  Under simulation, this means that DM violations
-   must be checked, and the MEVFF must be set, before an MP abort is taken.
-   This is done by the "mp_dms_jmp" routine.
-*/
-
-    case 0230:case 0231:case 0232:case 0233:
-    case 0234:case 0235:case 0236:case 0237:
-        ion_defer = TRUE;                               /* defer if JSB,I */
-
-    case 0030:case 0031:case 0032:case 0033:
-    case 0034:case 0035:case 0036:case 0037:
-        reason = Ea (IR, &MA, intrq);                   /* JSB */
-
-        if (reason != SCPE_OK)                          /* address failed to resolve? */
-            break;                                      /* stop execution */
-
-        mp_dms_jmp (MA, jsb_plb);                       /* validate jump address */
-
-        WriteW (MA, PC);                                /* store PC */
-        PCQ_ENTRY;
-        PC = (MA + 1) & VAMASK;                         /* jump */
-        break;
-
-    case 0040:case 0041:case 0042:case 0043:
-    case 0044:case 0045:case 0046:case 0047:
-    case 0240:case 0241:case 0242:case 0243:
-    case 0244:case 0245:case 0246:case 0247:
-        reason = Ea (IR, &MA, intrq);                   /* XOR */
-
-        if (reason != SCPE_OK)                          /* address failed to resolve? */
-            break;                                      /* stop execution */
-
-        AR = AR ^ ReadW (MA);
-        break;
-
-/* CPU idle processing.
-
-   The 21xx/1000 CPUs have no "wait for interrupt" instruction.  Idling in HP
-   operating systems consists of sitting in "idle loops" that end with JMP
-   instructions.  We test for certain known patterns when a JMP instruction is
-   executed to decide if the simulator should idle.
-
-   Idling must not occur if an interrupt is pending.  As mentioned in the
-   "General Notes" above, HP CPUs will defer interrupts if certain instructions
-   are executed.  OS interrupt handlers exit via such deferring instructions.
-   If there is a pending interrupt when the OS is otherwise idle, the idle loop
-   will execute one instruction before reentering the interrupt handler.  If we
-   call sim_idle() in this case, we will lose interrupts.
-
-   Consider the situation in RTE.  Under simulation, the TTY and CLK events are
-   co-scheduled, with the CLK expiring one instruction after the TTY.  When the
-   TTY interrupts, $CIC in RTE is entered.  One instruction later, the CLK
-   expires and posts its interrupt, but it is not immediately handled, because
-   the JSB $CIC,I / JMP $CIC0,I / SFS 0,C instruction entry sequence continually
-   defers interrupts until the interrupt system is turned off.  When $CIC
-   returns via $IRT, one instruction of the idle loop is executed, even though
-   the CLK interrupt is still pending, because the UJP instruction used to
-   return also defers interrupts.
-
-   If sim_idle() is called at this point, the simulator will sleep when it
-   should be handling the pending CLK interrupt.  When it awakes, TTY expiration
-   will be moved forward to the next instruction.  The still-pending CLK
-   interrupt will then be recognized, and $CIC will be entered.  But the TTY and
-   then the CLK will then expire and attempt to interrupt again, although they
-   are deferred by the $CIC entry sequence.  This causes the second CLK
-   interrupt to be missed, as processing of the first one is just now being
-   started.
-
-   Similarly, at the end of the CLK handling, the TTY interrupt is still
-   pending.  When $IRT returns to the idle loop, sim_idle() would be called
-   again, so the TTY and then CLK interrupt a third time.  Because the second
-   TTY interrupt is still pending, $CIC is entered, but the third TTY interrupt
-   is lost.
-
-   We solve this problem by testing for a pending interrupt before calling
-   sim_idle().  The system isn't really quiescent if it is just about to handle
-   an interrupt.
-*/
-
-    case 0250:case 0251:case 0252:case 0253:
-    case 0254:case 0255:case 0256:case 0257:
-        ion_defer = TRUE;                               /* defer if JMP,I */
-
-    case 0050:case 0051:case 0052:case 0053:
-    case 0054:case 0055:case 0056:case 0057:
-        reason = Ea (IR, &MA, intrq);                   /* JMP */
-
-        if (reason != SCPE_OK)                          /* address failed to resolve? */
-            break;                                      /* stop execution */
-
-        mp_dms_jmp (MA, 0);                             /* validate jump addr */
-        PCQ_ENTRY;
-        PC = MA;                                        /* jump */
-
-/* Idle conditions by operating system:
-
-   RTE-6/VM:
-    - ISZ <n> / JMP *-1
-    - mp_fence = 0
-    - XEQT (address 1717B) = 0
-    - DMS on with system map enabled
-    - RTE verification: TBG (address 1674B) = CLK select code
-
-   RTE though RTE-IVB:
-    - JMP *
-    - mp_fence = 0
-    - XEQT (address 1717B) = 0
-    - DMS on with user map enabled (RTE-III through RTE-IVB only)
-    - RTE verification: TBG (address 1674B) = CLK select code
-
-   DOS through DOS-III:
-    - STF 0 / CCA / CCB / JMP *-3
-    - DOS verification: A = B = -1, address 40B = -64, address 67B = +64
-    - Note that in DOS, the TBG is set to 100 milliseconds
-*/
-
-        if ((sim_idle_enab) && (intrq == 0))                /* idle enabled w/o pending irq? */
-            if (((PC == err_PC) ||                          /* RTE through RTE-IVB */
-                 ((PC == (err_PC - 1)) &&                   /* RTE-6/VM */
-                  ((ReadW (PC) & I_MRG) == I_ISZ))) &&      /* RTE jump target */
-                (mp_fence == CLEAR) && (M [xeqt] == 0) &&   /* RTE idle indications */
-                (M [tbg] == clk_dib.select_code) ||         /* RTE verification */
-
-                (PC == (err_PC - 3)) &&                     /* DOS through DOS-III */
-                (ReadW (PC) == I_STF) &&                    /* DOS jump target */
-                (AR == 0177777) && (BR == 0177777) &&       /* DOS idle indication */
-                (M [m64] == 0177700) &&                     /* DOS verification */
-                (M [p64] == 0000100))                       /* DOS verification */
-
-                sim_idle (TMR_POLL, FALSE);                 /* idle the simulator */
-        break;
-
-    case 0060:case 0061:case 0062:case 0063:
-    case 0064:case 0065:case 0066:case 0067:
-    case 0260:case 0261:case 0262:case 0263:
-    case 0264:case 0265:case 0266:case 0267:
-        reason = Ea (IR, &MA, intrq);                   /* IOR */
-
-        if (reason != SCPE_OK)                          /* address failed to resolve? */
-            break;                                      /* stop execution */
-
-        AR = AR | ReadW (MA);
-        break;
-
-    case 0070:case 0071:case 0072:case 0073:
-    case 0074:case 0075:case 0076:case 0077:
-    case 0270:case 0271:case 0272:case 0273:
-    case 0274:case 0275:case 0276:case 0277:
-        reason = Ea (IR, &MA, intrq);                   /* ISZ */
-
-        if (reason != SCPE_OK)                          /* address failed to resolve? */
-            break;                                      /* stop execution */
-
-        t = (ReadW (MA) + 1) & DMASK;
-        WriteW (MA, t);
-
-        if (t == 0)
-            PC = (PC + 1) & VAMASK;
-        break;
-
-    case 0100:case 0101:case 0102:case 0103:
-    case 0104:case 0105:case 0106:case 0107:
-    case 0300:case 0301:case 0302:case 0303:
-    case 0304:case 0305:case 0306:case 0307:
-        reason = Ea (IR, &MA, intrq);                   /* ADA */
-
-        if (reason != SCPE_OK)                          /* address failed to resolve? */
-            break;                                      /* stop execution */
-
-        v1 = ReadW (MA);
-        t = AR + v1;
-
-        if (t > DMASK)
-            E = 1;
-
-        if (((~AR ^ v1) & (AR ^ t)) & SIGN)
-            O = 1;
-
-        AR = t & DMASK;
-        break;
-
-    case 0110:case 0111:case 0112:case 0113:
-    case 0114:case 0115:case 0116:case 0117:
-    case 0310:case 0311:case 0312:case 0313:
-    case 0314:case 0315:case 0316:case 0317:
-        reason = Ea (IR, &MA, intrq);                   /* ADB */
-
-        if (reason != SCPE_OK)                          /* address failed to resolve? */
-            break;                                      /* stop execution */
-
-        v1 = ReadW (MA);
-        t = BR + v1;
-
-        if (t > DMASK)
-            E = 1;
-
-        if (((~BR ^ v1) & (BR ^ t)) & SIGN)
-            O = 1;
-
-        BR = t & DMASK;
-        break;
-
-    case 0120:case 0121:case 0122:case 0123:
-    case 0124:case 0125:case 0126:case 0127:
-    case 0320:case 0321:case 0322:case 0323:
-    case 0324:case 0325:case 0326:case 0327:
-        reason = Ea (IR, &MA, intrq);                   /* CPA */
-
-        if (reason != SCPE_OK)                          /* address failed to resolve? */
-            break;                                      /* stop execution */
-
-        if (AR != ReadW (MA))
-            PC = (PC + 1) & VAMASK;
-        break;
-
-    case 0130:case 0131:case 0132:case 0133:
-    case 0134:case 0135:case 0136:case 0137:
-    case 0330:case 0331:case 0332:case 0333:
-    case 0334:case 0335:case 0336:case 0337:
-        reason = Ea (IR, &MA, intrq);                   /* CPB */
-
-        if (reason != SCPE_OK)                          /* address failed to resolve? */
-            break;                                      /* stop execution */
-
-        if (BR != ReadW (MA))
-            PC = (PC + 1) & VAMASK;
-        break;
-
-    case 0140:case 0141:case 0142:case 0143:
-    case 0144:case 0145:case 0146:case 0147:
-    case 0340:case 0341:case 0342:case 0343:
-    case 0344:case 0345:case 0346:case 0347:
-        reason = Ea (IR, &MA, intrq);                   /* LDA */
-
-        if (reason != SCPE_OK)                          /* address failed to resolve? */
-            break;                                      /* stop execution */
-
-        AR = ReadW (MA);
-        break;
-
-    case 0150:case 0151:case 0152:case 0153:
-    case 0154:case 0155:case 0156:case 0157:
-    case 0350:case 0351:case 0352:case 0353:
-    case 0354:case 0355:case 0356:case 0357:
-        reason = Ea (IR, &MA, intrq);                   /* LDB */
-
-        if (reason != SCPE_OK)                          /* address failed to resolve? */
-            break;                                      /* stop execution */
-
-        BR = ReadW (MA);
-        break;
-
-    case 0160:case 0161:case 0162:case 0163:
-    case 0164:case 0165:case 0166:case 0167:
-    case 0360:case 0361:case 0362:case 0363:
-    case 0364:case 0365:case 0366:case 0367:
-        reason = Ea (IR, &MA, intrq);                   /* STA */
-
-        if (reason != SCPE_OK)                          /* address failed to resolve? */
-            break;                                      /* stop execution */
-
-        WriteW (MA, AR);
-        break;
-
-    case 0170:case 0171:case 0172:case 0173:
-    case 0174:case 0175:case 0176:case 0177:
-    case 0370:case 0371:case 0372:case 0373:
-    case 0374:case 0375:case 0376:case 0377:
-        reason = Ea (IR, &MA, intrq);                   /* STB */
-
-        if (reason != SCPE_OK)                          /* address failed to resolve? */
-            break;                                      /* stop execution */
-
-        WriteW (MA, BR);
-        break;
-
-/* Alter/skip instructions */
-
-    case 0004:case 0005:case 0006:case 0007:
-    case 0014:case 0015:case 0016:case 0017:
-        skip = 0;                                       /* no skip */
-
-        if (IR & 000400)                                /* CLx */
-            t = 0;
-        else
-            t = ABREG[absel];
-
-        if (IR & 001000)                                /* CMx */
-            t = t ^ DMASK;
-
-        if (IR & 000001) {                              /* RSS? */
-            if ((IR & 000040) && (E != 0))              /* SEZ,RSS */
-                skip = 1;
-
-            if (IR & 000100)                            /* CLE */
-                E = 0;
-
-            if (IR & 000200)                            /* CME */
-                E = E ^ 1;
-
-            if (((IR & 000030) == 000030) &&            /* SSx,SLx,RSS */
-                ((t & 0100001) == 0100001))
-                skip = 1;
-
-            if (((IR & 000030) == 000020) &&            /* SSx,RSS */
-                ((t & SIGN) != 0))
-                skip = 1;
-
-            if (((IR & 000030) == 000010) &&            /* SLx,RSS */
-                ((t & 1) != 0))
-                skip = 1;
-
-            if (IR & 000004) {                          /* INx */
-                t = (t + 1) & DMASK;
-
-                if (t == 0)
-                    E = 1;
-
-                if (t == SIGN)
-                    O = 1;
-                }
-
-            if ((IR & 000002) && (t != 0))              /* SZx,RSS */
-                skip = 1;
-
-            if ((IR & 000072) == 0)                     /* RSS */
-                skip = 1;
-            }                                           /* end if RSS */
-
-        else {
-            if ((IR & 000040) && (E == 0))              /* SEZ */
-                skip = 1;
-
-            if (IR & 000100)                            /* CLE */
-                E = 0;
-
-            if (IR & 000200)                            /* CME */
-                E = E ^ 1;
-
-            if ((IR & 000020) &&                        /* SSx */
-                ((t & SIGN) == 0))
-                skip = 1;
-
-            if ((IR & 000010) &&                        /* SLx */
-                 ((t & 1) == 0))
-                 skip = 1;
-
-            if (IR & 000004) {                          /* INx */
-                t = (t + 1) & DMASK;
-
-                if (t == 0)
-                    E = 1;
-
-                if (t == SIGN)
-                    O = 1;
-                }
-            if ((IR & 000002) && (t == 0))              /* SZx */
-                skip = 1;
-            }                                           /* end if ~RSS */
-
-        ABREG[absel] = (uint16) t;                      /* store result */
-        PC = (PC + skip) & VAMASK;                      /* add in skip */
-        break;                                          /* end if alter/skip */
-
-/* Shift instructions */
-
-    case 0000:case 0001:case 0002:case 0003:
-    case 0010:case 0011:case 0012:case 0013:
-        t = shift (ABREG[absel], IR & 01000, IR >> 6);  /* do first shift */
-
-        if (IR & 000040)                                /* CLE */
-            E = 0;
-
-        if ((IR & 000010) && ((t & 1) == 0))            /* SLx */
-            PC = (PC + 1) & VAMASK;
-
-        ABREG[absel] = (uint16) shift (t, IR & 00020, IR);  /* do second shift */
-        break;                                              /* end if shift */
-
-/* I/O instructions */
-
-    case 0204:case 0205:case 0206:case 0207:
-    case 0214:case 0215:case 0216:case 0217:
-        reason = iogrp (IR, iotrap);                    /* execute instr */
-        break;                                          /* end if I/O */
-
-/* Extended arithmetic */
-
-    case 0200:                                          /* EAU group 0 */
-    case 0201:                                          /* divide */
-    case 0202:                                          /* EAU group 2 */
-    case 0210:                                          /* DLD */
-    case 0211:                                          /* DST */
-        reason = cpu_eau (IR, intrq);                   /* extended arith */
-        break;
-
-/* Extended instructions */
-
-    case 0212:                                          /* UIG 0 extension */
-        reason = cpu_uig_0 (IR, intrq, iotrap);         /* extended opcode */
-        break;
-
-    case 0203:                                          /* UIG 1 extension */
-    case 0213:
-        reason = cpu_uig_1 (IR, intrq, iotrap);         /* extended opcode */
-        break;
-        }                                               /* end case IR */
-
-    if (reason == NOTE_IOG) {                           /* I/O instr exec? */
-        dmarq = calc_dma ();                            /* recalc DMA masks */
-        intrq = calc_int ();                            /* recalc interrupts */
-        reason = SCPE_OK;                               /* continue */
+    if (TRACING (cpu_dev, TRACE_EXEC | TRACE_REG)) {    /* if execution or register tracing is enabled */
+        if (cpu_dev.dctrl & TRACE_EXEC)                 /*   then if tracing execution */
+            exec_test = (IR & exec_mask) == exec_match; /*     then the execution test succeeds if */
+                                                        /*       the next instruction matches the test criteria */
+
+        if (cpu_dev.dctrl & TRACE_EXEC                  /* if execution tracing is enabled */
+          && exec_save == 0                             /*   and is currently inactive */
+          && exec_test) {                               /*     and the matching test succeeds */
+            exec_save = cpu_dev.dctrl;                  /*       then save the current trace flag set */
+            cpu_dev.dctrl |= TRACE_ALL;                 /*         and turn on full tracing */
+            }
+
+        if (cpu_dev.dctrl & TRACE_REG)                  /* if register tracing is enabled */
+            mem_trace_registers (interrupt_system);     /*   then output the working and MP/MEM registers */
+
+        if (cpu_dev.dctrl & TRACE_EXEC                  /* if execution tracing is enabled */
+          && exec_save != 0                             /*   and is currently active */
+          && ! exec_test) {                             /*     and the matching test fails */
+            cpu_dev.dctrl = exec_save;                  /*       then restore the saved debug flag set */
+            exec_save = 0;                              /*         and indicate that tracing is disabled */
+
+            hp_trace (&cpu_dev, TRACE_EXEC, EXEC_FORMAT "\n");  /* add a separator to the trace log */
+            }
         }
 
-    else if (reason == NOTE_INDINT) {                   /* intr pend during indir? */
-        PC = err_PC;                                    /* back out of inst */
-        reason = SCPE_OK;                               /* continue */
+    if (TRACING (cpu_dev, TRACE_INSTR)) {               /* if instruction tracing is enabled */
+        hp_trace (&cpu_dev, TRACE_INSTR,                /*   then output the address and opcode */
+                  DMS_FORMAT,
+                  meu_indicator, meu_page,
+                  MR, IR);
+
+        sim_eval [0] = IR;                              /* save the (first) instruction word in the eval array */
+
+        if (fprint_cpu (sim_deb, MR, sim_eval, 0, CPU_Trace) > SCPE_OK) /* print the mnemonic; if that fails */
+            fprint_val (sim_deb, sim_eval [0], cpu_dev.dradix,          /*   then print the numeric */
+                        cpu_dev.dwidth, PV_RZRO);                       /*     value again */
+
+        fputc ('\n', sim_deb);                          /* end the trace with a newline */
         }
-    }                                                   /* end while */
 
-/* Simulation halted */
 
-if (iotrap && (reason == STOP_HALT))                    /* HLT in trap cell? */
-    MR = intaddr;                                       /* M = interrupt address */
-else                                                    /* normal HLT */
-    MR = (PC - 1) & VAMASK;                             /* M = P - 1 */
+    sim_interval = sim_interval - 1;                    /* count the instruction */
 
-TR = ReadTAB (MR);                                      /* T = last word fetched */
-saved_MR = MR;                                          /* save for T cmd update */
+    status = machine_instruction (interrupt_acknowledge,    /* execute one machine instruction */
+                                  &idle_save);
 
-if (reason == STOP_HALT)                                /* programmed halt? */
-    cpu_set_ldr (NULL, FALSE, NULL, NULL);              /* disable loader (after T is read) */
-else                                                    /* simulation stop */
-    PC = err_PC;                                        /* back out instruction */
+    if (status == NOTE_INDINT) {                        /* if an interrupt was recognized while resolving indirects */
+        PR = err_PR;                                    /*   then back out of the instruction */
+        status = SCPE_OK;                               /*     to service the interrupt */
+        }
 
-dms_upd_sr ();                                          /* update dms_sr */
-dms_upd_vr (MR);                                        /* update dms_vr */
-pcq_r->qptr = pcq_p;                                    /* update pc q ptr */
+    cpu_ss_inhibit = status;                            /* clear the simulation stop inhibition mask */
+    }                                                   /*   and continue the instruction execution loop */
 
-if (dms_enb)                                            /* DMS enabled? */
-    if (dms_ump)                                        /* set default */
-        sim_brk_dflt = SWMASK ('U');                    /*   breakpoint type */
-    else                                                /*     to current */
-        sim_brk_dflt = SWMASK ('S');                    /*       map mode */
 
-else                                                    /* DMS disabled */
-    sim_brk_dflt = SWMASK ('N');                        /* set breakpoint type to non-DMS */
+/* Instruction postlude */
 
-return reason;                                          /* return status code */
+if (interrupt_request                                   /* if an interrupt request is pending */
+  && (cpu_interrupt_enable || reenable_interrupts ()))  /*   and is enabled or reenabled */
+    cpu_pending_interrupt = interrupt_request;          /*     then report the pending interrupt select code */
+else                                                    /*   otherwise */
+    cpu_pending_interrupt = 0;                          /*     report that no interrupt is pending */
+
+if (exec_save != 0) {                                   /* if EXEC tracing is active */
+    cpu_dev.dctrl = exec_save;                          /*   then restore the saved trace flag set */
+    hp_trace (&cpu_dev, TRACE_EXEC, EXEC_FORMAT "\n");  /*     and add a separator to the trace log */
+    }
+
+else if (idle_save != 0)                                /* otherwise if idle tracing is suppressed */
+    cpu_dev.dctrl = idle_save;                          /*   then restore the saved trace flag set */
+
+saved_MR = MR;                                          /* save the current M value to detect a user change */
+
+if (status == STOP_HALT)                                /* if this is a programmed halt */
+    set_loader (NULL, FALSE, NULL, NULL);               /*   then disable the 21xx loader */
+
+else if (status <= STOP_RERUN)                          /* otherwise if this is a simulation stop */
+    PR = err_PR;                                        /*   then restore P to reexecute the instruction */
+
+meu_update_status ();                                   /* update the MEM status register */
+meu_update_violation ();                                /*   and the violation register */
+
+pcq_r->qptr = pcq_p;                                    /* update the PC queue pointer */
+
+sim_brk_dflt = meu_breakpoint_type (FALSE);             /* base the default breakpoint type on the current MEM state */
+
+tprintf (cpu_dev, cpu_dev.dctrl,
+         DMS_FORMAT "simulation stop: %s\n",
+         meu_indicator, meu_page, MR, TR,
+         status >= SCPE_BASE ? sim_error_text (status)
+                             : sim_stop_messages [status]);
+
+return status;                                          /* return the status code */
 }
 
 
-/* Resolve indirect addresses.
+/* VM command post-processor.
 
-   An indirect chain is followed until a direct address is obtained.  Under
-   simulation, a maximum number of indirect levels are allowed (typically 16),
-   after which the instruction will be aborted.
+   This routine is called from SCP after every command before returning to the
+   command prompt.  We use it to update the T (memory data) register whenever
+   the M (memory address) register is changed to follow the 21xx/1000 CPU
+   hardware action.
 
-   If the memory protect feature is present, an indirect counter is used that
-   allows a pending interrupt to be serviced if more than three levels of
-   indirection are encountered.  If MP jumper W6 ("INT") is out and MP is
-   enabled, then pending interrupts are serviced immediately.  When employing
-   the indirect counter, the hardware clears a pending interrupt deferral after
-   the third indirection and aborts the instruction after the fourth.
+
+   Implementation notes:
+
+    1. The T register must be changed only when M has changed.  Otherwise, if T
+       is updated after every command, then T will be set to zero if M points
+       into the protected loader area of the 21xx machines, e.g., after a HLT
+       instruction in the loader reenables loader protection.
 */
 
-t_stat resolve (uint32 MA, uint32 *addr, uint32 irq)
+void cpu_post_cmd (t_bool from_scp)
 {
-uint32 i;
-t_bool pending = (irq && !(mp_unit.flags & DEV_DIS));
-t_bool int_enable = ((mp_unit.flags & UNIT_MP_INT) && mp_control);
-
-for (i = 0; (i < ind_max) && (MA & I_IA); i++) {        /* resolve multilevel */
-    if (pending) {                                      /* interrupt pending and MP enabled? */
-        if ((i == 2) || int_enable)                     /* 3rd level indirect or INT out? */
-            ion_defer = FALSE;                          /* reenable interrrupts */
-        if ((i > 2) || int_enable)                      /* 4th or higher or INT out? */
-            return NOTE_INDINT;                         /* break out now */
-        }
-
-    MA = ReadW (MA & VAMASK);                           /* follow address chain */
+if (MR != saved_MR) {                                   /* if M has changed since the last update */
+    saved_MR = MR;                                      /*   then save the new M value */
+    TR = mem_fast_read (MR, Current_Map);               /*     and set T to the contents of the addressed location */
     }
 
-if (MA & I_IA)                                          /* indirect loop? */
-    return STOP_IND;                                    /* stop simulation */
+return;
+}
 
-*addr = MA;
+
+
+/* CPU global utility routines */
+
+
+/* Execute an I/O instruction.
+
+   This routine executes the I/O Group instruction that is passed in the
+   "instruction" parameter.  The instruction is examined to obtain the I/O
+   function desired.  A memory protect check is then made to determine if it is
+   legal to execute the instruction.  If it is, the state of the interrupt
+   enable flip-flop is set, the set of I/O backplane signals generated by the
+   instruction are picked up from the "control_set" array, and the signals and
+   inbound data value are dispatched to the device interface indicated by the
+   select code contained in the instruction.  The data value and signals
+   returned from the interface are used as directed by the I/O operation, and
+   the status of the operation is returned.
+
+
+   Implementation notes:
+
+    1. The STC and CLC instructions share the same pattern in bits 9-6 that are
+       used to decode the rest of the IOG instructions.  These instructions are
+       differentiated by the A/B selector (bit 11).
+
+    2. If a memory protect violation occurs, the IOG signal from the CPU to the
+       I/O backplane is denied to disable all I/O signals.  For a LIA/B or MIA/B
+       instruction, this will load or merge the value of the floating I/O bus
+       into the A or B registers.  This value is zero on all machines.  Merging
+       zero doesn't change the register value, so the only the LIA/B case must
+       be explicitly checked.
+*/
+
+t_stat cpu_iog (HP_WORD instruction)
+{
+const uint32 select_code = instruction & SC_MASK;       /* device select code */
+const uint32 ab_selector = AB_SELECT (instruction);     /* A/B register selector */
+IO_GROUP_OP  micro_op;
+HP_WORD      inbound_value;
+INBOUND_SET  inbound_signals;
+SKPF_DATA    outbound;
+
+if ((instruction & IR_CLC_MASK) == IR_CLC)              /* if the instruction is CLC or CLC,C */
+    if (instruction & IR_HCF)                           /*   then if the H/C flag bit is set */
+        micro_op = iog_CLC_C;                           /*     then it's a CLC,C operation */
+    else                                                /*   otherwise */
+        micro_op = iog_CLC;                             /*     it's a CLC operation */
+else                                                    /* otherwise */
+    micro_op = IOG_OP (instruction);                    /*   the operation is decoded directly */
+
+if (micro_op == iog_LIx || micro_op == iog_LIx_C)       /* if executing an LIA or LIB instruction */
+    ABREG [ab_selector] = 0;                            /*   then clear the register value in case MP aborts */
+
+mp_check_io (select_code, micro_op);                    /* check for a memory protect violation */
+
+cpu_interrupt_enable = enable_map [is_1000] [micro_op]; /* disable interrupts depending on the instruction */
+
+inbound_signals = control_set [micro_op];               /* get the set of signals to assert to the interface */
+
+if (micro_op == iog_OTx || micro_op == iog_OTx_C)       /* if the instruction is OTA/B or OTA/B,C */
+    inbound_value = ABREG [ab_selector];                /*   then send the register value to the interface */
+else                                                    /* otherwise */
+    inbound_value = 0;                                  /*   the interface won't use the inbound value */
+
+outbound = io_dispatch (select_code, inbound_signals,   /* dispatch the I/O action to the interface */
+                        inbound_value);
+
+if (micro_op == iog_LIx || micro_op == iog_LIx_C)       /* if the instruction is LIA/B or LIA/B,C */
+    ABREG [ab_selector] = outbound.data;                /*   then store the I/O bus data into the register */
+
+else if (micro_op == iog_MIx || micro_op == iog_MIx_C)  /* otherwise if the instruction is MIA/B or MIA/B,C */
+    ABREG [ab_selector] |= outbound.data;               /*   then merge the I/O bus data into the register */
+
+else if (outbound.skip) {                               /* otherwise if the interface asserted SKF */
+    PR = PR + 1 & R_MASK;                               /*   then bump P to skip then next instruction */
+    return SCPE_OK;                                     /*     and return success */
+    }
+
+else if (micro_op == iog_HLT || micro_op == iog_HLT_C)  /* otherwise if the instruction is HLT or HLT,C */
+    return STOP_HALT;                                   /*   then stop the simulator */
+
+if (iot [select_code].devptr == NULL)                   /* if the I/O slot is empty */
+    return STOP (cpu_ss_unsc);                          /*   then return stop status if enabled */
+else                                                    /* otherwise */
+    return SCPE_OK;                                     /*   the instruction executed successfully */
+}
+
+
+/* Resolve an indirect address.
+
+   This routine resolves a possibly indirect memory address into a direct
+   address by following an indirect chain, if any.  On entry, the M register
+   contains the address to resolve, and the "interruptible" parameter is set to
+   TRUE if the instruction is interruptible or FALSE if it is not.  On exit, the
+   M register contains the direct address, and SCPE_OK is returned.  If an
+   interrupt is pending and permitted, NOTE_INDINT is returned to abort the
+   instruction.  If the indirect chain length is greater than the chain limit,
+   STOP_INDIR is returned to abort execution.  In both abort cases, the M
+   register content is undefined.
+
+   Logical memory addresses are 15 bits wide, providing direct access to a 32K
+   logical address space.  Addresses may also be indirect, with bit 15 (the MSB)
+   serving as the direct/indirect indicator.  An indirect address may point at
+   either a direct or indirect address.  In the latter case, the chain is
+   followed until a direct address is obtained.
+
+   Indirect addressing has implications for interrupt handling.  Normally,
+   interrupts are checked at each level of indirection, and if one is pending,
+   the CPU will abort execution of the instruction and then service the
+   interrupt.  On return from the interrupt handler, the instruction will be
+   restarted.
+
+   Detection of interrupts is dependent on the Interrupt Enable flip-flop being
+   set.  Certain instructions, such as JMP indirect, JSB indirect, and most IOG
+   instructions, clear the enable flag to hold off interrupts until the current
+   and following instructions complete, including complete resolution of the
+   indirect chain.  If the chain is unresolvable (i.e., it points to itself, as
+   in the instruction sequence JMP *+1,I and DEF *,I), then interrupts are held
+   off forever.
+
+   To prevent a user program from freezing a protected OS with an infinite
+   indirect chain, and to permit real-time interrupts to be handled while
+   resolving a long indirect chain, the Memory Protect accessory counts indirect
+   levels during address resolution and will reenable interrupt recognition
+   after the third level.  Operating systems that run without MP installed are
+   subject to freezing as above, but those employing MP will be able to regain
+   control from an infinite indirect chain.
+
+   In simulation, the SET CPU INDIR=<limit> command sets the maximum number of
+   levels; the default is 16.  If the level is exceeded during address
+   resolution, the simulator will stop.  The maximum limit is 32768, which is
+   the maximum possible address chain without an infinite loop, but an indirect
+   chain over a few levels deep almost certainly represents a programming error.
+
+
+   Implementation notes:
+
+    1. Virtually all valid indirect references are one level deep, so we
+       optimize for this case.  Also, we protect against entry with a direct
+       address by simply returning the address, but the overhead can be saved by
+       calling this routine only for indirect addresses.
+
+    2. The 12892B Memory Protect accessory jumper W6 ("INT") controls whether
+       pending interrupts with the Interrupt Enable flip-flop clear are serviced
+       immediately (jumper removed) or after three levels of indirection (jumper
+       installed).  If the jumper is removed, MP must be enabled (control
+       flip-flop set) for the interrupt disable to be overridden.
+
+       The jumper state need not be checked here, however, because this routine
+       can be entered with an interrupt pending, i.e., "interrupt_request" is
+       non-zero, only if "cpu_interrupt_enable" and "mp_reenable_interrupts" are
+       both false.  If either is true, the pending interrupt would have been
+       serviced before calling the instruction executor that caleld this routine
+       to resolve its address.  For "mp_reenable_interrupts" to return false,
+       the INT jumper must be installed or the MP control flip-flop must be
+       clear.
+
+    3. When employing the indirect counter, the hardware clears a pending
+       interrupt deferral after the third level of indirection and aborts the
+       instruction after the fourth.
+
+    4. The JRS, DJP, DJS, SJP, SJS, UJP, and UJS instructions also hold off
+       interrupts for three indirect levels, but they count levels internally
+       and do not depend on the presence of the MP accessory to reenable
+       interrupt recognition.  However, DMS requires MP, so simulation uses the
+       MP indirect counter for these instructions as well.
+
+    5. In hardware, it is possible to execute an instruction with an infinite
+       indirect loop (e.g., JMP *+1,I and DEF *,I).  If MP is not installed,
+       this freezes the CPU with interrupts disabled until HALT is pressed.  In
+       simulation, the instruction executes until the indirect limit is reached,
+       whereupon the simulator stops with "Indirect address loop" status.
+       Modelling the hardware CPU freeze would be difficult, as the simulation
+       console would have to be polled locally to watch for CTRL+E (the
+       simulation equivalent of the CPU front panel HALT button).
+
+    6. In hardware, all instructions that resolve indirects are interruptible.
+       In simulation, some instruction executors are not written to handle an
+       instruction abort (e.g., the P register is not backed up properly to
+       rerun the instruction); these will pass FALSE for the "interruptible"
+       parameter.
+*/
+
+t_stat cpu_resolve_indirects (t_bool interruptible)
+{
+uint32 level;
+t_bool pending;
+
+if (MR & IR_IND) {                                      /* if the address is indirect */
+    MR = ReadW (MR & LA_MASK);                          /*   then follow the chain (first level) */
+
+    if (MR & IR_IND) {                                  /* if the address is still indirect */
+        pending = interruptible && interrupt_request;   /*   then see if an interrupt request is pending */
+
+        if (pending && cpu_interrupt_enable)            /* if it's pending and enabled */
+            return NOTE_INDINT;                         /*   then service the interrupt now */
+        else                                            /* otherwise */
+            pending = pending && mp_is_present;         /*   a pending interrupt is recognized only if MP is present */
+
+        for (level = 2; MR & IR_IND; level++) {         /* follow the chain from level 2 until the address is direct */
+            if (level > indirect_limit)                 /* if the limit is exceeded */
+                return STOP_INDIR;                      /*   then stop the simulator */
+
+            else if (pending)                           /* otherwise if an interrupt is pending */
+                if (level == 3)                         /*   then if this is the third level */
+                    cpu_interrupt_enable = SET;         /*     then reenable interrupts */
+                else if (level == 4)                    /*   otherwise if this is the fourth level */
+                    return NOTE_INDINT;                 /*     then service the interrupt now */
+
+            MR = ReadW (MR & LA_MASK);                  /* follow the address chain */
+            }
+        }
+    }
+
 return SCPE_OK;
 }
 
 
-/* Get effective address from IR */
+/* Abort an instruction.
 
-static t_stat Ea (uint32 IR, uint32 *addr, uint32 irq)
+   This routine performs a microcode abort for the reason passed in the
+   "abort_reason" parameter.  In hardware, microcode aborts are implemented by
+   direct jumps to the FETCH label in the base set (microcode address 0).  This
+   is typically done when an interrupt is detected while executing a lengthy
+   instruction or during resolution of an indirect chain.  In simulation, this
+   is performed by a "longjmp" back to the start of the instruction execution
+   loop.  It is the caller's responsibility to restore the machine state, e.g.,
+   to back up the P register to rerun the instruction.
+*/
+
+void cpu_microcode_abort (MICRO_ABORT abort_reason)
 {
-uint32 MA;
-
-MA = IR & (I_IA | I_DISP);                              /* ind + disp */
-
-if (IR & I_CP)                                          /* current page? */
-    MA = ((PC - 1) & I_PAGENO) | MA;                    /* merge in page from PC */
-
-return resolve (MA, addr, irq);                         /* resolve indirects */
+longjmp (abort_environment, (int) abort_reason);        /* jump back to the instruction execution loop */
 }
 
 
-/* Shift micro operation */
+/* Install a bootstrap loader into memory.
 
-static uint32 shift (uint32 t, uint32 flag, uint32 op)
-{
-uint32 oldE;
+   This routine copies the bootstrap loader specified by "boot" into the last 64
+   words of main memory, limited by a 32K memory size.  If "sc" contains the
+   select code of an I/O interface (i.e., select code 10 or above), this routine
+   will configure the I/O instructions in the loader to the supplied select
+   code.  On exit, the P register will be set to point at the loader starting
+   program address, and the S register will be altered as directed by the
+   "sr_clear" and "sr_set" masks if the current CPU is a 1000.  The updated P
+   register value is returned to the caller.
 
-op = op & 07;                                           /* get shift op */
-if (flag) {                                             /* enabled? */
-    switch (op) {                                       /* case on operation */
+   The currently configured CPU family (21xx or 1000) determines which of two
+   BOOT_LOADER structures is accessed from the "boot" array.  Each structure
+   contains the 64-word loader array and three indicies into the loader
+   array that specify the start of program execution, the element containing the
+   DMA control word, and the element containing the (negative) address of the
+   first loader word in memory.
 
-    case 00:                                            /* signed left shift */
-        return ((t & SIGN) | ((t << 1) & 077777));
+   21xx-series loaders consist of subsections handling one or two devices.  A
+   two-part loader is indicated by a starting program index other than 0, i.e.,
+   other than the beginning of the loader.  An example is the Basic Moving-Head
+   Disc Loader (BMDL), which consists of a paper tape loader section starting at
+   index 0 and a disc loader section starting at index 50 octal.  For these
+   loaders, I/O configuration depends on the "start_index" field of the selected
+   BOOTSTRAP structure: I/O instructions before the starting index are
+   configured to the current paper-tape reader select code, and instructions at
+   or after the starting index are configured to the device select code
+   specified by "sc".  Single-part loaders specify a starting index of 0, and
+   all I/O instructions are configured to the "sc" select code.
 
-    case 01:                                            /* signed right shift */
-        return ((t & SIGN) | (t >> 1));
+   1000-series loaders are always single part and always start at index 0, so
+   they are always configured to use the "sc" select code.
 
-    case 02:                                            /* rotate left */
-        return (((t << 1) | (t >> 15)) & DMASK);
+   If a given device does not have both a 21xx-series and a 1000-series loader,
+   the "start_index" field of the undefined loader will be set to the "IBL_NA"
+   value.  If this routine is called to copy an undefined loader, it will reject
+   the call by returning a starting address of zero to the caller.  In this
+   case, neither P nor S are changed.
 
-    case 03:                                            /* rotate right */
-        return (((t >> 1) | (t << 15)) & DMASK);
+   If I/O configuration is requested, each instruction in the loader array is
+   examined as it is copied.  If the instruction is a non-HLT I/O instruction
+   referencing a select code >= 10, the select code will be reset by subtracting
+   10 and adding the value of the select code supplied by the "sc" parameter (or
+   the paper-tape reader select code, as above).  This permits configuration of
+   loaders that address two- or three-card interfaces.  Passing an "sc" value of
+   0 will inhibit configuration, and the loader array will be copied verbatim.
 
-    case 04:                                            /* left shift, 0 sign */
-        return ((t << 1) & 077777);
+   As an example, passing an "sc" value of 24 octal will alter these I/O-group
+   instructions as follows:
 
-    case 05:                                            /* ext right rotate */
-        oldE = E;
-        E = t & 1;
-        return ((t >> 1) | (oldE << 15));
+        Loader    Configured
+     Instruction  Instruction  Note
+     -----------  -----------  ------------------------------
+       OTA 10       OTA 24     Normal configuration
+       LIA 11       LIA 25     Second card configuration
+       STC  6       STC  6     DCPC configuration not changed
+       HLT 11       HLT 11     Halt instruction not changed
 
-    case 06:                                            /* ext left rotate */
-        oldE = E;
-        E = (t >> 15) & 1;
-        return (((t << 1) | oldE) & DMASK);
+   If configuration is performed, two additional operations may be performed.
+   First, the routine will alter the word at the index specified by the
+   "dma_index" field of the selected BOOTSTRAP structure unconditionally as
+   above.  This word is assumed to contain a DMA control word; it is configured
+   to reference the supplied select code.  Second, it will set the word at the
+   index specified by the "fwa_index" field to the two's-complement of the
+   starting address of the loader in memory.  This value may be used by the
+   loader to check that it will not be overwritten by loaded data.
 
-    case 07:                                            /* rotate left four */
-        return (((t << 4) | (t >> 12)) & DMASK);
-        }                                               /* end case */
-    }                                                   /* end if */
+   If either field is set to the IBL_NA value, then the corresponding
+   modification is not made.  For example, the 21xx Basic Binary Loader (BBL)
+   does not use DMA, so its "dma_index" field is set to IBL_NA, and so no DMA
+   control word modification is done.
 
-if (op == 05)                                           /* disabled ext rgt rot */
-    E = t & 1;
+   The starting address for loader execution is derived from the "start_index"
+   field and the starting memory address to which the loader is copied.
 
-if (op == 06)                                           /* disabled ext lft rot */
-    E = (t >> 15) & 1;
+   Finally, if the current CPU is a 1000-series machine, the S register bits
+   corresponding to those set in the "sr_clear" value are masked off, and the
+   bits corresponding to those in the "sr_set" value are set.  In addition, the
+   select code from the "sc" value is shifted left and ORed into the value.
+   This action presets the S-register to the correct value for the selected
+   loader.
 
-return t;                                               /* input unchanged */
-}
-
-
-/* I/O instruction decode.
-
-   If memory protect is enabled, and the instruction is not in a trap cell, then
-   HLT instructions are illegal and will cause a memory protect violation.  If
-   jumper W7 (SEL1) is in, then all other I/O instructions are legal; if W7 is
-   out, then only I/O instructions to select code 1 are legal, and I/O to other
-   select codes will cause a violation.
-
-   If the instruction is allowed, then the I/O signal corresponding to the
-   instruction is determined, the state of the interrupt deferral flag is set.
-   Then the signal is dispatched to the device simulator indicated by the target
-   select code.  The return value is split into status and data values, with the
-   latter containing the SKF signal state or data to be returned in the A or B
-   registers.
 
    Implementation notes:
 
-    1. If the H/C (hold/clear flag) bit is set, then the ioCLF signal is added
-       (not ORed) to the base signal derived from the I/O instruction.
-
-    2. ioNONE is dispatched for HLT instructions because although HLT does not
-       assert any backplane signals, the H/C bit may be set.  If it is, then the
-       result will be to dispatch ioCLF.
-
-    3. Device simulators return either ioSKF or ioNONE in response to an SFC or
-       SFS signal.  ioSKF means that the instruction should skip.  Because
-       device simulators return the "data" parameter value by default, we
-       initialize that parameter to ioNONE to ensure that a simulator that does
-       not implement SFC or SFS does not skip, which is the correct action for
-       an interface that does not drive the SKF signal.
-
-    4. STF/CLF and STC/CLC share sub-opcode values and must be further decoded
-       by the state of instruction register bits 9 and 11, respectively.
-
-    5. We return NOTE_IOG for normal status instead of SCPE_OK to request that
-       interrupts be recalculated at the end of the instruction (execution of
-       the I/O group instructions can change the interrupt priority chain).
+    1. The paper-tape reader's select code is determined on each entry to the
+       routine to accommodate select code reassignment by the user.
 */
 
-t_stat iogrp (uint32 ir, uint32 iotrap)
+uint32 cpu_copy_loader (const LOADER_ARRAY boot, uint32 sc, HP_WORD sr_clear, HP_WORD sr_set)
 {
+uint32      index, loader_start, ptr_sc;
+MEMORY_WORD loader [IBL_SIZE];
+MEMORY_WORD word;
+DEVICE      *ptr_dptr;
 
-/* Translation for I/O subopcodes:            soHLT, soFLG, soSFC, soSFS, soMIX, soLIX, soOTX, soCTL */
-static const IOSIGNAL generate_signal [] = { ioNONE, ioSTF, ioSFC, ioSFS, ioIOI, ioIOI, ioIOO, ioSTC };
+if (boot [is_1000].start_index == IBL_NA)               /* if the bootstrap is not defined for the current CPU */
+    return 0;                                           /*   then reject the command */
 
-const uint32 dev = ir & I_DEVMASK;                      /* device select code */
-const uint32 sop = I_GETIOOP (ir);                      /* I/O subopcode */
-const uint32 ab  = (ir & I_AB) != 0;                    /* A/B register select */
-const t_bool clf = (ir & I_HC) != 0;                    /* H/C flag select */
-uint16 iodata = (uint16) ioNONE;                        /* initialize for SKF test */
-uint32 ioreturn;
-t_stat iostat;
-IOCYCLE signal_set;
+else if (boot [is_1000].start_index > 0 && sc > 0) {    /* if this is a two-part loader with I/O reconfiguration */
+    ptr_dptr = find_dev ("PTR");                        /*   then get a pointer to the paper tape reader device */
 
-if (!iotrap && mp_control &&                                /* instr not in trap cell and MP on? */
-    ((sop == soHLT) ||                                      /*   and is HLT? */
-    ((dev != OVF) && (mp_unit.flags & UNIT_MP_SEL1)))) {    /*   or is not SC 01 and SEL1 out? */
-        if (sop == soLIX)                                   /* MP violation; is LIA/B instruction? */
-            ABREG [ab] = 0;                                 /* A/B writes anyway */
+    if (ptr_dptr == NULL)                               /* if the PTR device is not present */
+        return 0;                                       /*   then something is seriously wrong */
+    else                                                /* otherwise */
+        ptr_sc = ((DIB *) ptr_dptr->ctxt)->select_code; /*   get the select code from the device's DIB */
+    }
 
-        MP_ABORT (err_PC);                                  /* MP abort */
+else                                                    /* otherwise this is a single-part loader */
+    ptr_sc = 0;                                         /*   or I/O reconfiguration is not requested */
+
+loader_start = mem_size - 1 & ~IBL_MASK & LA_MASK;          /* get the base memory address of the loader */
+PR = loader_start + boot [is_1000].start_index & R_MASK;    /*   and store the starting program address in P */
+
+set_loader (NULL, TRUE, NULL, NULL);                    /* enable the loader (ignore errors if not 21xx) */
+
+for (index = 0; index < IBL_SIZE; index++) {            /* copy the bootstrap loader to memory */
+    word = boot [is_1000].loader [index];               /* get the next word */
+
+    if (sc == 0)                                        /* if reconfiguration is not requested */
+        loader [index] = word;                          /*   then copy the instruction verbatim */
+
+    else if (IOGOP (word)                                           /* otherwise if this is an I/O instruction */
+      && (word & SC_MASK) >= SC_VAR                                 /*   and the referenced select code is >= 10B */
+      && (word & IR_HLT_MASK) != IR_HLT)                            /*   and it's not a halt instruction */
+        if (index < boot [is_1000].start_index)                     /*   then if this is a split loader */
+            loader [index] = word + (ptr_sc - SC_VAR) & DV_MASK;    /*     then reconfigure the paper tape reader */
+        else                                                        /*   otherwise */
+            loader [index] = word + (sc - SC_VAR) & DV_MASK;        /*     reconfigure the target device */
+
+    else if (index == boot [is_1000].dma_index)             /* otherwise if this is the DMA configuration word */
+        loader [index] = word + (sc - SC_VAR) & DV_MASK;    /*   then reconfigure the target device */
+
+    else if (index == boot [is_1000].fwa_index)         /* otherwise if this is the starting address word */
+        loader [index] = NEG16 (loader_start);          /*   then set the negative starting address of the bootstrap */
+
+    else                                                /* otherwise the word is not a special one */
+        loader [index] = word;                          /*   so simply copy it */
+    }
+
+mem_copy_loader (loader, loader_start, To_Memory);      /* copy the loader to memory */
+
+if (cpu_configuration & CPU_1000)                       /* if the CPU is a 1000 */
+    SR = SR & sr_clear | sr_set | IBL_TO_SC (sc);       /*   then modify the S register as indicated */
+
+return PR;                                              /* return the starting execution address of the loader */
+}
+
+
+/* Check for an I/O stop condition.
+
+   Entering the SET CPU STOP=IOERR command at the SCP command prompt stops the
+   simulator if an I/O error occurs on a device that does not return error
+   status to the CPU.  For example, while the paper tape punch returns low- or
+   out-of-tape status, the paper tape reader gives no indication that a tape is
+   loaded.  If the reader is commanded to read when no tape is mounted, the
+   interface hangs while waiting for the handshake with the device to complete.
+
+   In hardware, the CPU can detect this condition only by timing the operation
+   and concluding that the tape is missing if the timeout is exceeded.  However,
+   if an IOERR stop has been set, then the simulator will stop with an error
+   message to permit the condition to be fixed.  For instance, attempting to
+   read from the paper tape reader with no paper tape image file attached will
+   print "No tape loaded in the PTR device" and will stop the simulator.
+
+   Such devices will call this routine and pass a pointer to the unit that
+   encountered the error condition.  The routine returns TRUE and saves the
+   pointer to the failing unit if the IOERR stop is enabled, and FALSE
+   otherwise.
+*/
+
+t_bool cpu_io_stop (UNIT *uptr)
+{
+if (cpu_ss_ioerr != SCPE_OK) {                          /* if the I/O error stop is enabled */
+    cpu_ioerr_uptr = uptr;                              /*   then save the failing unit */
+    return TRUE;                                        /*     and return TRUE to indicate that the stop is enabled */
+    }
+
+else                                                    /* otherwise */
+    return FALSE;                                       /*   return FALSE to indicate that the stop is disabled */
+}
+
+
+
+/* I/O subsystem global utility routines */
+
+
+/* Device I/O signal dispatcher.
+
+   This routine calls the I/O interface handler of the device corresponding to
+   the supplied "select_code" value, passing the "inbound_signals" and
+   "inbound_value" to the interface.  The combined skip status and outbound data
+   value from the handler is returned to the caller.
+
+   The 21xx/1000 I/O structure requires that no empty slots exist between
+   interface cards.  This is due to the hardware priority chaining (PRH/PRL)
+   that is passed from card-to-card.  If it is necessary to leave unused I/O
+   slots, HP 12777A Priority Jumper Cards must be installed in them to maintain
+   priority continuity.
+
+   Under simulation, every unassigned I/O slot behaves as though a 12777A were
+   resident.  In this configuration, I/O instructions addressed to one of these
+   slots read the floating bus for LIA/B and MIA/B instructions or do nothing
+   for all other instructions.
+
+   If the slot is occupied, then the routine first determines the rank (0 or 1)
+   and bit (0 to 31) corresponding to the select code of the interface.  These
+   will be used to access the interrupt, priority, and service request bit
+   vectors.  Then it augments the supplied inbound signals set with IEN if the
+   interrupt system flip-flop is set, and PRH if no higher priority interface is
+   denying PRL.
+
+   In hardware, PRH of each interface is connected to PRL of the next higher
+   priority (lower select code) interface, so that a PRH-to-PRL chain is formed.
+   An interface receives PRH if every higher-priority interface is asserting
+   PRL.  When an interface denies PRL, each lower-priority interface has PRH
+   denied and so denies PRL to the next interface in the chain.
+
+   To avoid checking calling each device simulator's higher-priority interface
+   routine to ascertain its PRL status, the priority holdoff bit vector is
+   checked.  This vector has a bit set for each interface currently denying PRL.
+   The check is made as in the following example:
+
+     sc bit      :  ...0 0 1 0 0 0 0 0 0 0 0 0   (dispatching to SC 11)
+     sc bit - 1  :  ...0 0 0 1 1 1 1 1 1 1 1 1   (PRH required thru SC 10)
+     pri holdoff :  ...0 0 1 0 0 1 0 0 0 0 0 0   (PRL denied for SC 06 and 11)
+     ANDed value :  ...0 0 0 0 0 1 0 0 0 0 0 0   (PRL blocked at SC 06)
+
+   If the ANDed value is 0, then there are no higher priority devices in this
+   rank that are denying PRL.  If the rank is 0, then PRH is asserted to the
+   current select code.  If the rank is 1, then PRH is asserted only if all rank
+   0 priority holdoff bits are zero, i.e., if no rank 0 interfaces are denying
+   PRL.
+
+   The device interface handler is obtained from the "dibs" array, and the
+   interface is called to process the inbound signals.
+
+   On return, the outbound signals from the interface are examined.  The
+   interrupt vector bit is set to the state of the IRQ signal, and the priority
+   vector bit is set to the state of the PRL signal.
+
+   If the IRQ signal is present, then the interface is the highest priority
+   device requesting an interrupt (otherwise the interface would not have
+   received PRH, which is a term in asserting IRQ), so the select code of the
+   interrupting device is set.  Otherwise, if the interface asserted its PRL
+   condition from a prior denied state, then lower priority devices are checked
+   to see if any now have a valid interrupt request.
+
+   If the SRQ signal is asserted, a DMA request is made; if the device is under
+   DMA control, a DMA cycle will be initiated at the start of the next pass
+   through the instruction execution loop.  Finally, the skip condition is set
+   if the SKF signal is asserted, and the skip state and outbound value from the
+   interface are returned to the caller.
+
+
+   Implementation notes:
+
+    1. For select codes < 10 octal, an IOI signal reads the floating S-bus
+       (high on the 1000, low on the 21xx).  For select codes >= 10 octal, an
+       IOI reads the floating I/O bus (low on all machines).
+
+    2. The last select code used is saved for use by the CPU I/O handler in
+       detecting consecutive CLC 0 executions.
+
+    3. The IRQ and FLG signals always assert together on HP 21xx/1000 machines.
+       They are physically tied together on all interface cards, and the CPUs
+       depend on their concurrent assertion for correct operation.  In
+       simulation, we check only IRQ from the interface, although FLG will be
+       asserted as well.
+
+    4. The IRQ and SRQ signals usually assert together, which means that an
+       interrupt is pending before the DMA request is serviced.  However, DMA
+       cycles always assert CLF, which clears the interrupt request before
+       interrupts are checked.  In hardware, an SRQ to an active channel asserts
+       DMALO (DMA lock out), which inhibits IRQ from setting the interrupt
+       request flip-flop until the DMA cycle completes.  In simulation, IRQ is
+       never asserted because the CLF is processed by the interface simulator
+       before IRQ is determined.
+
+    5. An interface will assert "cnVALID" if the conditional PRL and IRQ were
+       determined.  If "cnVALID" is not asserted by the interface, then the
+       states of the "cnPRL" and "cnIRQ" signals cannot be inferred from their
+       presence or absence in the outbound signal set.
+
+    6. The "cnVALID" pseudo-signal is required because although most interfaces
+       determine the PRL and IRQ states in response to an SIR assertion, not all
+       do.  In particular, the 12936A Privileged Interrupt Fence determines PRL
+       in response to an IOO signal.
+*/
+
+SKPF_DATA io_dispatch (uint32 select_code, INBOUND_SET inbound_signals, HP_WORD inbound_value)
+{
+SKPF_DATA     result;
+SIGNALS_VALUE outbound;
+uint32        sc_rank, sc_bit, previous_holdoff;
+
+if (iot [select_code].dibptr == NULL) {                 /* if the I/O slot is empty */
+    result.skip = FALSE;                                /*   then SKF cannot be asserted */
+
+    if (inbound_signals & ioIOI && select_code < SC_VAR /* if this is an input request for an internal device */
+      && cpu_configuration & CPU_1000)                  /*   of a 1000 CPU */
+        result.data = D16_UMAX;                         /*     then the empty slot reads as all ones */
+    else                                                /* otherwise */
+        result.data = 0;                                /*   the empty slot reads as all zeros */
+    }
+
+else {                                                  /* otherwise the slot is occupied */
+    sc_rank = select_code / 32;                         /*   so set the rank */
+    sc_bit  = 1u << select_code % 32;                   /*     and bit of the interface */
+
+    if (interrupt_system == SET) {                      /* if the interrupt system is on */
+        inbound_signals |= ioIEN;                       /*   then assert IEN to the interface */
+
+        if ((sc_bit - 1 & priority_holdoff_set [sc_rank]) == 0  /* if no higher priority device */
+          && (sc_rank == 0 || priority_holdoff_set [0] == 0))   /*   is denying PRL */
+            inbound_signals |= ioPRH;                           /*     then assert PRH to our interface */
         }
 
-signal_set = generate_signal [sop];                     /* generate I/O signal from instruction */
-ion_defer = defer_tab [sop];                            /* defer depending on instruction */
+    tpprintf (iot [select_code].devptr, TRACE_IOBUS, "Received data %06o with signals %s\n",
+              inbound_value, fmt_bitset (inbound_signals, inbound_format));
 
-if (sop == soOTX)                                       /* OTA/B instruction? */
-    iodata = ABREG [ab];                                /* pass A/B register value */
+    outbound =                                                          /* call the device interface */
+      iot [select_code].dibptr->io_interface (iot [select_code].dibptr, /*   with the device select code */
+                                              inbound_signals,          /*     and inbound signal set */
+                                              inbound_value);           /*       and data value */
 
-else if ((sop == soCTL) && (ir & I_CTL))                /* CLC instruction? */
-    signal_set = ioCLC;                                 /* change STC to CLC signal */
+    tpprintf (iot [select_code].devptr, TRACE_IOBUS, "Returned data %06o with signals %s\n",
+              outbound.value, fmt_bitset (outbound.signals, outbound_format));
 
-if ((sop == soFLG) && clf)                              /* CLF instruction? */
-    signal_set = ioCLF;                                 /* change STF to CLF signal */
+    last_select_code = select_code;                     /* save the select code for CLC 0 detection */
+    previous_holdoff = priority_holdoff_set [sc_rank];  /*   and the current priority holdoff for this rank */
 
-else if (clf)                                           /* CLF with another instruction? */
-    signal_set = signal_set | ioCLF;                    /* add CLF signal */
+    if (outbound.signals & cnVALID) {                   /* if the IRQ and PRL signals are valid */
+        if (outbound.signals & cnIRQ)                   /*   then if the conditional interrupt request signal is present */
+            interrupt_request_set [sc_rank] |= sc_bit;  /*     then set the interrupt request bit */
+        else                                            /*   otherwise */
+            interrupt_request_set [sc_rank] &= ~sc_bit; /*     clear the request bit */
 
-ioreturn = devdisp (dev, signal_set, iodata);           /* dispatch I/O signal */
+        if (outbound.signals & cnPRL)                   /* if the conditional priority low signal is present */
+            priority_holdoff_set [sc_rank] &= ~sc_bit;  /*   then clear the priority inhibit bit */
+        else                                            /* otherwise */
+            priority_holdoff_set [sc_rank] |= sc_bit;   /*   set the inhibit bit */
+        }
 
-iostat = IOSTATUS (ioreturn);                           /* extract status */
-iodata = IODATA (ioreturn);                             /* extract return data value */
+    if (outbound.signals & ioIRQ)                       /* if the interrupt request signal is present */
+        interrupt_request = select_code;                /*   then indicate that the select code is interrupting */
 
-if (((sop == soSFC) || (sop == soSFS)) &&               /* testing flag state? */
-    ((IOSIGNAL) iodata == ioSKF))                       /*   and SKF asserted? */
-    PC = (PC + 1) & VAMASK;                             /* bump P to skip next instruction */
+    else if (previous_holdoff & ~priority_holdoff_set [sc_rank] & sc_bit)   /* otherwise if priority is newly asserted */
+        interrupt_request = io_poll_interrupts (interrupt_system);          /*   then check interrupt requests */
 
-else if (sop == soLIX)                                  /* LIA/B instruction? */
-    ABREG [ab] = iodata;                                /* load returned data */
+    if (outbound.signals & ioSRQ)                       /* if SRQ is asserted */
+        dma_assert_SRQ (select_code);                   /*   then check if DMA is controlling this interface */
 
-else if (sop == soMIX)                                  /* MIA/B instruction? */
-    ABREG [ab] = ABREG [ab] | iodata;                   /* merge returned data */
-
-else if (sop == soHLT) {                                /* HLT instruction? */
-    return STOP_HALT;                                   /* return halt status */
+    result.skip = (outbound.signals & ioSKF) != 0;      /* return TRUE if the skip-on-flag signal is present */
+    result.data = outbound.value;                       /*   and return the outbound data from the interface */
     }
 
-if (iostat == SCPE_OK)                                  /* normal status? */
-    return NOTE_IOG;                                    /* request interrupt recalc */
-else                                                    /* abnormal status */
-    return iostat;                                      /* return it */
+return result;                                          /* return the result of the I/O operation */
 }
 
 
-/* Device I/O signal dispatcher */
+/* Execute an I/O control operation.
 
-static uint32 devdisp (uint32 select_code, IOCYCLE signal_set, uint16 data)
-{
-return dtab [select_code]->io_handler (dtab [select_code],
-                                       signal_set,
-                                       IORETURN (SCPE_OK, data));
-}
+   This routine performs an I/O control operation on the interface specified by
+   the "select_code" parameter.  I/O control operations are all those that do
+   not pass data to or from the interface.  The routine returns TRUE if the
+   interface asserted the SKF signal as a result of the operation and FALSE if
+   it did not.
 
+   Certain microcode extension instructions perform I/O operations as part of
+   their execution.  In hardware, this is done by setting bits 11-6 of the
+   Instruction Register to a code describing the operation and then issuing the
+   IOG micro-order to generate the sppropriate backplane signals.  In
+   simulation, this relatively lightweight routine performs the same action,
+   avoiding much of the overhead of the "cpu_iog" routine.
 
-/* Calculate DMA requests */
-
-static uint32 calc_dma (void)
-{
-uint32 r = 0;
-
-if (dma [ch1].xferen && SRQ (dma [ch1].cw1 & I_DEVMASK))    /* check DMA1 cycle */
-    r = r | DMA_1_REQ;
-if (dma [ch2].xferen && SRQ (dma [ch2].cw1 & I_DEVMASK))    /* check DMA2 cycle */
-    r = r | DMA_2_REQ;
-return r;
-}
-
-
-/* Determine whether a pending interrupt deferral should be inhibited.
-
-   Execution of certain instructions generally cause a pending interrupt to be
-   deferred until the succeeding instruction completes.  However, the interrupt
-   deferral rules differ on the 21xx vs. the 1000.
-
-   The 1000 always defers until the completion of the instruction following a
-   deferring instruction.  The 21xx defers unless the following instruction is
-   an MRG instruction other than JMP or JMP,I or JSB,I.  If it is, then the
-   deferral is inhibited, i.e., the pending interrupt will be serviced.
-
-   See the "Set Phase Logic Flowchart," transition from phase 1A to phase 1B,
-   and the "Theory of Operation," "Control Section Detailed Theory," "Phase
-   Control Logic," "Phase 1B" paragraph in the Model 2100A Computer Installation
-   and Maintenance Manual for details.
+   The routine performs a memory protect check and then dispatches the operation
+   to the interface indicated by the supplied select code.
 */
 
-t_bool calc_defer (void)
+t_bool io_control (uint32 select_code, IO_GROUP_OP micro_op)
 {
-uint16 IR;
+SKPF_DATA result;
 
-if (UNIT_CPU_FAMILY == UNIT_FAMILY_21XX) {              /* 21xx series? */
-    IR = ReadW (PC);                                    /* prefetch next instr */
+mp_check_io (select_code, micro_op);                    /* check that the I/O operation is permitted */
 
-    if (((IR & I_MRG & ~I_AB) != 0000000) &&            /* is MRG instruction? */
-        ((IR & I_MRG_I)       != I_JSB_I) &&            /*   but not JSB,I? */
-        ((IR & I_MRG)         != I_JMP))                /*   and not JMP or JMP,I? */
-        return FALSE;                                   /* yes, so inhibit deferral */
-    else
-        return TRUE;                                    /* no, so allow deferral */
-    }
-else
-    return TRUE;                                        /* 1000 always allows deferral */
+result = io_dispatch (select_code,                      /* send the signal set */
+                      control_set [micro_op], 0);       /*   to the indicated interface */
+
+return result.skip;                                     /* return TRUE if the interface asserted SKF */
 }
 
 
-/* Calculate interrupt requests.
+/* Assert an I/O backplane signal.
 
-   The interrupt request (IRQ) of the highest-priority device for which all
-   higher-priority PRL bits are set is granted.  That is, there must be an
-   unbroken chain of priority to a device requesting an interrupt for that
-   request to be granted.
+   This routine is called by a device interface simulator to assert a specific
+   I/O backplane signal.  The supported signal assertions are ENF, SIR, PON,
+   POPIO, CRS, and IAK.  In hardware, these signals would be asserted by logic
+   gates on the interface; in simulation, they are asserted by calls to this
+   routine.
 
-   A device sets its IRQ bit to request an interrupt, and it clears its PRL bit
-   to prevent lower-priority devices from interrupting.  IRQ is cleared by an
+   The operation is dispatched via the I/O access table by the "io_dispatch"
+   routine, so we first ensure that the table entry is set correctly.  During
+   instruction execution, this is redundant, as the table has been set up during
+   the execution prelude.  However, this routine is also called by each
+   interface simulator's device reset routine in response to a RESET ALL or
+   RESET <device> SCP command.  At that point, the table may not have been
+   intitialized or may contain incorrect entries (if the device has been enabled
+   or reassigned since the last time the table was set up).
+*/
+
+void io_assert (DEVICE *dptr, IO_ASSERTION assertion)
+{
+DIB    *dibptr;
+uint32 select_code;
+
+if (dptr != NULL && dptr->ctxt != NULL) {               /* if the device points to a valid DIB */
+    dibptr = (DIB *) dptr->ctxt;                        /*   then get the DIB pointer */
+    select_code = dibptr->select_code;                  /*     and associated select code */
+
+    iot [select_code].devptr = dptr;                    /* set the current device and DIB pointer assignments */
+    iot [select_code].dibptr = dibptr;                  /*   into the table */
+
+    io_dispatch (select_code, assert_set [assertion], 0);   /* assert the signal set to the indicated interface */
+    }
+
+return;
+}
+
+
+/* Poll for a new interrupt request.
+
+   This routine is called when an interface asserts a previously denied PRL
+   signal, i.e., when PRL goes from low to high on the I/O backplane.  It
+   determines if any interfaces lower in the priority chain are now ready to
+   interrupt.  If so, the select code of the highest priority interrupting
+   interface is returned; otherwise, 0 is returned.
+
+   In hardware, PRH and PRL form a priority chain that extends from interface to
+   interface on the backplane.  For an interface to generate an interrupt, PRH
+   must be asserted by the next-higher-priority interface.  An interface
+   receiving PRH asserts IRQ to request an interrupt, and it denies PRL to
+   prevent lower-priority devices from interrupting.  IRQ is cleared by an
    interrupt acknowledge (IAK) signal.  PRL generally remains low while a
    device's interrupt service routine is executing to prevent preemption.
 
@@ -2081,613 +2931,150 @@ else
       0    0   Interrupt acknowledged
       1    1   (not allowed)
 
-   Note that PRL must be dropped when requesting an interrupt (IRQ set).  This
-   is a hardware requirement of the 1000 series.  The IRQ lines from the
+   PRL must be denied when requesting an interrupt (IRQ asserted).  This is a
+   hardware requirement of the 21xx/1000 series.  The IRQ lines from the
    backplane are not priority encoded.  Instead, the PRL chain expresses the
    priority by allowing only one IRQ line to be active at a time.  This allows a
    simple pull-down encoding of the CIR inputs.
 
-   The end of priority chain is marked by the highest-priority (lowest-order)
-   bit that is clear.  The device corresponding to that bit is the only device
-   that may interrupt (a higher priority device that had IRQ set would also have
-   had PRL set, which is a state violation).  We calculate a priority mask by
-   ANDing the complement of the PRL bits with an increment of the PRL bits.
-   Only the lowest-order bit will differ.  For example:
+   When a given interface denies PRL, the PRH-to-PRL chain through all
+   lower-priority interfaces also denies.  When that interface reasserts PRL,
+   the chain reasserts through intervening interfaces until it reaches one that
+   is ready to request an interrupt or through all interfaces if none are ready.
+   An interface that is ready to interrupt except for a denied PRH will assert
+   IRQ when the higher-priority PRH-to-PRL chain reasserts.
 
-     dev_prl     :  ...1 1 0 1 1 0 1 1 1 1 1 1   (PRL denied for SC 06 and 11)
+   A direct simulation of this hardware behavior would require polling all
+   lower-priority interfaces in order by calling their interface routines,
+   asserting PRH to each, and checking each for an asserted IRQ or a denied PRL
+   in response.  Two avoid this inefficiency, two bit vectors are kept that
+   reflect the states of each interface's IRQ and PRL signals conditional on PRH
+   being asserted.  The "interrupt_request_set" bit vector reflects each
+   interface's readiness to interrupt if its associated PRH signal is asserted,
+   and the "priority_holdoff_set" reflects the (inverted) state of each
+   interface's PRL signal, i.e., a zero-bit indicates that the interface is
+   ready to assert PRL if its associated PRH signal is asserted.  Each vector is
+   represented as a two-element array of 32-bit unsigned integers, forming a
+   64-bit vector in which bits 0-31 of the first element correspond to select
+   codes 00-37 octal, and bits 0-31 of the second element correspond to select
+   codes 40-77 octal.
 
-     dev_prl + 1 :  ...1 1 0 1 1 1 0 0 0 0 0 0
-    ~dev_prl     :  ...0 0 1 0 0 1 0 0 0 0 0 0
-     ANDed value :  ...0 0 0 0 0 1 0 0 0 0 0 0   (break is at SC 06)
+   The routine begins by seeing if an interrupt is pending.  If not, it returns
+   0.  Otherwise, the PRH-to-PRL chain is checked to see if PRL is denied
+   anywhere upstream of the highest priority interrupting interface.  If it is,
+   then no interface can interrupt.  If all higher-priority PRL signals are
+   asserted, then the interrupt request of that interface is granted.
 
-   The interrupt requests are then ANDed with the priority mask to determine if
+   Recognition of interrupts depends on the current state of the interrupt
+   system and interrupt enable flip-flops, as follows:
+
+     INTSYS  INTEN   Interrupts Recognized
+     ------  ------  ----------------------------
+     CLEAR   CLEAR   Parity error
+     CLEAR   SET     Parity error, power fail
+     SET     CLEAR   Parity error, memory protect
+     SET     SET     All sources
+
+   Memory protect and parity error share select code 05, but the interrupt
+   sources are differentiated on the MP card -- setting the flag buffer for a
+   memory protect violation is qualified by the IEN signal that reflects
+   the INTSYS state, whereas no qualification is used for a parity error.
+   Therefore, an interrupt on select code 05 with the interrupt system off must
+   be a parity error interrupt.
+
+   The end of the priority chain is marked by the highest-priority
+   (lowest-order) bit that is set.  We calculate a priority mask by ANDing the
+   the PRL bits with its two's complement using the IOPRIORITY macro.  Only the
+   lowest-order bit will differ.  For example:
+
+     pri holdoff :  ...0 0 1 0 0 1 0 0 0 0 0 0  (PRL denied for SC 06 and 11)
+     one's compl :  ...1 1 0 1 1 0 1 1 1 1 1 1
+     two's compl :  ...1 1 0 1 1 1 0 0 0 0 0 0
+     ANDed value :  ...0 0 0 0 0 1 0 0 0 0 0 0  (chain is broken at SC 06)
+
+   The interrupt requests are then ANDed with the priority masks to determine if
    a request is pending:
 
-     pri mask    :  ...0 0 0 0 0 1 0 0 0 0 0 0   (allowed interrupt source)
-     dev_irq     :  ...0 0 1 0 0 1 0 0 0 0 0 0   (devices requesting interrupts)
-     ANDed value :  ...0 0 0 0 0 1 0 0 0 0 0 0   (request to grant)
+     pri mask    :  ...0 0 0 0 0 1 0 0 0 0 0 0  (allowed interrupt source)
+     int request :  ...0 0 1 0 0 1 0 0 0 0 0 0  (interfaces asserting IRQ)
+     ANDed value :  ...0 0 0 0 0 1 0 0 0 0 0 0  (request to grant)
 
    The select code corresponding to the granted request is then returned to the
    caller.
 
-   If ION is clear, only power fail (SC 04) and parity error (SC 05) are
-   eligible to interrupt (memory protect shares SC 05, but qualification occurs
-   in the MP abort handler, so if SC 05 is interrupting when ION is clear, it
-   must be a parity error interrupt).
+
+   Implementation notes:
+
+    1. Recognition of an interrupt in the second half of the request set (i.e.,
+       for select codes 40-77 octal) occurs only if the priority set for the
+       first half is 0, i.e., if the PRH-to-PRL chain is unbroken through select
+       code 37.
+
+    2. If an interrupt for select codes 00-37 is pending but is inhibited, then
+       all higher select code interrupts are inhibited as well, so we only need
+       to check requests for the lower half or the upper half, but not both.
+
+    3. Splitting the interrupt request and priority holdoff sets into two 32-bit
+       parts is actually more efficient on 32-bit host CPUs than using a single
+       64-bit set, especially when right-shifting to obtain the bit number.
+       Efficiency is also aided by the fact that interface select codes are
+       typically below 40 octal and therefore are represented in the first bit
+       set(s).
 */
 
-uint32 calc_int (void)
+uint32 io_poll_interrupts (FLIP_FLOP interrupt_system)
 {
-uint32 sc, pri_mask [2], req_grant [2];
+const uint32 unmaskable = 1u << PWR | 1u << MPPE;       /* these interrupts are not inhibited by INTSYS clear */
+uint32 sc, rank, priority_mask, request_granted;
 
-pri_mask  [0] = ~dev_prl [0] & (dev_prl [0] + 1);       /* calculate lower priority mask */
-req_grant [0] = pri_mask [0] & dev_irq [0];             /* calculate lower request to grant */
+if (interrupt_request_set [0]) {                                    /* if a lower pending interrupt exists */
+    priority_mask = IOPRIORITY (priority_holdoff_set [0]);          /*   then calculate the first priority mask */
+    request_granted = priority_mask & interrupt_request_set [0];    /*     and the request to grant */
+    rank = 0;                                                       /*       for interrupt sources SC 00-37 */
 
-if (ion)                                                    /* interrupt system on? */
-    if ((req_grant [0] == 0) && (pri_mask [0] == 0)) {      /* no requests in lower set and PRL unbroken? */
-        pri_mask  [1] = ~dev_prl [1] & (dev_prl [1] + 1);   /* calculate upper priority mask */
-        req_grant [1] = pri_mask [1] & dev_irq [1];         /* calculate upper request to grant */
-        }
-    else                                                /* lower set has request */
-        req_grant [1] = 0;                              /* no grants to upper set */
-
-else {                                                  /* interrupt system off */
-    req_grant [0] = req_grant [0] &                     /* only PF and PE can interrupt */
-                    (BIT_M (PWR) | BIT_M (PRO));
-    req_grant [1] = 0;
+    if (interrupt_system == CLEAR)                      /* if the interrupt system is off */
+        request_granted &= unmaskable;                  /*   then only Power Fail and Parity Error may interrupt */
     }
 
-if (req_grant [0])                                      /* device in lower half? */
-    for (sc = 0; sc <= 31; sc++)                        /* determine interrupting select code */
-        if (req_grant [0] & 1)                          /* grant this request? */
-            return sc;                                  /* return this select code */
-        else                                            /* not this one */
-            req_grant [0] = req_grant [0] >> 1;         /* position next request */
-
-else if (req_grant [1])                                 /* device in upper half */
-    for (sc = 32; sc <= 63; sc++)                       /* determine interrupting select code */
-        if (req_grant [1] & 1)                          /* grant this request? */
-            return sc;                                  /* return this select code */
-        else                                            /* not this one */
-            req_grant [1] = req_grant [1] >> 1;         /* position next request */
-
-return 0;                                               /* no interrupt granted */
-}
-
-
-/* Memory access routines.
-
-   These routines access memory for reads and writes.  They validate the
-   accesses for MP and MEM violations, if enabled.  The following routines are
-   provided:
-
-     - ReadPW  : Read a word using a physical address
-     - ReadB   : Read a byte using the current map
-     - ReadBA  : Read a byte using the alternate map
-     - ReadW   : Read a word using the current map
-     - ReadWA  : Read a word using the alternate map
-     - ReadIO  : Read a word using the specified map without protection
-     - ReadTAB : Read a word using the current map without protection
-
-     - WritePW : Write a word using a physical address
-     - WriteB  : Write a byte using the current map
-     - WriteBA : Write a byte using the alternate map
-     - WriteW  : Write a word using the current map
-     - WriteWA : Write a word using the alternate map
-     - WriteIO : Write a word using the specified map without protection
-
-   The memory protect (MP) and memory expansion module (MEM) accessories provide
-   a protected mode that guards against improper accesses by user programs.
-   They may be enabled or disabled independently, although protection requires
-   that both be enabled.  MP checks that memory writes do not fall below the
-   Memory Protect Fence Register (MPFR) value, and MEM checks that read/write
-   protection rules on the target page are compatible with the access desired.
-   If either check fails, and MP is enabled, then the request is aborted.
-
-   Each mapped routine calls "dms" if DMS is enabled to translate the logical
-   address supplied to a physical address.  "dms" performs a protection check
-   and aborts without returning if the check fails.  The write routines perform
-   an additional memory-protect check and abort if a violation occurs (so, to
-   pass, a page must be writable AND the target must be above the MP fence).
-
-   Note that MP uses a lower bound of 2 for memory writes, allowing unrestricted
-   access to the A and B registers (addressed as locations 0 and 1).
-*/
-
-#define MP_TEST(va)     (mp_control && ((va) >= 2) && ((va) < mp_fence))
-
-
-/* Read a word using a physical address */
-
-uint16 ReadPW (uint32 pa)
-{
-if (pa <= 1)                                            /* read locations 0 or 1? */
-    return ABREG[pa];                                   /* return A/B register */
-else                                                    /* location >= 2 */
-    return M[pa];                                       /* return physical memory value */
-}
-
-
-/* Read a byte using the current map */
-
-uint8 ReadB (uint32 va)
-{
-int32 pa;
-
-if (dms_enb)                                            /* MEM enabled? */
-    pa = dms (va >> 1, dms_ump, RDPROT);                /* translate address */
-else                                                    /* MEM disabled */
-    pa = va >> 1;                                       /* use logical as physical address */
-
-if (va & 1)                                             /* low byte addressed? */
-    return (ReadPW (pa) & 0377);                        /* mask to lower byte */
-else                                                    /* high byte addressed */
-    return ((ReadPW (pa) >> 8) & 0377);                 /* position higher byte and mask */
-}
-
-
-/* Read a byte using the alternate map */
-
-uint8 ReadBA (uint32 va)
-{
-uint32 pa;
-
-if (dms_enb)                                            /* MEM enabled? */
-    pa = dms (va >> 1, dms_ump ^ MAP_LNT, RDPROT);      /* translate address using alternate map */
-else                                                    /* MEM disabled */
-    pa = va >> 1;                                       /* use logical as physical address */
-
-if (va & 1)                                             /* low byte addressed? */
-    return (ReadPW (pa) & 0377);                        /* mask to lower byte */
-else                                                    /* high byte addressed */
-    return ((ReadPW (pa) >> 8) & 0377);                 /* position higher byte and mask */
-}
-
-
-/* Read a word using the current map */
-
-uint16 ReadW (uint32 va)
-{
-uint32 pa;
-
-if (dms_enb)                                            /* MEM enabled? */
-    pa = dms (va, dms_ump, RDPROT);                     /* translate address */
-else                                                    /* MEM disabled */
-    pa = va;                                            /* use logical as physical address */
-
-return ReadPW (pa);                                     /* return word */
-}
-
-
-/* Read a word using the alternate map */
-
-uint16 ReadWA (uint32 va)
-{
-uint32 pa;
-
-if (dms_enb)                                            /* MEM enabled? */
-    pa = dms (va, dms_ump ^ MAP_LNT, RDPROT);           /* translate address using alternate map */
-else                                                    /* MEM disabled */
-    pa = va;                                            /* use logical as physical address */
-
-return ReadPW (pa);                                     /* return word */
-}
-
-
-/* Read a word using the specified map without protection */
-
-uint16 ReadIO (uint32 va, uint32 map)
-{
-uint32 pa;
-
-if (dms_enb)                                            /* MEM enabled? */
-    pa = dms (va, map, NOPROT);                         /* translate address with no protection */
-else                                                    /* MEM disabled */
-    pa = va;                                            /* use logical as physical address */
-
-return M[pa];                                           /* return word without A/B interception */
-}
-
-
-/* Read a word using the current map without protection */
-
-static uint16 ReadTAB (uint32 va)
-{
-uint32 pa;
-
-if (dms_enb)                                            /* MEM enabled? */
-    pa = dms (va, dms_ump, NOPROT);                     /* translate address with no protection */
-else                                                    /* MEM disabled */
-    pa = va;                                            /* use logical as physical address */
-
-return ReadPW (pa);                                     /* return word */
-}
-
-
-/* Write a word using a physical address */
-
-void WritePW (uint32 pa, uint32 dat)
-{
-if (pa <= 1)                                            /* write locations 0 or 1? */
-    ABREG[pa] = dat & DMASK;                            /* store A/B register */
-else if (pa < fwanxm)                                   /* 2 <= location <= LWA memory? */
-    M[pa] = dat & DMASK;                                /* store physical memory value */
-
-return;
-}
-
-
-/* Write a byte using the current map */
-
-void WriteB (uint32 va, uint32 dat)
-{
-uint32 pa, t;
-
-if (dms_enb)                                            /* MEM enabled? */
-    pa = dms (va >> 1, dms_ump, WRPROT);                /* translate address */
-else                                                    /* MEM disabled */
-    pa = va >> 1;                                       /* use logical as physical address */
-
-if (MP_TEST (va >> 1))                                  /* MPCK? */
-    MP_ABORT (va >> 1);                                 /* MP violation */
-
-t = ReadPW (pa);                                        /* get word */
-
-if (va & 1)                                             /* low byte addressed? */
-    t = (t & 0177400) | (dat & 0377);                   /* merge in lower byte */
-else                                                    /* high byte addressed */
-    t = (t & 0377) | ((dat & 0377) << 8);               /* position higher byte and merge */
-
-WritePW (pa, t);                                        /* store word */
-return;
-}
-
-
-/* Write a byte using the alternate map */
-
-void WriteBA (uint32 va, uint32 dat)
-{
-uint32 pa, t;
-
-if (dms_enb) {                                          /* MEM enabled? */
-    dms_viol (va >> 1, MVI_WPR);                        /* always a violation if protected */
-    pa = dms (va >> 1, dms_ump ^ MAP_LNT, WRPROT);      /* translate address using alternate map */
+else if (interrupt_request_set [1]                                  /* otherwise if an upper pending interrupt exists */
+  && priority_holdoff_set [0] == 0) {                               /*   and the priority chain is intact */
+    priority_mask = IOPRIORITY (priority_holdoff_set [1]);          /*     then calculate the second priority mask */
+    request_granted = priority_mask & interrupt_request_set [1];    /*       and the request to grant */
+    rank = 32;                                                      /*         for interrupt sources SC 40-77 */
     }
-else                                                    /* MEM disabled */
-    pa = va >> 1;                                       /* use logical as physical address */
 
-if (MP_TEST (va >> 1))                                  /* MPCK? */
-    MP_ABORT (va >> 1);                                 /* MP violation */
+else                                                    /* otherwise no interrupts are pending */
+    return 0;                                           /*   so return */
 
-t = ReadPW (pa);                                        /* get word */
+if (request_granted == 0)                               /* if no request was granted */
+    return 0;                                           /*   then return */
 
-if (va & 1)                                             /* low byte addressed? */
-    t = (t & 0177400) | (dat & 0377);                   /* merge in lower byte */
-else                                                    /* high byte addressed */
-    t = (t & 0377) | ((dat & 0377) << 8);               /* position higher byte and merge */
+else {                                                  /* otherwise */
+    for (sc = rank; !(request_granted & 1); sc++)       /*   determine the interrupting select code */
+        request_granted = request_granted >> 1;         /*     by counting the bits until the set bit is reached */
 
-WritePW (pa, t);                                        /* store word */
-return;
-}
-
-
-/* Write a word using the current map */
-
-void WriteW (uint32 va, uint32 dat)
-{
-uint32 pa;
-
-if (dms_enb)                                            /* MEM enabled? */
-    pa = dms (va, dms_ump, WRPROT);                     /* translate address */
-else                                                    /* MEM disabled */
-    pa = va;                                            /* use logical as physical address */
-
-if (MP_TEST (va))                                       /* MPCK? */
-    MP_ABORT (va);                                      /* MP violation */
-
-WritePW (pa, dat);                                      /* store word */
-return;
-}
-
-
-/* Write a word using the alternate map */
-
-void WriteWA (uint32 va, uint32 dat)
-{
-int32 pa;
-
-if (dms_enb) {                                          /* MEM enabled? */
-    dms_viol (va, MVI_WPR);                             /* always a violation if protected */
-    pa = dms (va, dms_ump ^ MAP_LNT, WRPROT);           /* translate address using alternate map */
-    }
-else                                                    /* MEM disabled */
-    pa = va;                                            /* use logical as physical address */
-
-if (MP_TEST (va))                                       /* MPCK? */
-    MP_ABORT (va);                                      /* MP violation */
-
-WritePW (pa, dat);                                      /* store word */
-return;
-}
-
-
-/* Write a word using the specified map without protection */
-
-void WriteIO (uint32 va, uint32 dat, uint32 map)
-{
-uint32 pa;
-
-if (dms_enb)                                            /* MEM enabled? */
-    pa = dms (va, map, NOPROT);                         /* translate address with no protection */
-else                                                    /* MEM disabled */
-    pa = va;                                            /* use logical as physical address */
-
-if (pa < fwanxm)
-    M[pa] = dat & DMASK;                                /* store word without A/B interception */
-return;
-}
-
-
-/* Mapped access check.
-
-   Returns TRUE if the address will be mapped (presuming MEM is enabled).
-*/
-
-static t_bool is_mapped (uint32 va)
-{
-uint32 dms_fence;
-
-if (va >= 02000)                                        /* above the base bage? */
-    return TRUE;                                        /* always mapped */
-else {
-    dms_fence = dms_sr & MST_FENCE;                     /* get BP fence value */
-    return (dms_sr & MST_FLT) ? (va < dms_fence) :      /* below BP fence and lower portion mapped? */
-                                (va >= dms_fence);      /*   or above BP fence and upper portion mapped? */
+    return sc;                                          /* return the interrupting select code */
     }
 }
 
 
-/* DMS relocation.
 
-   This routine translates logical into physical addresses.  It must be called
-   only when DMS is enabled, as that condition is not checked.  The logical
-   address, desired map, and desired access type are supplied.  If the access is
-   legal, the mapped physical address is returned; if it is not, then a MEM
-   violation is indicated.
-
-   The current map may be specified by passing "dms_ump" as the "map" parameter,
-   or a specific map may be used.  Normally, read and write accesses pass RDPROT
-   or WRPROT as the "prot" parameter to request access checking.  For DMA
-   accesses, NOPROT must be passed to inhibit access checks.
-
-   This routine checks for read, write, and base-page violations and will call
-   "dms_viol" as appropriate.  The latter routine will abort if MP is enabled,
-   or will return if protection is off.
-*/
-
-static uint32 dms (uint32 va, uint32 map, uint32 prot)
-{
-uint32 pgn, mpr;
-
-if (va <= 1)                                            /* reference to A/B register? */
-    return va;                                          /* use address */
-
-if (!is_mapped (va)) {                                  /* unmapped? */
-    if ((va >= 2) && (prot == WRPROT))                  /* base page write access? */
-        dms_viol (va, MVI_BPG);                         /* signal a base page violation */
-    return va;                                          /* use unmapped address */
-    }
-
-pgn = VA_GETPAG (va);                                   /* get page num */
-mpr = dms_map[map + pgn];                               /* get map reg */
-
-if (mpr & prot)                                         /* desired access disallowed? */
-    dms_viol (va, prot);                                /* signal protection violation */
-
-return (MAP_GETPAG (mpr) | VA_GETOFF (va));             /* return mapped address */
-}
+/* CPU local SCP support routines */
 
 
-/* DMS relocation for console access.
+/* CPU interface (select code 00).
 
-   Console access allows the desired map to be specified by switches on the
-   command line.  All protection checks are off for console access.
+   I/O operations directed to select code 0 manipulate the interrupt system.
+   STF and CLF turn the interrupt system on and off, and SFS and SFC test the
+   state of the interrupt system.  When the interrupt system is off, only Power
+   Fail and Parity Error interrupts are allowed.  The PRL signal follows the
+   state of the interrupt system.
 
-   This routine is called to restore a saved configuration, and mapping is not
-   used for restoration.
-*/
-
-static uint32 dms_cons (t_addr va, int32 sw)
-{
-uint32 map_sel;
-
-if ((dms_enb == 0) ||                                   /* DMS off? */
-    (sw & (SWMASK ('N') | SIM_SW_REST)))                /* no mapping rqst or save/rest? */
-    return (uint32) va;                                 /* use physical address */
-
-else if (sw & SWMASK ('S'))
-    map_sel = SMAP;
-
-else if (sw & SWMASK ('U'))
-    map_sel = UMAP;
-
-else if (sw & SWMASK ('P'))
-    map_sel = PAMAP;
-
-else if (sw & SWMASK ('Q'))
-    map_sel = PBMAP;
-
-else                                                    /* dflt to log addr, cur map */
-    map_sel = dms_ump;
-
-if (va >= VASIZE)                                       /* virtual, must be 15b */
-    return (uint32) MEMSIZE;
-
-else if (dms_enb)                                       /* DMS on? go thru map */
-    return dms ((uint32) va, map_sel, NOPROT);
-
-else                                                    /* else return virtual */
-    return (uint32) va;
-}
-
-
-/* Memory protect and DMS validation for jumps.
-
-   Jumps are a special case of write validation.  The target address is treated
-   as a write, even when no physical write takes place, so jumping to a
-   write-protected page causes a MEM violation.  In addition, a MEM violation is
-   indicated if the jump is to the unmapped portion of the base page.  Finally,
-   jumping to a location under the memory-protect fence causes an MP violation.
-
-   Because the MP and MEM hardware works in parallel, all three violations may
-   exist concurrently.  For example, a JMP to the unmapped portion of the base
-   page that is write protected and under the MP fence will indicate a
-   base-page, write, and MP violation, whereas a JMP to the mapped portion will
-   indicate a write and MP violation (BPV is inhibited by the MEBEN signal).  If
-   MEM and MP violations occur concurrently, the MEM violation takes precedence,
-   as the SFS and SFC instructions test the MEV flip-flop.
-
-   The lower bound of protected memory is passed in the "plb" argument.  This
-   must be either 0 or 2.  All violations are qualified by the MPCND signal,
-   which responds to the lower bound.  Therefore, if the lower bound is 2, and
-   if the part below the base-page fence is unmapped, or if the base page is
-   write-protected, then a MEM violation will occur only if the access is not to
-   locations 0 or 1.  The instruction set firmware uses a lower bound of 0 for
-   JMP, JLY, and JPY (and for JSB with W5 out), and of 2 for DJP, SJP, UJP, JRS,
-   and .GOTO (and JSB with W5 in).
-
-   Finally, all violations are inhibited if MP is off (mp_control is CLEAR), and
-   MEM violations are inhibited if the MEM is disabled.
-*/
-
-void mp_dms_jmp (uint32 va, uint32 plb)
-{
-uint32 violation = 0;
-uint32 pgn = VA_GETPAG (va);                            /* get page number */
-
-if (mp_control) {                                       /* MP on? */
-    if (dms_enb) {                                      /* MEM on? */
-        if (dms_map [dms_ump + pgn] & WRPROT)           /* page write protected? */
-            violation = MVI_WPR;                        /* write violation occured */
-
-        if (!is_mapped (va) && (va >= plb))             /* base page target? */
-            violation = violation | MVI_BPG;            /* base page violation occured */
-
-        if (violation)                                  /* any violation? */
-            dms_viol (va, violation);                   /* signal MEM violation */
-        }
-
-    if ((va >= plb) && (va < mp_fence))                 /* jump under fence? */
-        MP_ABORT (va);                                  /* signal MP violation */
-    }
-
-return;
-}
-
-
-/* DMS read and write map registers */
-
-uint16 dms_rmap (uint32 mapi)
-{
-mapi = mapi & MAP_MASK;
-return (dms_map[mapi] & ~MAP_RSVD);
-}
-
-void dms_wmap (uint32 mapi, uint32 dat)
-{
-mapi = mapi & MAP_MASK;
-dms_map[mapi] = (uint16) (dat & ~MAP_RSVD);
-return;
-}
-
-
-/* Process a MEM violation.
-
-   A MEM violation will report the cause in the violation register.  This occurs
-   even if the MEM is not in the protected mode (i.e., MP is not enabled).  If
-   MP is enabled, an MP abort is taken with the MEV flip-flop set.  Otherwise,
-   we return to the caller.
-*/
-
-void dms_viol (uint32 va, uint32 st)
-{
-dms_vr = st | dms_upd_vr (va);                          /* set violation cause in register */
-
-if (mp_control) {                                       /* memory protect on? */
-    mp_mevff = SET;                                     /* record memory expansion violation */
-    MP_ABORT (va);                                      /* abort */
-    }
-return;
-}
-
-
-/* Update the MEM violation register.
-
-   In hardware, the MEM violation register (VR) is clocked on every memory read,
-   every memory write above the lower bound of protected memory, and every
-   execution of a privileged DMS instruction.  The register is not clocked when
-   MP is disabled by an MP or MEM error (i.e., when MEVFF sets or CTL5FF
-   clears), in order to capture the state of the MEM.  In other words, the VR
-   continually tracks the memory map register accessed plus the MEM state
-   (MEBEN, MAPON, and USR) until a violation occurs, and then it's "frozen."
-
-   Under simulation, we do not have to update the VR on every memory access,
-   because the visible state is only available via a programmed RVA/B
-   instruction or via the SCP interface.  Therefore, it is sufficient if the
-   register is updated:
-
-     - at a MEM violation (when freezing)
-     - at an MP violation (when freezing)
-     - during RVA/B execution (if not frozen)
-     - before returning to SCP after a simulator stop (if not frozen)
-*/
-
-uint32 dms_upd_vr (uint32 va)
-{
-if (mp_control && (mp_mevff == CLEAR)) {                /* violation register unfrozen? */
-    dms_vr = VA_GETPAG (va) |                           /* set map address */
-             (dms_enb ? MVI_MEM : 0) |                  /*   and MEM enabled */
-             (dms_ump ? MVI_UMP : 0);                   /*   and user map enabled */
-
-    if (is_mapped (va))                                 /* is addressed mapped? */
-        dms_vr = dms_vr | MVI_MEB;                      /* ME bus is enabled */
-    }
-
-return dms_vr;
-}
-
-
-/* Update the MEM status register */
-
-uint32 dms_upd_sr (void)
-{
-dms_sr = dms_sr & ~(MST_ENB | MST_UMP | MST_PRO);
-
-if (dms_enb)
-    dms_sr = dms_sr | MST_ENB;
-
-if (dms_ump)
-    dms_sr = dms_sr | MST_UMP;
-
-if (mp_control)
-    dms_sr = dms_sr | MST_PRO;
-
-return dms_sr;
-}
-
-
-/* CPU (SC 0) I/O signal handler.
-
-   I/O instructions for select code 0 manipulate the interrupt system.  STF and
-   CLF turn the interrupt system on and off, and SFS and SFC test the state of
-   the interrupt system.  When the interrupt system is off, only power fail and
-   parity error interrupts are allowed.
+   CLC asserts CRS to all interfaces from select code 6 upward.
 
    A PON reset initializes certain CPU registers.  The 1000 series does a
    microcoded memory clear and leaves the T and P registers set as a result.
 
-   Front-panel PRESET performs additional initialization.  We also handle MEM
-   preset here.
 
    Implementation notes:
 
@@ -2710,1140 +3097,813 @@ return dms_sr;
 
         "Because parity error interrupts can occur even when the interrupt
          system is off, the code at $CIC must be able to save the complete
-         system status. The major hole in being able to save the complete state
-         is in saving the interrupt system state. In order to do this in both
+         system status.  The major hole in being able to save the complete state
+         is in saving the interrupt system state.  In order to do this in both
          the 21MX and the 21XE the instruction 103300 was used to both test the
          interrupt system and turn it off."
 
-    4. Select code 0 cannot interrupt, so there is no SIR handler.
+    4. Select code 0 cannot interrupt, so the SIR handler does not assert IRQ.
+
+    5. To guarantee proper initialization, the 12920A terminal multiplexer
+       requires that the Control Reset (CRS) I/O signal be asserted for a
+       minimum of 100 milliseconds.  In practice, this is achieved by executing
+       131,072 (128K) CLC 0 instructions in a tight loop.  This is not necessary
+       in simulation, and in fact is detrimental, as 262,000+ trace lines will
+       be written for each device that enables IOBUS tracing.  To avoid this,
+       consecutive CLC 0 operations after the first are omitted.  This is
+       detected by checking the select code and signal set of the last I/O
+       operation.
 */
 
-uint32 cpuio (DIB *dibptr, IOCYCLE signal_set, uint32 stat_data)
+static SIGNALS_VALUE cpu_interface (const DIB *dibptr, INBOUND_SET inbound_signals, HP_WORD inbound_value)
 {
-uint32 sc;
-IOSIGNAL signal;
-IOCYCLE  working_set = signal_set;                      /* no SIR handler needed */
+static INBOUND_SET last_signal_set = ioNONE;            /* the last set of I/O signals processed */
+INBOUND_SIGNAL     signal;
+INBOUND_SET        working_set = inbound_signals;
+SIGNALS_VALUE      outbound    = { ioNONE, 0 };
+uint32             sc;
 
-while (working_set) {
-    signal = IONEXT (working_set);                      /* isolate next signal */
+while (working_set) {                                   /* while signals remain */
+    signal = IONEXTSIG (working_set);                   /*   isolate the next signal */
 
-    switch (signal) {                                   /* dispatch I/O signal */
+    switch (signal) {                                   /* dispatch the I/O signal */
 
-        case ioCLF:                                     /* clear flag flip-flop */
-            ion = CLEAR;                                /* turn interrupt system off */
+        case ioCLF:                                     /* Clear Flag flip-flop */
+            interrupt_system = CLEAR;                   /* turn the interrupt system off */
+
+            if (interrupt_request > MPPE)               /* if any interrupt other than power fail or parity error */
+                interrupt_request = 0;                  /*   is pending, then clear it */
             break;
 
-        case ioSTF:                                     /* set flag flip-flop */
-            ion = SET;                                  /* turn interrupt system on */
+
+        case ioSTF:                                     /* Set Flag flip-flop */
+            interrupt_system = SET;                     /* turn the interrupt system on */
             break;
 
-        case ioSFC:                                     /* skip if flag is clear */
-            setSKF (!ion);                              /* skip if interrupt system is off */
+
+        case ioSFC:                                     /* Skip if Flag is Clear */
+            if (interrupt_system == CLEAR)              /* if the interrupt system is off */
+                outbound.signals |= ioSKF;              /*   then assert the Skip on Flag signal */
             break;
 
-        case ioSFS:                                     /* skip if flag is set */
-            setSKF (ion);                               /* skip if interupt system is on */
+
+        case ioSFS:                                     /* Skip if Flag is Set */
+            if (interrupt_system == SET)                /* if the interrupt system is on */
+                outbound.signals |= ioSKF;              /*   then assert the Skip on Flag signal */
             break;
+
 
         case ioIOI:                                     /* I/O input */
-            stat_data = IORETURN (SCPE_OK, 0);          /* returns 0 */
+            outbound.value = 0;                         /* returns 0 */
             break;
 
-        case ioPON:                                     /* power on normal */
+
+        case ioPON:                                     /* Power On Normal */
             AR = 0;                                     /* clear A register */
             BR = 0;                                     /* clear B register */
             SR = 0;                                     /* clear S register */
             TR = 0;                                     /* clear T register */
             E = 1;                                      /* set E register */
 
-            if (UNIT_CPU_FAMILY == UNIT_FAMILY_1000) {  /* 1000 series? */
-                memset (M, 0, (uint32) MEMSIZE * 2);    /* zero allocated memory */
-                MR = 0077777;                           /* set M register */
-                PC = 0100000;                           /* set P register */
+            if (cpu_configuration & CPU_1000) {         /* if the CPU is a 1000-series machine */
+                mem_zero (0, mem_size);                 /*   then power on clears memory */
+
+                MR = LA_MAX;                            /* set the M register to the maximum logical address */
+                PR = MR + 1;                            /*   and the P register to one more than that */
                 }
 
-            else {                                      /* 21xx series */
-                MR = 0;                                 /* clear M register */
-                PC = 0;                                 /* clear P register */
+            else {                                      /* otherwise is a 21xx-series machine */
+                MR = 0;                                 /*   which clears the M register */
+                PR = 0;                                 /*     and the P register */
                 }
             break;
 
-        case ioPOPIO:                                   /* power-on preset to I/O */
-            O = 0;                                      /* clear O register */
-            ion = CLEAR;                                /* turn off interrupt system */
-            ion_defer = FALSE;                          /* clear interrupt deferral */
 
-            dms_enb = 0;                                /* turn DMS off */
-            dms_ump = 0;                                /* init to system map */
-            dms_sr = 0;                                 /* clear status register and BP fence */
-            dms_vr = 0;                                 /* clear violation register */
+        case ioPOPIO:                                   /* Power-On Preset to I/O */
+            O = 0;                                      /* clear the overflow register */
+
+            interrupt_system = CLEAR;                   /* turn off the interrupt system */
+            cpu_interrupt_enable = SET;                 /*   and enable interrupts */
             break;
 
-        case ioCLC:                                     /* clear control flip-flop */
-            for (sc = CRSDEV; sc <= MAXDEV; sc++)       /* send CRS to devices */
-                devdisp (sc, ioCRS, 0);                 /*   from select code 6 and up */
+
+        case ioCLC:                                             /* Clear Control flip-flop */
+            if (last_select_code != 0                           /* if the last I/O instruction */
+              || (last_signal_set & ioCLC) == 0)                /*   was not a CLC 0 */
+                for (sc = SC_CRS; sc <= SC_MAX; sc++)           /*     then assert the CRS signal */
+                    if (iot [sc].devptr != NULL)                /*       to all occupied I/O slots  */
+                        io_assert (iot [sc].devptr, ioa_CRS);   /*         from select code 6 and up */
             break;
 
-        default:                                        /* all other signals */
-            break;                                      /*   are ignored */
+
+        case ioSIR:                                             /* Set Interrupt Request */
+            if (interrupt_system)                               /* if the interrupt system is on */
+                outbound.signals |= ioPRL | cnPRL | cnVALID;    /*   then assert PRL */
+            else                                                /* otherwise */
+                outbound.signals |= cnVALID;                    /*   deny PRL */
+            break;
+
+
+        case ioIOO:                                     /* not used by this interface */
+        case ioSTC:                                     /* not used by this interface */
+        case ioEDT:                                     /* not used by this interface */
+        case ioCRS:                                     /* not used by this interface */
+        case ioIAK:                                     /* not used by this interface */
+        case ioENF:                                     /* not used by this interface */
+        case ioIEN:                                     /* not used by this interface */
+        case ioPRH:                                     /* not used by this interface */
+            break;
         }
 
-    working_set = working_set & ~signal;                /* remove current signal from set */
-    }
+    IOCLEARSIG (working_set, signal);                   /* remove the current signal from the set */
+    }                                                   /*   and continue until all signals are processed */
 
-return stat_data;
+last_signal_set = inbound_signals;                      /* save the current signal set for the next call */
+
+return outbound;                                        /* return the outbound signals and value */
 }
 
 
-/* Overflow/S-register (SC 1) I/O signal handler.
+/* Overflow and S-register interface (select code 01).
 
-   Flag instructions directed to select code 1 manipulate the overflow (O)
-   register.  Input and output instructions access the switch (S) register.  On
-   the 2115 and 2116, there is no S-register indicator, so it is effectively
-   read-only.  On the other machines, a front-panel display of the S-register is
-   provided.  On all machines, front-panel switches are provided to set the
-   contents of the S register.
+   I/O operations directed to select code 1 manipulate the overflow (O) and
+   switch (S) registers.  On the 2115 and 2116, there is no S-register
+   indicator, so it is effectively read-only.  On the other machines, a
+   front-panel display of the S-register is provided.  On all machines,
+   front-panel switches are provided to set the contents of the S register.
+
 
    Implementation notes:
 
-    1. Select code 1 cannot interrupt, so there is no SIR handler.
+    1. Select code 1 cannot interrupt, so there is no SIR handler, and PRH is
+       passed through to PRL.
 */
 
-uint32 ovflio (DIB *dibptr, IOCYCLE signal_set, uint32 stat_data)
+static SIGNALS_VALUE ovf_interface (const DIB *dibptr, INBOUND_SET inbound_signals, HP_WORD inbound_value)
 {
-IOSIGNAL signal;
-IOCYCLE  working_set = signal_set;                      /* no SIR handler needed */
+INBOUND_SIGNAL signal;
+INBOUND_SET    working_set = inbound_signals;
+SIGNALS_VALUE  outbound    = { ioNONE, 0 };
 
-while (working_set) {
-    signal = IONEXT (working_set);                      /* isolate next signal */
+while (working_set) {                                   /* while signals remain */
+    signal = IONEXTSIG (working_set);                   /*   isolate the next signal */
 
-    switch (signal) {                                   /* dispatch I/O signal */
+    switch (signal) {                                   /* dispatch the I/O signal */
 
-        case ioCLF:                                     /* clear flag flip-flop */
-            O = 0;                                      /* clear overflow */
+        case ioCLF:                                     /* Clear Flag flip-flop */
+            O = 0;                                      /* clear the overflow register */
             break;
 
-        case ioSTF:                                     /* set flag flip-flop */
-            O = 1;                                      /* set overflow */
+
+        case ioSTF:                                     /* Set Flag flip-flop */
+            O = 1;                                      /* set the overflow register */
             break;
 
-        case ioSFC:                                     /* skip if flag is clear */
-            setSKF (!O);                                /* skip if overflow is clear */
+
+        case ioSFC:                                     /* Skip if Flag is Clear */
+            if (O == 0)                                 /* if the overflow register is clear */
+                outbound.signals |= ioSKF;              /*   then assert the Skip on Flag signal */
             break;
 
-        case ioSFS:                                     /* skip if flag is set */
-            setSKF (O);                                 /* skip if overflow is set */
+
+        case ioSFS:                                     /* Skip if Flag is Set */
+            if (O != 0)                                 /* if the overflow register is set */
+                outbound.signals |= ioSKF;              /*   then assert the Skip on Flag signal */
             break;
 
-        case ioIOI:                                     /* I/O input */
-            stat_data = IORETURN (SCPE_OK, SR);         /* read switch register value */
+
+        case ioIOI:                                     /* I/O data input */
+            outbound.value = SR;                        /* read switch register value */
             break;
 
-        case ioIOO:                                     /* I/O output */
-            if ((UNIT_CPU_MODEL != UNIT_2116) &&        /* no S register display on */
-                (UNIT_CPU_MODEL != UNIT_2115))          /*   2116 and 2115 machines */
-                SR = IODATA (stat_data);                /* write S register value */
+
+        case ioIOO:                                             /* I/O data output */
+            if (!(cpu_configuration & (CPU_2115 | CPU_2116)))   /* on all machines except the 2115 and 2116 */
+                SR = inbound_value & R_MASK;                    /*   write the value to the S-register display */
             break;
 
-        default:                                        /* all other signals */
-            break;                                      /*   are ignored */
+
+        case ioPRH:                                     /* Priority High */
+            outbound.signals |= ioPRL;                  /* assert PRL */
+            break;
+
+
+        case ioSTC:                                     /* not used by this interface */
+        case ioCLC:                                     /* not used by this interface */
+        case ioEDT:                                     /* not used by this interface */
+        case ioCRS:                                     /* not used by this interface */
+        case ioPOPIO:                                   /* not used by this interface */
+        case ioPON:                                     /* not used by this interface */
+        case ioIAK:                                     /* not used by this interface */
+        case ioENF:                                     /* not used by this interface */
+        case ioIEN:                                     /* not used by this interface */
+        case ioSIR:                                     /* not used by this interface */
+            break;
         }
 
-    working_set = working_set & ~signal;                /* remove current signal from set */
-    }
+    IOCLEARSIG (working_set, signal);                   /* remove the current signal from the set */
+    }                                                   /*   and continue until all signals are processed */
 
-return stat_data;
+return outbound;                                        /* return the outbound signals and value */
 }
 
 
-/* Power fail (SC 4) I/O signal handler.
+/* Power fail interface (select code 04).
 
    Power fail detection is standard on 2100 and 1000 systems and is optional on
    21xx systems.  Power fail recovery is standard on the 2100 and optional on
    the others.  Power failure or restoration will cause an interrupt on select
-   code 4.  The direction of power change (down or up) can be tested by SFC.
+   code 4 and will deny PRL, preventing all other devices from interrupting
+   while the power fail routine is executing.  Asserting either STC or CLC
+   clears the interrupt and reasserts PRL.  The direction of power change (down
+   or up) can be tested by SFC, which will skip if power is failing.
 
-   We do not implement power fail under simulation.  However, the central
-   interrupt register (CIR) is always read by an IOI directed to select code 4.
+   Asserting IOI to select code 4 reads the Central Interrupt Register value.
+
+
+   Implementation notes:
+
+    1. Currently, power fail is not simulated, and the interface is provided
+       solely to read the CIR.  As a result, PRL is always asserted.
 */
 
-uint32 pwrfio (DIB *dibptr, IOCYCLE signal_set, uint32 stat_data)
+static SIGNALS_VALUE pwr_interface (const DIB *dibptr, INBOUND_SET inbound_signals, HP_WORD inbound_value)
 {
-IOSIGNAL signal;
-IOCYCLE  working_set = IOADDSIR (signal_set);           /* add ioSIR if needed */
+INBOUND_SIGNAL signal;
+INBOUND_SET    working_set = inbound_signals;
+SIGNALS_VALUE  outbound    = { ioNONE, 0 };
 
-while (working_set) {
-    signal = IONEXT (working_set);                      /* isolate next signal */
+while (working_set) {                                   /* while signals remain */
+    signal = IONEXTSIG (working_set);                   /*   isolate the next signal */
 
-    switch (signal) {                                   /* dispatch I/O signal */
+    switch (signal) {                                   /* dispatch the I/O signal */
 
-        case ioSTC:                                     /* set control flip-flop */
+        case ioSTC:                                     /* Set Control flip-flop */
+        case ioCLC:                                     /* Clear Control flip-flop */
             break;                                      /* reinitializes power fail */
 
-        case ioCLC:                                     /* clear control flip-flop */
-            break;                                      /* reinitializes power fail */
 
-        case ioSFC:                                     /* skip if flag is clear */
-            break;                                      /* skips if power fail occurred */
+        case ioSFC:                                     /* Skip if Flag is Clear */
+            break;                                      /* skips if power is failing */
 
-        case ioIOI:                                     /* I/O input */
-            stat_data = IORETURN (SCPE_OK, intaddr);    /* input CIR value */
-            break;
-
-        default:                                        /* all other signals */
-            break;                                      /*   are ignored */
-        }
-
-    working_set = working_set & ~signal;                /* remove current signal from set */
-    }
-
-return stat_data;
-}
-
-
-/* Memory protect/parity error (SC 5) I/O signal handler.
-
-   The memory protect card has a number of non-standard features:
-
-    - CLF and STF affect the parity error enable flip-flop, not the flag
-    - SFC and SFS test the memory expansion violation flip-flop, not the flag
-    - POPIO clears control, flag, and flag buffer instead of setting the flags
-    - CLC does not clear control (the only way to turn off MP is to cause a
-      violation)
-    - PRL and IRQ are a function of the flag only, not flag and control
-    - IAK is used unqualified by IRQ
-
-   The IAK backplane signal is asserted when any interrupt is acknowledged by
-   the CPU.  Normally, an interface qualifies IAK with its own IRQ to ensure
-   that it responds only to an acknowledgement of its own request.  The MP card
-   does this to reset its flag buffer and flag flip-flops, and to reset the
-   parity error indication.  However, it also responds to an unqualified IAK
-   (i.e., for any interface) as follows:
-
-    - clears the MPV flip-flop
-    - clears the indirect counter
-    - clears the control flip-flop
-    - sets the INTPT flip-flop
-
-   The INTPT flip-flop indicates an occurrence of an interrupt.  If the trap
-   cell of the interrupting device contains an I/O instruction that is not a
-   HLT, action equivalent to STC 05 is taken, i.e.:
-
-    - sets the control flip-flop
-    - set the EVR flip-flop
-    - clears the MEV flip-flop
-    - clears the PARERR flip-flop
-
-   In other words, an interrupt for any device will disable MP unless the trap
-   cell contains an I/O instruction other than a HLT.
-
-   Implementation notes:
-
-    1. Because the card uses IAK unqualified, this routine is called whenever
-       any interrupt occurs.  If the MP card itself is not interrupting, the
-       select code passed will not be SC 05.  In either case, the trap cell
-       instruction is passed in the data portion of the "stat_data" parameter.
-
-    2. The MEV flip-flop records memory expansion (a.k.a. dynamic mapping)
-       violations.  It is set when an DM violation is encountered and can be
-       tested via SFC/SFS.
-
-    3. MP cannot be turned off in hardware, except by causing a violation.
-       Microcode typically does this by executing an IOG micro-order with select
-       code /= 1, followed by an IAK to clear the interrupt and a FTCH to clear
-       the INTPT flip-flop.  Under simulation, mp_control may be set to CLEAR to
-       produce the same effect.
-
-    4. Parity error logic is not implemented.
-*/
-
-uint32 protio (DIB *dibptr, IOCYCLE signal_set, uint32 stat_data)
-{
-uint16 data;
-IOSIGNAL signal;
-IOCYCLE  working_set = IOADDSIR (signal_set);           /* add ioSIR if needed */
-
-while (working_set) {
-    signal = IONEXT (working_set);                      /* isolate next signal */
-
-    switch (signal) {                                   /* dispatch I/O signal */
-
-        case ioCLF:                                     /* clear flag flip-flop */
-            break;                                      /* turns off PE interrupt */
-
-        case ioSTF:                                     /* set flag flip-flop */
-            break;                                      /* turns on PE interrupt */
-
-        case ioENF:                                     /* enable flag */
-            mp_flag = mp_flagbuf = SET;                 /* set flag buffer and flag flip-flops */
-            mp_evrff = CLEAR;                           /* inhibit violation register updates */
-            break;
-
-        case ioSFC:                                     /* skip if flag is clear */
-            setSKF (!mp_mevff);                         /* skip if MP interrupt */
-            break;
-
-        case ioSFS:                                     /* skip if flag is set */
-            setSKF (mp_mevff);                          /* skip if DMS interrupt */
-            break;
-
-        case ioIOI:                                     /* I/O input */
-            stat_data = IORETURN (SCPE_OK, mp_viol);    /* read MP violation register */
-            break;
-
-        case ioIOO:                                     /* I/O output */
-            mp_fence = IODATA (stat_data) & VAMASK;     /* write to MP fence register */
-
-            if (cpu_unit.flags & UNIT_2100)             /* 2100 IOP uses MP fence */
-                iop_sp = mp_fence;                      /*   as a stack pointer */
-            break;
-
-        case ioPOPIO:                                   /* power-on preset to I/O */
-            mp_control = CLEAR;                         /* clear control flip-flop */
-            mp_flag = mp_flagbuf = CLEAR;               /* clear flag and flag buffer flip-flops */
-            mp_mevff = CLEAR;                           /* clear memory expansion violation flip-flop */
-            mp_evrff = SET;                             /* set enable violation register flip-flop */
-            break;
-
-        case ioSTC:                                     /* set control flip-flop */
-            mp_control = SET;                           /* turn on MP */
-            mp_mevff = CLEAR;                           /* clear memory expansion violation flip-flop */
-            mp_evrff = SET;                             /* set enable violation register flip-flop */
-            break;
-
-        case ioSIR:                                     /* set interrupt request */
-            setPRL (PRO, !mp_flag);                     /* set PRL signal */
-            setIRQ (PRO, mp_flag);                      /* set IRQ signal */
-            break;
-
-        case ioIAK:                                     /* interrupt acknowledge */
-            if (dibptr->select_code == PRO)             /* MP interrupt acknowledgement? */
-                mp_flag = mp_flagbuf = CLEAR;           /* clear flag and flag buffer */
-
-            data = IODATA (stat_data);                  /* get trap cell instruction */
-
-            if (((data & I_NMRMASK) != I_IO) ||         /* trap cell instruction not I/O */
-                (I_GETIOOP (data) == soHLT))            /*   or is halt? */
-                mp_control = CLEAR;                     /* turn protection off */
-            else {                                      /* non-HLT I/O instruction leaves MP on */
-                mp_mevff = CLEAR;                       /*   but clears MEV flip-flop */
-                mp_evrff = SET;                         /*   and reenables violation register flip-flop */
-                }
-            break;
-
-        default:                                        /* all other signals */
-            break;                                      /*   are ignored */
-        }
-
-    working_set = working_set & ~signal;                /* remove current signal from set */
-    }
-
-return stat_data;
-}
-
-
-/* DMA/DCPC secondary (SC 2/3) I/O signal handler.
-
-   DMA consists of one (12607B) or two (12578A/12895A/12897B) channels.  Each
-   channel uses two select codes: 2 and 6 for channel 1, and 3 and 7 for channel
-   2.  The lower select codes are used to configure the memory address register
-   (control word 2) and the word count register (control word 3).  The upper
-   select codes are used to configure the service select register (control word
-   1) and to activate and terminate the transfer.
-
-   There are differences in the implementations of the memory address and word
-   count registers among the various cards.  The 12607B (2114) supports 14-bit
-   addresses and 13-bit word counts.  The 12578A (2115/6) supports 15-bit
-   addresses and 14-bit word counts.  The 12895A (2100) and 12897B (1000)
-   support 15-bit addresses and 16-bit word counts.
-
-   Implementation notes:
-
-    1. Because the I/O bus floats to zero on 211x computers, an IOI (read word
-       count) returns zeros in the unused bit locations, even though the word
-       count is a negative value.
-
-    2. Select codes 2 and 3 cannot interrupt, so there is no SIR handler.
-*/
-
-uint32 dmasio (DIB *dibptr, IOCYCLE signal_set, uint32 stat_data)
-{
-const CHANNEL ch = (CHANNEL) dibptr->card_index;        /* DMA channel number */
-uint16 data;
-IOSIGNAL signal;
-IOCYCLE  working_set = signal_set;                      /* no SIR handler needed */
-
-while (working_set) {
-    signal = IONEXT (working_set);                      /* isolate next signal */
-
-    switch (signal) {                                   /* dispatch I/O signal */
 
         case ioIOI:                                     /* I/O data input */
-            if (UNIT_CPU_MODEL == UNIT_2114)            /* 2114? */
-                data = dma [ch].cw3 & 0017777;          /* only 13-bit count */
-            else if (UNIT_CPU_TYPE == UNIT_TYPE_211X)   /* 2115/2116? */
-                data = dma [ch].cw3 & 0037777;          /* only 14-bit count */
-            else                                        /* other models */
-                data = (uint16) dma [ch].cw3;           /* rest use full value */
-
-            stat_data = IORETURN (SCPE_OK, data);       /* merge status and remaining word count */
+            outbound.value = CIR;                       /* return the select code of the interrupting interface */
             break;
 
-        case ioIOO:                                                 /* I/O data output */
-            if (dma [ch].select)                                    /* word count selected? */
-                dma [ch].cw3 = IODATA (stat_data);                  /* save count */
-            else                                                    /* memory address selected */
-                if (UNIT_CPU_MODEL == UNIT_2114)                    /* 2114? */
-                    dma [ch].cw2 = IODATA (stat_data) & 0137777;    /* only 14-bit address */
-                else                                                /* other models */
-                    dma [ch].cw2 = IODATA (stat_data);              /* full address stored */
+
+        case ioPRH:                                     /* Priority High */
+            outbound.signals |= ioPRL;                  /* assert PRL */
             break;
 
-        case ioCLC:                                     /* clear control flip-flop */
-            dma [ch].select = CLEAR;                    /* set for word count access */
-            break;
 
-        case ioSTC:                                     /* set control flip-flop */
-            dma [ch].select = SET;                      /* set for memory address access */
+        case ioSTF:                                     /* not used by this interface */
+        case ioCLF:                                     /* not used by this interface */
+        case ioSFS:                                     /* not used by this interface */
+        case ioIOO:                                     /* not used by this interface */
+        case ioEDT:                                     /* not used by this interface */
+        case ioCRS:                                     /* not used by this interface */
+        case ioPOPIO:                                   /* not used by this interface */
+        case ioPON:                                     /* not used by this interface */
+        case ioIAK:                                     /* not used by this interface */
+        case ioENF:                                     /* not used by this interface */
+        case ioIEN:                                     /* not used by this interface */
+        case ioSIR:                                     /* not used by this interface */
             break;
-
-        default:                                        /* all other signals */
-            break;                                      /*   are ignored */
         }
 
-    working_set = working_set & ~signal;                /* remove current signal from set */
-    }
+    IOCLEARSIG (working_set, signal);                   /* remove the current signal from the set */
+    }                                                   /*   and continue until all signals are processed */
 
-return stat_data;
+return outbound;                                        /* return the outbound signals and value */
 }
 
 
-/* DMA/DCPC primary (SC 6/7) I/O signal handler.
+/* Examine a CPU memory location.
 
-   The primary DMA control interface and the service select register are
-   manipulated through select codes 6 and 7.  Each channel has transfer enable,
-   control, flag, and flag buffer flip-flops.  Transfer enable must be set via
-   STC to start DMA.  Control is used only to enable the DMA completion
-   interrupt; it is set by STC and cleared by CLC.  Flag and flag buffer are set
-   at transfer completion to signal an interrupt.  STF may be issued to abort a
-   transfer in progress.
+   This routine is called by the SCP to examine memory.  The routine retrieves
+   the memory location indicated by "address" as modified by any "switches" that
+   were specified on the command line and returns the value in the first element
+   of "eval_array".  The "uptr" parameter is not used.
 
-   Again, there are hardware differences between the various DMA cards.  The
-   12607B (2114) stores only bits 2-0 of the select code and interprets them as
-   select codes 10-16 (SRQ17 is not decoded).  The 12578A (2115/16), 12895A
-   (2100), and 12897B (1000) support the full range of select codes (10-77
-   octal).
+   On entry, the "meu_map_address" routine is called to translate a logical
+   address to a physical address.  If "switches" includes SIM_SW_REST or "-N",
+   then the address is a physical address, and the routine returns the address
+   unaltered.
 
-   Implementation notes:
+   Otherwise, the address is a logical address interpreted in the context of the
+   translation map implied by the specified switch and is mapped to a physical
+   address.  If memory expansion is disabled but a map is specified, then the
+   command is rejected.  Otherwise if the resulting address is beyond the
+   current memory limit, or if mapping is implied or explicit but the address
+   specified is outside of the logical address space, "address space exceeded"
+   status is returned.
 
-     1. An IOI reads the floating S-bus (high on the 1000, low on the 21xx).
-
-     2. The CRS signal on the DMA card resets the secondary (SC 2/3) select
-        flip-flops.  Under simulation, ioCRS is dispatched to select codes 6 and
-        up, so we reset the flip-flop in our handler.
-
-     3. The 12578A supports byte-sized transfers by setting bit 14.  Bit 14 is
-        ignored by all other DMA cards, which support word transfers only.
-        Under simulation, we use a byte-packing/unpacking register to hold one
-        byte while the other is read or written during the DMA cycle.
+   Otherwise, the value is obtained from memory or the A/B register and returned
+   in the first word of "eval_array."
 */
 
-uint32 dmapio (DIB *dibptr, IOCYCLE signal_set, uint32 stat_data)
+static t_stat cpu_examine (t_value *eval_array, t_addr address, UNIT *uptr, int32 switches)
 {
-const CHANNEL ch = (CHANNEL) dibptr->card_index;        /* DMA channel number */
-uint16 data;
-IOSIGNAL signal;
-IOCYCLE  working_set = IOADDSIR (signal_set);           /* add ioSIR if needed */
+uint32 index;
 
-while (working_set) {
-    signal = IONEXT (working_set);                      /* isolate next signal */
+index = meu_map_address ((HP_WORD) address, switches);  /* map the supplied address as directed by the switches */
 
-    switch (signal) {                                   /* dispatch I/O signal */
+if (index == D32_UMAX)                                  /* if the MEM is disabled but a mapping mode was given */
+    return SCPE_NOFNC;                                  /*   then the command is not allowed */
 
-        case ioCLF:                                     /* clear flag flip-flop */
-            dma [ch].flag = dma [ch].flagbuf = CLEAR;   /* clear flag and flag buffer */
-            break;
+else if (index >= mem_size)                             /* otherwise if the address is beyond the memory limit */
+    return SCPE_NXM;                                    /*   then return non-existent memory status */
 
-        case ioSTF:                                     /* set flag flip-flop */
-        case ioENF:                                     /* enable flag */
-            dma [ch].flag = dma [ch].flagbuf = SET;     /* set flag and flag buffer */
-            dma [ch].xferen = CLEAR;                    /* clear transfer enable to abort transfer */
-            break;
+else if (eval_array == NULL)                            /* otherwise if the value pointer was not supplied */
+    return SCPE_IERR;                                   /*   then return internal error status */
 
-        case ioSFC:                                     /* skip if flag is clear */
-            setstdSKF (dma [ch]);                       /* skip if transfer in progress */
-            break;
+else                                                    /* otherwise */
+    *eval_array = (t_value) mem_examine (index);        /*   then return the memory or A/B register value */
 
-        case ioSFS:                                     /* skip if flag is set */
-            setstdSKF (dma [ch]);                       /* skip if transfer is complete */
-            break;
-
-        case ioIOI:                                     /* I/O data input */
-            if (UNIT_CPU_TYPE == UNIT_TYPE_1000)        /* 1000? */
-                stat_data = IORETURN (SCPE_OK, DMASK);  /* return all ones */
-            else                                        /* other models */
-                stat_data = IORETURN (SCPE_OK, 0);      /* return all zeros */
-            break;
-
-        case ioIOO:                                     /* I/O data output */
-            data = IODATA (stat_data);                  /* clear supplied status */
-
-            if (UNIT_CPU_MODEL == UNIT_2114)            /* 12607? */
-                dma [ch].cw1 = (data & 0137707) | 010;  /* mask SC, convert to 10-17 */
-            else if (UNIT_CPU_TYPE == UNIT_TYPE_211X)   /* 12578? */
-                dma [ch].cw1 = data;                    /* store full select code, flags */
-            else                                        /* 12895, 12897 */
-                dma [ch].cw1 = data & ~DMA1_PB;         /* clip byte-packing flag */
-            break;
-
-       case ioPOPIO:                                    /* power-on preset to I/O */
-            dma [ch].flag = dma [ch].flagbuf = SET;     /* set flag and flag buffer */
-            break;
-
-        case ioCRS:                                     /* control reset */
-            dma [ch].xferen = CLEAR;                    /* clear transfer enable */
-            dma [ch].select = CLEAR;                    /* set secondary for word count access */
-                                                        /* fall into CLC handler */
-
-        case ioCLC:                                     /* clear control flip-flop */
-            dma [ch].control = CLEAR;                   /* clear control */
-            break;
-
-        case ioSTC:                                     /* set control flip-flop */
-            dma [ch].packer = 0;                        /* clear packing register */
-            dma [ch].xferen = dma [ch].control = SET;   /* set transfer enable and control */
-            break;
-
-        case ioSIR:                                     /* set interrupt request */
-            setstdPRL (dma [ch]);
-            setstdIRQ (dma [ch]);
-            break;
-
-        case ioIAK:                                     /* interrupt acknowledge */
-            dma [ch].flagbuf = CLEAR;                   /* clear flag buffer */
-            break;
-
-        default:                                        /* all other signals */
-            break;                                      /*   are ignored */
-        }
-
-    working_set = working_set & ~signal;                /* remove current signal from set */
-    }
-
-return stat_data;
+return SCPE_OK;                                         /* return success status */
 }
 
 
-/* Unassigned select code I/O signal handler.
+/* Deposit to a CPU memory location.
 
-   The 21xx/1000 I/O structure requires that no empty slots exist between
-   interface cards.  This is due to the hardware priority chaining (PRH/PRL).
-   If it is necessary to leave unused I/O slots, HP 12777A Priority Jumper Cards
-   must be installed in them to maintain priority continuity.
+   This routine is called by the SCP to deposit to memory.  The routine stores
+   the supplied "value" into memory at the "address" location as modified by any
+   "switches" that were specified on the command line.
 
-   Under simulation, every unassigned I/O slot behaves as though a 12777A were
-   resident.
+   On entry, the "meu_map_address" routine is called to translate a logical
+   address to a physical address.  If "switches" includes SIM_SW_REST or "-N",
+   then the address is a physical address, and the routine returns the address
+   unaltered.
 
-   Implementation notes:
+   Otherwise, the address is a logical address interpreted in the context of the
+   translation map implied by the specified switch and is mapped to a physical
+   address.  If memory expansion is disabled but a map is specified, then the
+   command is rejected.  Otherwise if the resulting address is beyond the
+   current memory limit, or if mapping is implied or explicit but the address
+   specified is outside of the logical address space, "address space exceeded"
+   status is returned.
 
-     1. For select codes < 10 octal, an IOI reads the floating S-bus (high on
-        the 1000, low on the 21xx).  For select codes >= 10 octal, an IOI reads
-        the floating I/O bus (low on all machines).
-
-     2. If "stop_dev" is TRUE, then the simulator will stop when an unassigned
-        device is accessed.
+   Otherwise, the value is stored into memory or the A/B register.
 */
 
-uint32 nullio (DIB *dibptr, IOCYCLE signal_set, uint32 stat_data)
+static t_stat cpu_deposit (t_value value, t_addr address, UNIT *uptr, int32 switches)
 {
-uint16 data = 0;
-IOSIGNAL signal;
-IOCYCLE  working_set = signal_set;                      /* no SIR handler needed */
+uint32 index;
 
-while (working_set) {
-    signal = IONEXT (working_set);                      /* isolate next signal */
+index = meu_map_address ((HP_WORD) address, switches);  /* map the supplied address as directed by the switches */
 
-    switch (signal) {                                   /* dispatch I/O signal */
+if (index == D32_UMAX)                                  /* if the MEM is disabled but a mapping mode was given */
+    return SCPE_NOFNC;                                  /*   then the command is not allowed */
 
-        case ioIOI:                                     /* I/O data input */
-            if ((dibptr->select_code < VARDEV) &&       /* internal device */
-                (UNIT_CPU_TYPE == UNIT_TYPE_1000))      /*   and 1000? */
-                data = DMASK;                           /* return all ones */
-            else                                        /* external or other model */
-                data = 0;                               /* return all zeros */
-            break;
+else if (index >= mem_size)                             /* otherwise if the address is beyond the memory limit */
+    return SCPE_NXM;                                    /*   then return non-existent memory status */
 
-        default:                                        /* all other signals */
-            break;                                      /*   are ignored */
-        }
+else                                                    /* otherwise */
+    mem_deposit (index, (HP_WORD) value);               /*   write the memory or A/B register value */
 
-    working_set = working_set & ~signal;                /* remove current signal from set */
-    }
-
-return IORETURN (stop_dev, data);                       /* flag missing device */
+return SCPE_OK;                                         /* return success status */
 }
 
 
-/* DMA cycle routine.
+/* Reset the CPU.
 
-   This routine performs one DMA input or output cycle using the indicated DMA
-   channel number and DMS map.  When the transfer word count reaches zero, the
-   flag is set on the corresponding DMA channel to indicate completion.
+   This routine is called for a RESET, RESET CPU, RUN, or BOOT CPU command.  It
+   is the simulation equivalent of an initial power-on condition (corresponding
+   to PON, POPIO, and CRS signal assertion in the CPU) or a front-panel PRESET
+   button press (corresponding to POPIO and CRS assertion).  SCP delivers a
+   power-on reset to all devices when the simulator is started.
 
-   The 12578A card supports byte-packing.  If bit 14 in control word 1 is set,
-   each transfer will involve one read/write from memory and two output/input
-   operations in order to transfer sequential bytes to/from the device.
+   If this is the first call after simulator startup, the initial memory array
+   is allocated, the SCP-required program counter pointer is set to point to the
+   REG array element corresponding to the P register, and the default CPU and
+   memory size configuration is set.  In addition, the loader ROM sockets of the
+   1000-series CPUs are populated with the initial ROM set, and the Basic Binary
+   Loader (BBL) is installed in the protected memory (the upper 64 words of the
+   defined memory size) of the 2116.
 
-   DMA I/O cycles differ from programmed I/O cycles in that multiple I/O control
-   backplane signals may be asserted simultaneously.  With programmed I/O, only
-   CLF may be asserted with other signals, specifically with STC, CLC, SFS, SFC,
-   IOI, or IOO.  With DMA, as many as five signals may be asserted concurrently.
-
-   DMA I/O timing looks like this:
-
-           ------------ Input ------------   ----------- Output ------------
-     Sig    Normal Cycle      Last Cycle      Normal Cycle      Last Cycle
-     ===   ==============   ==============   ==============   ==============
-     IOI   T2-T3            T2-T3
-     IOO                                        T3-T4            T3-T4
-     STC *    T3                                T3               T3
-     CLC *                     T3-T4                             T3-T4
-     CLF      T3                                T3               T3
-     EDT                          T4                                T4
-
-      * if enabled by control word 1
-
-   Under simulation, this routine dispatches one set of I/O signals per DMA
-   cycle to the target device's I/O signal handler.  The signals correspond to
-   the table above, except that all signals for a given cycle are concurrent
-   (e.g., the last input cycle has IOI, EDT, and optionally CLC asserted, even
-   though IOI and EDT are not coincident in hardware).  I/O signal handlers will
-   process these signals sequentially, in the order listed above, before
-   returning.
 
    Implementation notes:
 
-    1. The address increment and word count decrement is done only after the I/O
-       cycle has completed successfully.  This allows a failed transfer to be
-       retried after correcting the I/O error.
+    1. Setting the sim_PC value at run time accommodates changes in the register
+       order automatically.  A fixed setting runs the risk of it not being
+       updated if a change in the register order is made.
+
+    2. The initial set of installed HP 1000 boot loader ROMs is:
+
+         Socket   ROM    Boot Device
+         ------  ------  ------------------------
+           0     12992K  2748 Paper Tape Reader
+           1     12992A  7900 or 2883 Disc Drive
+           2     12992D  7970 Magnetic Tape Drive
+           3     12992B  7905/06/20/25 Disc Drive
 */
 
-static t_stat dma_cycle (CHANNEL ch, uint32 map)
+static t_stat cpu_reset (DEVICE *dptr)
 {
-const uint32 dev   = dma [ch].cw1 & I_DEVMASK;          /* device select code */
-const uint32 stc   = dma [ch].cw1 & DMA1_STC;           /* STC enable flag */
-const uint32 bytes = dma [ch].cw1 & DMA1_PB;            /* pack bytes flag */
-const uint32 clc   = dma [ch].cw1 & DMA1_CLC;           /* CLC enable flag */
-const uint32 MA    = dma [ch].cw2 & VAMASK;             /* memory address */
-const uint32 input = dma [ch].cw2 & DMA2_OI;            /* input flag */
-const uint32 even  = dma [ch].packer & DMA_OE;          /* odd/even packed byte flag */
-uint16 data;
 t_stat status;
-uint32 ioresult;
-IOCYCLE signals;
 
-if (bytes && !even || dma [ch].cw3 != DMASK) {          /* normal cycle? */
-    if (input)                                          /* input cycle? */
-        signals = ioIOI | ioCLF;                        /* assert IOI and CLF */
-    else                                                /* output cycle */
-        signals = ioIOO | ioCLF;                        /* assert IOO and CLF */
+if (sim_PC == NULL) {                                   /* if this is the first call after simulator start */
+    status = mem_initialize (PA_MAX);                   /*   then allocate main memory */
 
-    if (stc)                                            /* STC wanted? */
-        signals = signals | ioSTC;                      /* assert STC */
-    }
+    if (status == SCPE_OK) {                            /* if memory initialization succeeds */
+        for (sim_PC = dptr->registers;                  /*   then find the P register entry */
+             sim_PC->loc != &PR && sim_PC->loc != NULL; /*     in the register array */
+             sim_PC++);                                 /*       for the SCP interface */
 
-else {                                                  /* last cycle */
-    if (input)                                          /* input cycle? */
-        signals = ioIOI | ioEDT;                        /* assert IOI and EDT */
-    else {                                              /* output cycle */
-        signals = ioIOO | ioCLF | ioEDT;                /* assert IOO and CLF and EDT */
+        if (sim_PC == NULL)                             /* if the P register entry is not present */
+            return SCPE_NXREG;                          /*   then there is a serious problem! */
 
-        if (stc)                                        /* STC wanted? */
-            signals = signals | ioSTC;                  /* assert STC */
+        pcq_r = find_reg ("PCQ", NULL, dptr);           /* get the PC queue pointer */
+
+        if (pcq_r == NULL)                              /* if the PCQ register is not present */
+            return SCPE_IERR;                           /*   then something is seriously wrong */
+        else                                            /* otherwise */
+            pcq_r->qptr = 0;                            /*   initialize the register's queue pointer */
+
+        mem_size = 32768;                               /* set the initial memory size to 32K */
+        set_model (NULL, UNIT_2116, NULL, NULL);        /*   and the initial CPU model */
+
+        loader_rom [0] = find_dev ("PTR");              /* install the 12992K ROM in socket 0 */
+        loader_rom [1] = find_dev ("DQC");              /*   and the 12992A ROM in socket 1 */
+        loader_rom [2] = find_dev ("MSC");              /*   and the 12992D ROM in socket 2 */
+        loader_rom [3] = find_dev ("DS");               /*   and the 12992B ROM in socket 3 */
+
+        loader_rom [0]->boot (0, loader_rom [0]);       /* install the BBL via the paper tape reader boot routine */
+        set_loader (NULL, FALSE, NULL, NULL);           /*   and then disable the loader, which had been enabled */
         }
 
-    if (clc)                                            /* CLC wanted? */
-        signals = signals | ioCLC;                      /* assert CLC */
+    else                                                /* otherwise memory initialization failed */
+        return status;                                  /*   so report the error and abort the simulator */
     }
 
-if (input) {                                            /* input cycle? */
-    ioresult = devdisp (dev, signals, 0);               /* do I/O input */
+if (sim_switches & SWMASK ('P'))                        /* if this is a power-on reset */
+    io_assert (&cpu_dev, ioa_PON);                      /*   then issue the PON signal to the CPU */
+else                                                    /* otherwise */
+    io_assert (&cpu_dev, ioa_POPIO);                    /*   issue a PRESET */
 
-    status = IOSTATUS (ioresult);                       /* get cycle status */
+sim_brk_dflt = SWMASK ('N');                            /* the default breakpoint type is "nomap" as MEM is disabled */
 
-    if (status == SCPE_OK) {                            /* good I/O cycle? */
-        data = IODATA (ioresult);                       /* extract return data value */
+return SCPE_OK;
+}
 
-        if (bytes) {                                    /* byte packing? */
-            if (even) {                                 /* second byte? */
-                data = (uint16) (dma [ch].packer << 8)  /* merge stored byte */
-                         | (data & DMASK8);
-                WriteIO (MA, data, map);                /* store word data */
+
+/* Device boot routine.
+
+   This routine is called by the BOOT CPU and LOAD CPU commands to copy the
+   specified boot loader ROM program into the upper 64 words of the logical
+   address space.  It is equivalent to pressing the IBL (Initial Binary Loader)
+   button on the front panel of a 1000 M/E/F-Series CPU.
+
+   On entry, the S register must be set to indicate the specific boot loader ROM
+   and the associated device select code to be copied, as follows:
+
+      15  14  13  12  11  10   9   8   7   6   5   4   3   2   1   0
+     +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+     | ROM # | -   - |      select code      | -   -   -   -   -   - |
+     +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+
+   Bits 15-14 select one of four loader ROM sockets on the CPU board that may
+   contain ROMs.  If the specified socket does, the contents of the ROM are
+   copied into the upper 64 words of memory and configured to use the specified
+   select code.  The unspecified bits of the S register are available for use by
+   the bootstrap program.
+
+   If the select code is less than 10 octal, the loader is not copied, and the
+   O (overflow) register is set to 1.  A successful copy and configuration
+   clears the O register.
+
+   The 21xx-series CPUs do not provide the IBL function.  If this routine is
+   invoked while the CPU is configured as one of these machines, the command is
+   rejected.
+
+
+   Implementation notes:
+
+    1. In hardware, a non-existent ROM (i.e., an empty socket) reads as though
+       all words contain 177777 octal.  This would result in the loader area of
+       memory containing 62 all-ones words, followed by a word set to 177777 +
+       SC - 000010, where SC is the configured select code, followed by a word
+       set to the negative starting address of the loader.  This is not
+       simulated; instead, an attempt to boot from an empty socket is rejected
+       with "Non-existent device."
+*/
+
+static t_stat cpu_boot (int32 unitno, DEVICE *dptr)
+{
+const int32 select_code = IBL_SC  (SR);                 /* the select code from S register bits 11-6 */
+const int32 rom_socket  = IBL_ROM (SR);                 /* the ROM socket number from S register bits 15-14 */
+
+if (cpu_configuration & CPU_1000)                       /* if this is a 1000-series CPU */
+    if (select_code < SC_VAR) {                         /*   then if the select code is invalid */
+        O = 1;                                          /*     then set the overflow register */
+        return SCPE_ARG;                                /*       and reject the IBL with "Invalid argument" */
+        }
+
+    else if (loader_rom [rom_socket] == NULL)           /*   otherwise if the ROM socket is empty */
+        return SCPE_NXDEV;                              /*     then reject with "Non-existent device" */
+
+    else {                                                          /*   otherwise */
+        O = 0;                                                      /*     clear overflow to indicate a good IBL */
+        return loader_rom [rom_socket]->boot (select_code, NULL);   /*       and copy the ROM into memory */
+        }
+
+else                                                    /* otherwise this is a 21xx machine */
+    return SCPE_NOFNC;                                  /*   and IBL isn't supported */
+}
+
+
+/* Set the CPU simulation stop conditions.
+
+   This validation routine is called to configure the set of CPU stop
+   conditions.  The "option" parameter is 0 to clear the stops, 1 to set the
+   stops, and 2 to set the indirect chain length limit.  "cptr" points to the
+   first character of the name of the stop to be cleared or set.  The unit and
+   description pointers are not used.
+
+   The routine processes commands of the form:
+
+     SET CPU STOP
+     SET CPU STOP=<stopname>[;<stopname>...]
+     SET CPU NOSTOP
+     SET CPU NOSTOP=<stopname>[;<stopname>...]
+     SET CPU INDIR=<limit>
+
+   The valid <stopname>s are contained in the "cpu_stop" table.  If names are
+   not specified, all stop conditions are enabled or disabled.
+
+
+   Implementation notes:
+
+    1. The maximum indirect limit value is 32K, as an indirect chain cannot
+       exceed the logical memory size without being in a loop.
+*/
+
+static t_stat set_stops (UNIT *uptr, int32 option, CONST char *cptr, void *desc)
+{
+char gbuf [CBUFSIZE];
+t_stat status;
+uint32 stop;
+
+if (cptr == NULL)                                               /* if there are no arguments */
+    if (option == 0)                                            /*   then if we're clearing the stops */
+        for (stop = 0; cpu_stop [stop].name != NULL; stop++)    /*     then loop through the flags */
+            *cpu_stop [stop].status = SCPE_OK;                  /*       and clear each stop status */
+
+    else if (option == 1)                                       /* otherwise if we're setting the stops */
+        for (stop = 0; cpu_stop [stop].name != NULL; stop++)    /*   then loop through the flags */
+            *cpu_stop [stop].status = cpu_stop [stop].value;    /*     and set each stop status */
+
+    else                                                        /* otherwise */
+        return SCPE_MISVAL;                                     /*   report the missing indirect limit value */
+
+else if (*cptr == '\0')                                 /* otherwise if the argument is empty */
+    return SCPE_MISVAL;                                 /*   then report the missing value */
+
+else if (option == 2) {                                         /* otherwise if we're setting the indirect limit */
+    stop = (uint32) get_uint (cptr, 10, LA_MAX + 1, &status);   /*   then parse the limit value */
+
+    if (status != SCPE_OK)                              /* if a parsing error occurred */
+        return status;                                  /*   then return the error status */
+    else                                                /* otherwise */
+        indirect_limit = stop;                          /*   set the indirect limit */
+    }
+
+else                                                    /* otherwise at least one stop argument is present */
+    while (*cptr) {                                     /* loop through the arguments */
+        cptr = get_glyph (cptr, gbuf, ';');             /* get the next argument */
+
+        for (stop = 0; cpu_stop [stop].name != NULL; stop++)            /* loop through the flags */
+            if (strcmp (cpu_stop [stop].name, gbuf) == 0) {             /*   and if the argument matches */
+                if (option == 1)                                        /*     then if it's a STOP argument */
+                    *cpu_stop [stop].status = cpu_stop [stop].value;    /*       then set the stop status */
+                else                                                    /*     otherwise it's a NOSTOP argument */
+                    *cpu_stop [stop].status = SCPE_OK;                  /*       so clear the stop status */
+
+                break;                                  /* this argument has been processed */
                 }
-            else                                        /* first byte */
-                dma [ch].packer = (data & DMASK8);      /* save it */
 
-            dma [ch].packer = dma [ch].packer ^ DMA_OE; /* flip odd/even bit */
-            }
-        else                                            /* no byte packing */
-            WriteIO (MA, data, map);                    /* store word data */
+        if (cpu_stop [stop].name == NULL)               /* if the argument was not found */
+            return SCPE_ARG;                            /*   then report it */
         }
-    }
 
-else {                                                  /* output cycle */
-    if (bytes) {                                        /* byte packing? */
-        if (even)                                       /* second byte? */
-            data = dma [ch].packer & DMASK8;            /* retrieve it */
-
-        else {                                          /* first byte */
-            dma [ch].packer = ReadIO (MA, map);         /* read word data */
-            data = (dma [ch].packer >> 8) & DMASK8;     /* get high byte */
-            }
-
-        dma [ch].packer = dma [ch].packer ^ DMA_OE;     /* flip odd/even bit */
-        }
-    else                                                /* no byte packing */
-        data = ReadIO (MA, map);                        /* read word data */
-
-    ioresult = devdisp (dev, signals, data);            /* do I/O output */
-
-    status = IOSTATUS (ioresult);                       /* get cycle status */
-    }
-
-if ((even || !bytes) && (status == SCPE_OK)) {          /* new byte or no packing and good xfer? */
-    dma [ch].cw2 = input | (dma [ch].cw2 + 1) & VAMASK; /* increment address */
-    dma [ch].cw3 = (dma [ch].cw3 + 1) & DMASK;          /* increment word count */
-
-    if (dma [ch].cw3 == 0)                              /* end of transfer? */
-        dmapio (dtab [DMA1 + ch], ioENF, 0);            /* set DMA channel flag */
-    }
-
-return status;                                          /* return I/O status */
+return SCPE_OK;                                         /* the stops were successfully processed */
 }
 
 
-/* Reset routines.
+/* Change the CPU memory size.
 
-   The reset routines are called to simulate either an initial power on
-   condition or a front-panel PRESET button press.  For initial power on
-   (corresponds to PON, POPIO, and CRS signal assertion in the CPU), the "P"
-   command switch will be set.  For PRESET (corresponds to POPIO and CRS
-   assertion), the switch will be clear.
+   This validation routine is called to configure the CPU memory size.  The
+   "new_size" parameter is set to the size desired and will be one of the
+   discrete sizes supported by the simulator.  The "uptr" parameter points to
+   the CPU unit and is used to obtain the CPU model.  The other parameters are
+   not used.
 
-   SCP delivers a power-on reset to all devices when the simulator is started.
-   A RUN, BOOT, RESET, or RESET ALL command delivers a PRESET to all devices.  A
-   RESET <dev> delivers a PRESET to a specific device.
+   The routine processes commands of the form:
+
+     SET [-F] CPU <memsize>
+
+   If the new memory size is larger than the supported size for the CPU model
+   currently selected, the routine returns an error.  If the new size is smaller
+   than the previous size, and if the area that would be lost contains non-zero
+   data, the user is prompted to confirm that memory should be truncated.  If
+   the user denies the request, the change is rejected.  Otherwise, the new size
+   is set.  The user may omit the confirmation request and force truncation by
+   specifying the "-F" switch on the command line.
+
+   On a 21xx CPU, the last 64 words in memory are reserved for the binary
+   loader.  Before changing the memory size, the current loader is copied to the
+   shadow RAM to preserve any manual changes that were made.  Then the new
+   memory size is set, with the beginning of the loader area set as the first
+   word of non-existent memory.
+
+   Finally, non-existent memory is zeroed, so that the mem_read routine does not
+   need any special handling for addresses beyond the end of defined memory.
+
+
+   Implementation notes:
+
+    1. In hardware, reads from non-existent memory return zero, and writes are
+       ignored.  In simulation, the largest possible memory is instantiated and
+       initialized to zero.  Therefore, only writes need to be checked against
+       memory size.
+
+    2. On the 21xx machines, doing SET CPU LOADERDISABLE decreases available
+       memory size by 64 words.
 */
 
+static t_stat set_size (UNIT *uptr, int32 new_size, CONST char *cptr, void *desc)
+{
+static CONST char confirm [] = "Really truncate memory [N]?";
+const uint32 model = UNIT_MODEL (cpu_unit [0].flags);   /* the current CPU model index */
+int32 old_size = (int32) mem_size;                      /* current memory size */
 
-/* CPU reset.
+if ((uint32) new_size > cpu_features [model].maxmem)    /* if the new memory size is not supported on current model */
+    return SCPE_NOFNC;                                  /*   then report the error */
 
-   If this is the first call after simulator startup, allocate the initial
-   memory array, set the default CPU model, and install the default BBL.
+if (!(sim_switches & SWMASK ('F'))                      /* if truncation is not explicitly forced */
+  && ! mem_is_empty (new_size)                          /*   and the truncated part is not empty */
+  && get_yn (confirm, FALSE) == FALSE)                  /*     and the user denies confirmation */
+    return SCPE_INCOMP;                                 /*       then abort the command */
+
+if (cpu_configuration & CPU_1000)                       /* if the CPU is a 1000-series machine */
+    cpu_unit [0].capac = mem_size = mem_end = new_size; /*   then memory is not reserved for the loader */
+
+else {                                                  /* otherwise */
+    set_loader (uptr, FALSE, NULL, NULL);               /* save loader to shadow RAM */
+    cpu_unit [0].capac = mem_size = new_size;           /* set new memory size */
+    mem_end = mem_size - IBL_SIZE;                      /* reserve memory for loader */
+    }
+
+if (old_size > new_size)                                /* if the new size is smaller than the prior size */
+    mem_zero (mem_end, old_size - new_size);            /*   then zero the newly non-existent memory area */
+
+return SCPE_OK;
+}
+
+
+/* Change the CPU model.
+
+   This validation routine is called to configure the CPU model.  The
+   "new_model" parameter is set to the unit flag corresponding to the model
+   desired.  The "uptr" parameter points to the CPU unit.  The other parameters
+   are not used.
+
+   Validation starts by setting the new memory size.  If the current memory size
+   is within the range of memory sizes permitted by the new CPU model, it is
+   kept; otherwise, it is reduced to the maximum size permitted.  If memory is
+   to be truncated, the "set_size" routine verifies either that it is blank
+   (i.e., filled with zero values) or that the user confirms that truncation is
+   allowable.
+
+   If the new memory size is accepted, the CPU options are set to the typical
+   configuration supported by the new model.  Memory Protect and DMA are then
+   configured as specified by the CPU feature table.  Memory expansion is
+   enabled if the DMS instruction set is present.  Finally, the "is_1000" flag
+   and memory reserved for the binary loader are set as directed by the new
+   model.
+
+   On return, the "cpu_configuration" bit set is updated to indicate the new
+   model configuration.
+
+
+   Implementation notes:
+
+    1. "cpu_configuration" is used by the symbolic examine and deposit routines
+       and instruction tracing to determine whether the firmware implementing a
+       given opcode is present.  It is a copy of the CPU unit option flags with
+       the encoded CPU model decoded into model flag bits.  This allows a simple
+       (and fast) AND operation with a firmware feature word to determine
+       applicability, saving the multiple masks and comparisons that would
+       otherwise be required.
+
+    2. The 'is_1000" variable is used to index into tables where the row
+       selected depends on whether or not the CPU is a 1000 M/E/F-series model.
+       For logical tests that depend on this, it is faster (by one x86 machine
+       instruction) to test the "cpu_configuration" variable for the presence of
+       one of the three 1000 model flags.
 */
 
-t_stat cpu_reset (DEVICE *dptr)
+static t_stat set_model (UNIT *uptr, int32 new_model, CONST char *cptr, void *desc)
 {
-if (M == NULL) {                                        /* initial call after startup? */
-    pcq_r = find_reg ("PCQ", NULL, dptr);               /* get PC queue pointer */
-
-    if (pcq_r)                                          /* defined? */
-        pcq_r->qptr = 0;                                /* initialize queue */
-    else                                                /* not defined */
-        return SCPE_IERR;                               /* internal error */
-
-    M = (uint16 *) calloc (PASIZE, sizeof (uint16));    /* alloc mem */
-
-    if (M == NULL)                                      /* alloc fail? */
-        return SCPE_MEM;
-    else {                                              /* do one-time init */
-        MEMSIZE = 32768;                                /* set initial memory size */
-        cpu_set_model (NULL, UNIT_2116, NULL, NULL);    /* set initial CPU model */
-        SR = 001000;                                    /* select PTR boot ROM at SC 10 */
-        cpu_boot (0, NULL);                             /* install loader for 2116 */
-        cpu_set_ldr (NULL, FALSE, NULL, NULL);          /* disable loader (was enabled) */
-        SR = 0;                                         /* clear S */
-        sim_vm_post = &hp_post_cmd;                     /* set cmd post proc */
-        sim_vm_fprint_stopped = &hp_fprint_stopped;     /* set sim stop printer */
-        sim_brk_types = ALL_BKPTS;                      /* register allowed breakpoint types */
-        }
-    }
-
-if (sim_switches & SWMASK ('P'))                        /* PON reset? */
-    IOPOWERON (&cpu_dib);
-else                                                    /* PRESET */
-    IOPRESET (&cpu_dib);
-
-sim_brk_dflt = SWMASK ('N');                            /* type is nomap as DMS is off */
-
-return SCPE_OK;
-}
-
-
-/* Memory protect reset */
-
-t_stat mp_reset (DEVICE *dptr)
-{
-IOPRESET (&mp_dib);                                     /* PRESET device (does not use PON) */
-
-mp_fence = 0;                                           /* clear fence register */
-mp_viol = 0;                                            /* clear violation register */
-
-return SCPE_OK;
-}
-
-
-/* DMA reset */
-
-t_stat dma_reset (DEVICE *dptr)
-{
-DIB *dibptr = (DIB *) dptr->ctxt;                       /* DIB pointer */
-const CHANNEL ch = (CHANNEL) dibptr->card_index;        /* DMA channel number */
-
-if (UNIT_CPU_MODEL != UNIT_2114)                        /* 2114 has only one channel */
-    hp_enbdis_pair (dma_dptrs [ch],                     /* make specified channel */
-                    dma_dptrs [ch ^ 1]);                /*   consistent with other channel */
-
-if (sim_switches & SWMASK ('P')) {                      /* power-on reset? */
-    dma [ch].cw1 = 0;                                   /* clear control word registers */
-    dma [ch].cw2 = 0;
-    dma [ch].cw3 = 0;
-    }
-
-IOPRESET (dibptr);                                      /* PRESET device (does not use PON) */
-
-dma [ch].packer = 0;                                    /* clear byte packer */
-
-return SCPE_OK;
-}
-
-
-/* Memory examine */
-
-t_stat cpu_ex (t_value *vptr, t_addr addr, UNIT *uptr, int32 sw)
-{
-uint16 d;
-
-if ((sw & ALL_MAPMODES) && (dms_enb == 0))              /* req map with DMS off? */
-    return SCPE_NOFNC;                                  /* command not allowed */
-
-addr = dms_cons (addr, sw);                             /* translate address as indicated */
-
-if (addr >= MEMSIZE)                                    /* beyond memory limits? */
-    return SCPE_NXM;                                    /* non-existent memory */
-
-if ((sw & SIM_SW_REST) || (addr >= 2))                  /* restoring or memory access? */
-    d = M[addr];                                        /* return memory value */
-else                                                    /* not restoring and A/B access */
-    d = ABREG[addr];                                    /* return A/B register value */
-
-if (vptr != NULL)
-    *vptr = d & DMASK;                                  /* store return value */
-return SCPE_OK;
-}
-
-/* Memory deposit */
-
-t_stat cpu_dep (t_value val, t_addr addr, UNIT *uptr, int32 sw)
-{
-if ((sw & ALL_MAPMODES) && (dms_enb == 0))              /* req map with DMS off? */
-    return SCPE_NOFNC;                                  /* command not allowed */
-
-addr = dms_cons (addr, sw);                             /* translate address as indicated */
-
-if (addr >= MEMSIZE)                                    /* beyond memory limits? */
-    return SCPE_NXM;                                    /* non-existent memory */
-
-if ((sw & SIM_SW_REST) || (addr >= 2))                  /* restoring or memory access? */
-    M[addr] = val & DMASK;                              /* store memory value */
-else                                                    /* not restoring and A/B access */
-    ABREG[addr] = val & DMASK;                          /* store A/B register value */
-
-return SCPE_OK;
-}
-
-
-/* Make a pair of devices consistent */
-
-void hp_enbdis_pair (DEVICE *ccp, DEVICE *dcp)
-{
-if (ccp->flags & DEV_DIS)
-    dcp->flags = dcp->flags | DEV_DIS;
-else
-    dcp->flags = dcp->flags & ~DEV_DIS;
-
-return;
-}
-
-
-/* VM command post-processor
-
-   Update T register to contents of memory addressed by M register
-   if M register has changed.
-*/
-
-void hp_post_cmd (t_bool from_scp)
-{
-if (MR != saved_MR) {                                   /* M changed since last update? */
-    saved_MR = MR;
-    TR = ReadTAB (MR);                                  /* sync T with new M */
-    }
-return;
-}
-
-
-/* Test for device conflict */
-
-static t_bool dev_conflict (void)
-{
-DEVICE *dptr;
-DIB *dibptr;
-uint32 i, j, k;
-t_bool is_conflict = FALSE;
-uint32 conflicts [MAXDEV + 1] = { 0 };
-
-for (i = 0; sim_devices [i] != NULL; i++) {
-    dptr = sim_devices [i];
-    dibptr = (DIB *) dptr->ctxt;
-    if (dibptr && !(dptr->flags & DEV_DIS))
-        if (++conflicts [dibptr->select_code] > 1)
-            is_conflict = TRUE;
-    }
-
-if (is_conflict) {
-    sim_ttcmd();
-    for (i = 0; i <= MAXDEV; i++) {
-        if (conflicts [i] > 1) {
-            k = conflicts [i];
-
-            printf ("Select code %o conflict:", i);
-
-            if (sim_log)
-                fprintf (sim_log, "Select code %o conflict:", i);
-
-            for (j = 0; sim_devices [j] != NULL; j++) {
-                dptr = sim_devices [j];
-                dibptr = (DIB *) dptr->ctxt;
-                if (dibptr && !(dptr->flags & DEV_DIS) && i == dibptr->select_code) {
-                    if (k < conflicts [i]) {
-                        printf (" and");
-
-                        if (sim_log)
-                            fputs (" and", sim_log);
-                        }
-
-                    printf (" %s", sim_dname (dptr));
-
-                    if (sim_log)
-                        fprintf (sim_log, " %s", sim_dname (dptr));
-
-                    k = k - 1;
-
-                    if (k == 0) {
-                        putchar ('\n');
-
-                        if (sim_log)
-                            fputc ('\n', sim_log);
-                        break;
-                        }
-                    }
-                }
-            }
-        }
-    }
-return is_conflict;
-}
-
-
-/* Change CPU memory size.
-
-   On a 21xx, move the current loader to the top of the new memory size.  Then
-   clear "non-existent memory" so that reads return zero, per spec.
-
-   Validation:
-   - New size <= maximum size for current CPU.
-   - New size a positive multiple of 4K (progamming error if not).
-   - If new size < old size, truncation accepted.
-*/
-
-t_stat cpu_set_size (UNIT *uptr, int32 new_size, char *cptr, void *desc)
-{
-int32 mc = 0;
-uint32 i;
-uint32 model = CPU_MODEL_INDEX;                         /* current CPU model index */
-uint32 old_size = (uint32) MEMSIZE;                     /* current memory size */
-
-if ((uint32) new_size > cpu_features[model].maxmem)
-    return SCPE_NOFNC;                                  /* mem size unsupported */
-
-if ((new_size <= 0) || (new_size > PASIZE) || ((new_size & 07777) != 0))
-    return SCPE_NXM;                                    /* invalid size (prog err) */
-
-if (!(sim_switches & SWMASK ('F'))) {                   /* force truncation? */
-    for (i = new_size; i < MEMSIZE; i++)                /* check truncated memory */
-        mc = mc | M[i];                                 /*   for content */
-
-    if ((mc != 0) && (!get_yn ("Really truncate memory [N]?", FALSE)))
-        return SCPE_INCOMP;
-    }
-
-if (UNIT_CPU_FAMILY == UNIT_FAMILY_21XX) {              /* 21xx CPU? */
-    cpu_set_ldr (uptr, FALSE, NULL, NULL);              /* save loader to shadow RAM */
-    MEMSIZE = new_size;                                 /* set new memory size */
-    fwanxm = (uint32) MEMSIZE - IBL_LNT;                /* reserve memory for loader */
-    }
-else                                                    /* loader unsupported */
-    MEMSIZE = fwanxm = new_size;                        /* set new memory size */
-
-for (i = fwanxm; i < old_size; i++)                     /* zero non-existent memory */
-    M[i] = 0;
-
-return SCPE_OK;
-}
-
-
-/* Change CPU models.
-
-   For convenience, MP and DMA are typically enabled if available; they may be
-   disabled subsequently if desired.  Note that the 2114 supports only one DMA
-   channel (channel 1).  All other models support two channels.
-
-   Validation:
-   - Sets standard equipment and convenience features.
-   - Changes DMA device name to DCPC if 1000 is selected.
-   - Enforces maximum memory allowed (doesn't change otherwise).
-   - Disables loader on 21xx machines.
-*/
-
-t_stat cpu_set_model (UNIT *uptr, int32 new_model, char *cptr, void *desc)
-{
-uint32 old_family = UNIT_CPU_FAMILY;                    /* current CPU type */
-uint32 new_family = new_model & UNIT_FAMILY_MASK;       /* new CPU family */
-uint32 new_index  = new_model >> UNIT_V_CPU;            /* new CPU model index */
+const FEATURE_TABLE new_cpu = cpu_features [UNIT_MODEL (new_model)];    /* get the features describing the new model */
 uint32 new_memsize;
 t_stat result;
 
-cpu_unit.flags = cpu_unit.flags & ~UNIT_OPTS |          /* set typical features */
-                 cpu_features[new_index].typ & UNIT_OPTS;   /* mask pseudo-opts */
+if (mem_size > new_cpu.maxmem)                          /* if the current memory size is too large for the new model */
+    new_memsize = new_cpu.maxmem;                       /*   then set it to the maximum size supported */
+else                                                    /* otherwise */
+    new_memsize = mem_size;                             /*   leave it unchanged */
 
+result = set_size (uptr, new_memsize, NULL, NULL);      /* set the new memory size */
 
-if (cpu_features[new_index].typ & UNIT_MP)              /* MP in typ config? */
-    mp_dev.flags = mp_dev.flags & ~DEV_DIS;             /* enable it */
-else
-    mp_dev.flags = mp_dev.flags |  DEV_DIS;             /* disable it */
+if (result == SCPE_OK) {                                /* if the change succeeded */
+    cpu_configuration = TO_CPU_OPTION (new_cpu.typ)     /*   then set the typical options */
+                          | CPU_BASE                    /*     and the base instruction set bit */
+                          | TO_CPU_MODEL (new_model);   /*       and the new CPU model flag */
 
-if (cpu_features[new_index].opt & UNIT_MP)              /* MP an option? */
-    mp_dev.flags = mp_dev.flags |  DEV_DISABLE;         /* make it alterable */
-else
-    mp_dev.flags = mp_dev.flags & ~DEV_DISABLE;         /* make it unalterable */
+    cpu_unit [0].flags = cpu_unit [0].flags & ~UNIT_OPTION_FIELD    /* enable the typical features */
+                          | new_cpu.typ & UNIT_OPTION_FIELD;        /*   for the new model */
 
+    mp_configure ((new_cpu.typ & UNIT_MP) != 0,         /* configure MP, specifying whether */
+                  (new_cpu.opt & UNIT_MP) != 0);        /*   it is enabled and optional */
 
-if (cpu_features[new_index].typ & UNIT_DMA) {           /* DMA in typ config? */
-    dma1_dev.flags = dma1_dev.flags & ~DEV_DIS;         /* enable DMA channel 1 */
+    dma_configure ();                                   /* configure DMA for the new model */
 
-    if (new_model == UNIT_2114)                         /* 2114 has only one channel */
-        dma2_dev.flags = dma2_dev.flags |  DEV_DIS;     /* disable channel 2 */
-    else                                                /* all others have two channels */
-        dma2_dev.flags = dma2_dev.flags & ~DEV_DIS;     /* enable it */
+    if (new_cpu.typ & UNIT_DMS)                         /* if DMS instructions are present */
+        meu_configure (ME_Enabled);                     /*   then enable the MEM device */
+    else                                                /* otherwise */
+        meu_configure (ME_Disabled);                    /*   disable the MEM and mapping */
+
+    if (cpu_configuration & CPU_1000) {                 /* if the CPU is a 1000-series machine */
+        is_1000 = TRUE;                                 /*   then set the model index */
+        mem_end = mem_size;                             /* memory is not reserved for the loader  */
+        }
+
+    else {                                              /* otherwise this is a 2100 or 211x */
+        is_1000 = FALSE;                                /*   so set the model index */
+        mem_end = mem_size - IBL_SIZE;                  /*     and reserve memory for the loader */
+        }
     }
-else {
-    dma1_dev.flags = dma1_dev.flags | DEV_DIS;          /* disable channel 1 */
-    dma2_dev.flags = dma2_dev.flags | DEV_DIS;          /* disable channel 2 */
-    }
-
-if (cpu_features[new_index].opt & UNIT_DMA) {           /* DMA an option? */
-    dma1_dev.flags = dma1_dev.flags |  DEV_DISABLE;     /* make it alterable */
-
-    if (new_model == UNIT_2114)                         /* 2114 has only one channel */
-        dma2_dev.flags = dma2_dev.flags & ~DEV_DISABLE; /* make it unalterable */
-    else                                                /* all others have two channels */
-        dma2_dev.flags = dma2_dev.flags |  DEV_DISABLE; /* make it alterable */
-    }
-else {
-    dma1_dev.flags = dma1_dev.flags & ~DEV_DISABLE;     /* make it unalterable */
-    dma2_dev.flags = dma2_dev.flags & ~DEV_DISABLE;     /* make it unalterable */
-    }
-
-
-if ((old_family == UNIT_FAMILY_1000) &&                 /* if current family is 1000 */
-    (new_family == UNIT_FAMILY_21XX)) {                 /* and new family is 21xx */
-    deassign_device (&dma1_dev);                        /* delete DCPC names */
-    deassign_device (&dma2_dev);
-    }
-else if ((old_family == UNIT_FAMILY_21XX) &&            /* if current family is 21xx */
-         (new_family == UNIT_FAMILY_1000)) {            /* and new family is 1000 */
-    assign_device (&dma1_dev, "DCPC1");                 /* change DMA device name */
-    assign_device (&dma2_dev, "DCPC2");                 /* to DCPC for familiarity */
-    }
-
-if ((MEMSIZE == 0) ||                                   /* current mem size not set? */
-    (MEMSIZE > cpu_features[new_index].maxmem))         /* current mem size too large? */
-    new_memsize = cpu_features[new_index].maxmem;       /* set it to max supported */
-else
-    new_memsize = (uint32) MEMSIZE;                     /* or leave it unchanged */
-
-result = cpu_set_size (uptr, new_memsize, NULL, NULL);  /* set memory size */
-
-if (result == SCPE_OK)                                  /* memory change OK? */
-    if (new_family == UNIT_FAMILY_21XX)                 /* 21xx CPU? */
-        fwanxm = (uint32) MEMSIZE - IBL_LNT;            /* reserve memory for loader */
-    else
-        fwanxm = (uint32) MEMSIZE;                      /* loader reserved only for 21xx */
 
 return result;
 }
 
 
-/* Display the CPU model and optional loader status.
-
-   Loader status is displayed for 21xx models and suppressed for 1000 models.
-*/
-
-t_stat cpu_show_model (FILE *st, UNIT *uptr, int32 val, void *desc)
-{
-fputs ((char *) desc, st);                              /* write model name */
-
-if (UNIT_CPU_FAMILY == UNIT_FAMILY_21XX)                /* valid only for 21xx */
-    if (fwanxm < MEMSIZE)                               /* loader area non-existent? */
-        fputs (", loader disabled", st);                /* yes, so access disabled */
-    else
-        fputs (", loader enabled", st);                 /* no, so access enabled */
-return SCPE_OK;
-}
-
-
 /* Set a CPU option.
 
-   Validation:
-   - Checks that the current CPU model supports the option selected.
-   - If CPU is 1000-F, ensures that VIS and IOP are mutually exclusive.
-   - If CPU is 2100, ensures that FP/FFP and IOP are mutually exclusive.
-   - If CPU is 2100, ensures that FP is enabled if FFP enabled
-     (FP is required for FFP installation).
+   This validation routine is called to add an option to the current CPU
+   configuration.  The "option" parameter is set to the unit flag corresponding
+   to the option desired.  The "uptr" parameter points to the CPU unit and is
+   used to obtain the CPU model.  The other parameters are not used.
+
+   The routine processes commands of the form:
+
+     SET CPU <option>[,<option>...]
+
+   The option must be valid for the current CPU model, or the command will be
+   rejected.
+
+
+   Implementation notes:
+
+    1. "cpu_configuration" is used by the symbolic examine and deposit routines
+       and instruction tracing to determine whether the firmware implementing a
+       given opcode is present.  It is a copy of the CPU unit option flags with
+       the encoded CPU model decoded into model flag bits.  This allows a simple
+       (and fast) AND operation with a firmware feature word to determine
+       applicability, saving the multiple masks and comparisons that would
+       otherwise be required.
 */
 
-t_stat cpu_set_opt (UNIT *uptr, int32 option, char *cptr, void *desc)
+static t_stat set_option (UNIT *uptr, int32 option, CONST char *cptr, void *desc)
 {
-uint32 model = CPU_MODEL_INDEX;                         /* current CPU model index */
+const uint32 model = UNIT_MODEL (uptr->flags);          /* the current CPU model index */
 
-if ((cpu_features[model].opt & option) == 0)            /* option supported? */
-    return SCPE_NOFNC;                                  /* no */
+if ((cpu_features [model].opt & option) == 0)           /* if the option is not available for the current CPU */
+    return SCPE_NOFNC;                                  /*   then reject the request */
 
-if (UNIT_CPU_TYPE == UNIT_TYPE_2100) {
-    if ((option == UNIT_FP) || (option == UNIT_FFP))    /* 2100 IOP and FP/FFP options */
-        uptr->flags = uptr->flags & ~UNIT_IOP;          /* are mutually exclusive */
-    else if (option == UNIT_IOP)
-        uptr->flags = uptr->flags & ~(UNIT_FP | UNIT_FFP);
+if (option == UNIT_DMS)                                 /* if DMS instructions are being enabled */
+    meu_configure (ME_Enabled);                         /*   then enable the MEM device */
 
-    if (option == UNIT_FFP)                             /* 2100 FFP option requires FP */
-        uptr->flags = uptr->flags | UNIT_FP;
+if (cpu_configuration & CPU_2100) {                     /* if the current CPU is a 2100 */
+    if ((option == UNIT_FP) || (option == UNIT_FFP))    /*   then the IOP option */
+        uptr->flags &= ~UNIT_IOP;                       /*     and the FP and FFP options */
+    else if (option == UNIT_IOP)                        /*       are */
+        uptr->flags &= ~(UNIT_FP | UNIT_FFP);           /*         mutually exclusive */
+
+    if (option == UNIT_FFP)                             /* the FFP option */
+        uptr->flags |= UNIT_FP;                         /*   requires FP as well */
     }
 
-else if (UNIT_CPU_MODEL == UNIT_1000_F)
-    if (option == UNIT_VIS)                             /* 1000-F IOP and VIS options */
-        uptr->flags = uptr->flags & ~UNIT_IOP;          /* are mutually exclusive */
-    else if (option == UNIT_IOP)
-        uptr->flags = uptr->flags & ~UNIT_VIS;
+cpu_configuration = cpu_configuration & ~CPU_OPTION_MASK    /* update the CPU configuration */
+                      | TO_CPU_OPTION (uptr->flags)         /*   with any revised option settings */
+                      | CPU_BASE;                           /*     and the base set bit */
+
+if (option & UNIT_EMA_VMA)                              /* if EMA or VMA is being set */
+    cpu_configuration &= ~UNIT_EMA_VMA;                 /*   then first remove both as they are mutually exclusive */
+
+cpu_configuration |= TO_CPU_OPTION (option);            /* include the new setting in the configuration */
 
 return SCPE_OK;
 }
@@ -3851,31 +3911,43 @@ return SCPE_OK;
 
 /* Clear a CPU option.
 
-   Validation:
-   - Checks that the current CPU model supports the option selected.
-   - Clears flag from unit structure (we are processing MTAB_XTD entries).
-   - If CPU is 2100, ensures that FFP is disabled if FP disabled
-     (FP is required for FFP installation).
+   This validation routine is called to remove an option from the current CPU
+   configuration.  The "option" parameter is set to the unit flag corresponding
+   to the option desired.  The "uptr" parameter points to the CPU unit and is
+   used to obtain the CPU model.  The other parameters are not used.
+
+   The routine processes commands of the form:
+
+     SET CPU NO<option>[,NO<option>...]
+
+   The option must be valid for the current CPU model, or the command will be
+   rejected.
 */
 
-t_bool cpu_clr_opt (UNIT *uptr, int32 option, char *cptr, void *desc)
+static t_stat clear_option (UNIT *uptr, int32 option, CONST char *cptr, void *desc)
 {
-uint32 model = CPU_MODEL_INDEX;                         /* current CPU model index */
+const uint32 model = UNIT_MODEL (uptr->flags);          /* the current CPU model index */
 
-if ((cpu_features[model].opt & option) == 0)            /* option supported? */
-    return SCPE_NOFNC;                                  /* no */
+if ((cpu_features [model].opt & option) == 0)           /* if the option is not available for the current CPU */
+    return SCPE_NOFNC;                                  /*   then reject the request */
 
-uptr->flags = uptr->flags & ~option;                    /* disable option */
+uptr->flags &= ~option;                                 /* disable the option */
 
-if ((UNIT_CPU_TYPE == UNIT_TYPE_2100) &&                /* disabling 2100 FP? */
-    (option == UNIT_FP))
-    uptr->flags = uptr->flags & ~UNIT_FFP;              /* yes, so disable FFP too */
+if (option == UNIT_DMS)                                 /* if DMS instructions are being disabled */
+    meu_configure (ME_Disabled);                        /*   then disable the MEM device */
+
+if (cpu_configuration & CPU_2100 && option == UNIT_FP)  /* if the FP option on a 2100 is being disabled */
+    uptr->flags &= ~UNIT_FFP;                           /*   then disable the FFP as well */
+
+cpu_configuration = cpu_configuration & ~CPU_OPTION_MASK    /* update the CPU configuration */
+                      | TO_CPU_OPTION (uptr->flags)         /*   with the revised option settings */
+                      | CPU_BASE;                           /*     and the base set bit */
 
 return SCPE_OK;
 }
 
 
-/* 21xx loader enable/disable function.
+/* Enable or disable the 21xx binary loader.
 
    The 21xx CPUs store their initial binary loaders in the last 64 words of
    available memory.  This memory is protected by a LOADER ENABLE switch on the
@@ -3888,10 +3960,10 @@ return SCPE_OK;
    stored in PROMs and are copied into main memory for execution by the IBL
    switch.
 
-   Under simulation, we keep both a total configured memory size (MEMSIZE) and a
-   current configured memory size (fwanxm = "first word address of non-existent
-   memory").  When the two are equal, the loader is enabled.  When the current
-   size is less than the total size, the loader is disabled.
+   Under simulation, we keep both a total configured memory size (mem_size) and
+   a current configured memory size (mem_end = "first word address of
+   non-existent memory").  When the two are equal, the loader is enabled.  When
+   the current size is less than the total size, the loader is disabled.
 
    Disabling the loader copies the last 64 words to a shadow array, zeros the
    corresponding memory, and decreases the last word of addressable memory by
@@ -3902,128 +3974,1268 @@ return SCPE_OK;
    slightly from actual machine operation, which additionally disables the
    loader when a manual halt is performed.  We do not do this to allow
    breakpoints within and single-stepping through the loaders.
+
+
+   Implementation notes:
+
+    1. In hardware, reads from non-existent memory return zero.  In simulation,
+       the largest possible memory is instantiated and initialized to zero, so
+       that reads need not be checked against memory size.  To preserve this
+       model for the protected loader, we save and then zero the memory area
+       when the loader is disabled.
 */
 
-t_stat cpu_set_ldr (UNIT *uptr, int32 enable, char *cptr, void *desc)
+static t_stat set_loader (UNIT *uptr, int32 enable, CONST char *cptr, void *desc)
 {
-static BOOT_ROM loader;
-int32 i;
-t_bool is_enabled = (fwanxm == MEMSIZE);
+static MEMORY_WORD loader [IBL_SIZE];                       /* the shadow memory for the currently disabled loader */
+const  t_bool currently_enabled = (mem_end == mem_size);    /* TRUE if the loader is currently enabled */
 
-if ((UNIT_CPU_FAMILY != UNIT_FAMILY_21XX) ||            /* valid only for 21xx */
-    (MEMSIZE == 0))                                     /* and for initialized memory */
-    return SCPE_NOFNC;
+if (cpu_configuration & CPU_1000)                       /* if the current CPU is a 1000-series */
+    return SCPE_NOFNC;                                  /*   then the protected loader does not exist */
 
-if (is_enabled && (enable == 0)) {                      /* disable loader? */
-    fwanxm = (uint32) MEMSIZE - IBL_LNT;                /* decrease available memory */
-    for (i = 0; i < IBL_LNT; i++) {                     /* copy loader */
-        loader[i] = M[fwanxm + i];                      /* from memory */
-        M[fwanxm + i] = 0;                              /* and zero location */
+if (currently_enabled && enable == 0) {                 /* if the enabled loader is being disabled */
+    mem_end = mem_size - IBL_SIZE;                      /*   then decrease available memory */
+    mem_copy_loader (loader, mem_end, From_Memory);     /*     and shadow the loader and zero memory */
+    }
+
+else if (!currently_enabled && enable == 1) {           /* otherwise if the disabled loader is being enabled */
+    mem_copy_loader (loader, mem_end, To_Memory);       /*   then copy the shadow loader to memory */
+    mem_end = mem_size;                                 /*     and increase available memory */
+    }
+
+return SCPE_OK;
+}
+
+
+/* Change the set of installed loader ROMs.
+
+   This validation routine is called to install loader ROMs in the four
+   available sockets of a 1000-series CPU.  The routine processes commands of
+   the form:
+
+     SET CPU ROMS=[<dev0>][;[<dev1>][;[<dev2>][;[<dev3>]]]]
+
+   On entry, "cptr" points at the the first character of the ROM list.  The
+   option value and the unit and description pointers are not used.
+
+   All four ROM sockets are set for each command.  If no devices are specified,
+   then all sockets are emptied.  Otherwise, specifying a valid device name
+   installs the device loader ROM into the socket corresponding to the position
+   of the device name in the list.  Sockets may be left empty by omitting the
+   corresponding device name or by supplying fewer than four device names.
+
+   Loader ROMs may only be altered if the current CPU model is a 1000-series
+   machine, and a device must be bootable and have a loader ROM assigned, or the
+   command will be rejected.  A rejected command does not alter any of the ROM
+   assignments.
+
+   Example commands and their effects on the installed ROM sockets follow:
+
+     Command                Action
+     ---------------------  -------------------------------------------------
+     SET CPU ROMS=          Remove ROMs from sockets 0-3
+     SET CPU ROMS=PTR       Install PTR in 0; leave 1-3 empty
+     SET CPU ROMS=DS;MS     Install DS in 0 and MS in 1; leave 2 and 3 empty
+     SET CPU ROMS=;;DPC     Install DPC in 2; leave 0, 1, and 3 empty
+     SET CPU ROMS=DQC;;;DA  Install DQC in 0 and DA in 3; leave 1 and 2 empty
+
+
+   Implementation notes:
+
+    1. Entering "SET CPU ROMS" without an equals sign or list is rejected with a
+       "Missing value" error.  This is to prevent accidental socket clearing
+       when "SHOW CPU ROMS" was intended.
+*/
+
+static t_stat set_roms (UNIT *uptr, int32 option, CONST char *cptr, void *desc)
+{
+DEVICE *dptr;
+char   gbuf [CBUFSIZE];
+uint32 socket = 0;
+DEVICE *rom [4] = { NULL };
+
+if (!(cpu_configuration & CPU_1000))                    /* if the CPU is not a 1000-series unit */
+    return SCPE_NOFNC;                                  /*   then reject the command */
+
+else if (cptr == NULL)                                  /* otherwise if the list is not specified */
+    return SCPE_MISVAL;                                 /*   then report that the list is missing */
+
+else if (*cptr == '\0') {                               /* otherwise if the list is null */
+    loader_rom [0] = NULL;                              /*   then empty */
+    loader_rom [1] = NULL;                              /*     all of the */
+    loader_rom [2] = NULL;                              /*       ROM sockets */
+    loader_rom [3] = NULL;
+    }
+
+else {                                                  /* otherwise */
+    while (*cptr) {                                     /*   loop through the arguments */
+        cptr = get_glyph (cptr, gbuf, ';');             /* get the next argument */
+
+        if (socket == 4)                                /* if all four sockets have been set */
+            return SCPE_2MARG;                          /*   then reject the command */
+
+        else if (gbuf [0] == '\0')                      /* otherwise if the device name is omitted */
+            rom [socket++] = NULL;                      /*   then empty the corresponding socket */
+
+        else {                                          /* otherwise we have a device name */
+            dptr = find_dev (gbuf);                     /*   so find the associated DEVICE pointer */
+
+            if (dptr == NULL)                           /* if the device name is not valid */
+                return SCPE_NXDEV;                      /*   then reject the command */
+
+            else if (dptr->boot == NULL)                /* otherwise if it's valid but not bootable */
+                return SCPE_NOFNC;                      /*   then reject the command */
+
+            else                                        /* otherwise */
+                rom [socket++] = dptr;                  /*   install the boot loader ROM */
+            }
+        }
+
+    loader_rom [0] = rom [0];                           /* install the ROM set */
+    loader_rom [1] = rom [1];                           /*   now that we have */
+    loader_rom [2] = rom [2];                           /*     a valid */
+    loader_rom [3] = rom [3];                           /*       device list */
+    }
+
+return SCPE_OK;                                         /* report that the command succeeded */
+}
+
+
+/* Change the instruction execution trace criteria.
+
+   This validation routine is called to configure the criteria that select
+   instruction execution tracing.  The "option" parameter is 0 to clear and 1 to
+   set the criteria, and "cptr" points to the first character of the match value
+   to be set.  The unit and description pointers are not used.
+
+   The routine processes commands of the form:
+
+     SET CPU EXEC=<match>[;<mask>]
+     SET CPU NOEXEC
+
+   If the <mask> value is not supplied, a mask of 177777 octal is used.  The
+   values are entered in the current CPU data radix, which defaults to octal,
+   unless an override switch is present on the command line.
+*/
+
+static t_stat set_exec (UNIT *uptr, int32 option, CONST char *cptr, void *desc)
+{
+char   gbuf [CBUFSIZE];
+uint32 match, mask, radix;
+t_stat status;
+
+if (option == 0)                                        /* if this is a NOEXEC request */
+    if (cptr == NULL) {                                 /*   then if there are no arguments */
+        exec_match = D16_UMAX;                          /*     then set the match and mask values */
+        exec_mask  = 0;                                 /*       to prevent matching */
+        return SCPE_OK;                                 /*         and return success */
+        }
+
+    else                                                /*   otherwise there are extraneous characters */
+        return SCPE_2MARG;                              /*     so report that there are too many arguments */
+
+else if (cptr == NULL || *cptr == '\0')                 /* otherwise if the EXEC request supplies no arguments */
+    return SCPE_MISVAL;                                 /*   then report a missing value */
+
+else {                                                  /* otherwise at least one argument is present */
+    cptr = get_glyph (cptr, gbuf, ';');                 /*   so get the match argument */
+
+    if (sim_switches & SWMASK ('O'))                    /* if an octal override is present */
+        radix = 8;                                      /*   then parse the value in base 8 */
+    else if (sim_switches & SWMASK ('D'))               /* otherwise if a decimal override is present */
+        radix = 10;                                     /*   then parse the value in base 10 */
+    else if (sim_switches & SWMASK ('H'))               /* otherwise if a hex override is present */
+        radix = 16;                                     /*   then parse the value in base 16 */
+    else                                                /* otherwise */
+        radix = cpu_dev.dradix;                         /*   use the current CPU data radix */
+
+    match = (uint32) get_uint (gbuf, radix, D16_UMAX, &status); /* parse the match value */
+
+    if (status != SCPE_OK)                              /* if a parsing error occurred */
+        return status;                                  /*   then return the error status */
+
+    else if (*cptr == '\0') {                           /* otherwise if no more characters are present */
+        exec_match = match;                             /*   then set the match value */
+        exec_mask  = D16_MASK;                          /*     and default the mask value */
+        return SCPE_OK;                                 /*       and return success */
+        }
+
+    else {                                              /* otherwise another argument is present */
+        cptr = get_glyph (cptr, gbuf, ';');             /*   so get the mask argument */
+
+        mask = (uint32) get_uint (gbuf, radix, D16_UMAX, &status);  /* parse the mask value */
+
+        if (status != SCPE_OK)                          /* if a parsing error occurred */
+            return status;                              /*   then return the error status */
+
+        else if (*cptr == '\0')                         /* if no more characters are present */
+            if (mask == 0)                              /*   then if the mask value is zero */
+                return SCPE_ARG;                        /*     then the match will never succeed */
+
+            else {                                      /*   otherwise */
+                exec_match = match;                     /*     set the match value */
+                exec_mask  = mask;                      /*       and the mask value */
+                return SCPE_OK;                         /*         and return success */
+                }
+
+        else                                            /* otherwise extraneous characters are present */
+            return SCPE_2MARG;                          /*   so report that there are too many arguments */
+        }
+    }
+}
+
+
+/* Show the CPU simulation stop conditions.
+
+   This display routine is called to show the set of CPU stop conditions or the
+   indirect chain length limit.  The "st" parameter is the open output stream,
+   and "val" is 1 to show the stops and 2 to show the indirect limit.  The other
+   parameters are not used.
+
+   To show stops, the routine searches through the stop table for status
+   variables that are set to values other than SCPE_OK.  For each one it finds,
+   the routine prints the corresponding stop name.  If none are found, it
+   reports that all stops are disabled.
+
+   This routine services an extended modifier entry, so it must add the trailing
+   newline to the output before returning.
+*/
+
+static t_stat show_stops (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+{
+uint32 stop;
+t_bool need_spacer = FALSE;
+
+if (val == 2)                                           /* if the indirect limit is requested */
+    fprintf (st, "Limit=%d\n", indirect_limit);         /*   then show it */
+
+else {                                                      /* otherwise show the enabled stops */
+    for (stop = 0; cpu_stop [stop].name != NULL; stop++)    /* loop through the set of stops in the table */
+        if (*cpu_stop [stop].status != SCPE_OK) {           /* if the current stop is enabled */
+            if (need_spacer)                                /*   then if a spacer is needed */
+                fputc (';', st);                            /*     then add it first */
+            else                                            /* otherwise this is the first one reported */
+                fputs ("Stop=", st);                        /*   so print the report label */
+
+            fputs (cpu_stop [stop].name, st);               /* report the stop name */
+
+            need_spacer = TRUE;                             /* a spacer will be needed next time */
+            }
+
+    if (need_spacer)                                    /* if at least one simulation stop was enabled */
+        fputc ('\n', st);                               /*   then add the required trailing newline */
+    else                                                /* otherwise no enabled stops were found */
+        fputs ("Stops disabled\n", st);                 /*   so report that all are disabled */
+    }
+
+return SCPE_OK;                                         /* report the success of the display */
+}
+
+
+/* Display the CPU model and optional loader status.
+
+   Loader status is displayed for 21xx models and suppressed for 1000 models.
+*/
+
+static t_stat show_model (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+{
+fputs ((const char *) desc, st);                        /* output the CPU model name */
+
+if (!(cpu_configuration & CPU_1000))                    /* if the CPU is a 2100 or 21xx */
+    if (mem_end < mem_size)                             /*   then if the loader area is non-existent */
+        fputs (", loader disabled", st);                /*     then report that the loader is disabled */
+    else                                                /*   otherwise */
+        fputs (", loader enabled", st);                 /*     report that it is enabled */
+
+return SCPE_OK;
+}
+
+
+/* Show the set of installed loader ROMs.
+
+   This display routine is called to show the set of installed loader ROMs in
+   the four available sockets of a 1000-series CPU.  On entry, the "st"
+   parameter is the open output stream.  The other parameters are not used.
+
+   The routine prints a table of ROMs in this format:
+
+     Socket  Device  ROM Description
+     ------  ------  -----------------------------------------
+       0      PTR    12992K Paper Tape Loader
+       1      DA     12992H 7906H/7920H/7925H/9895 Disc Loader
+       2      MSC    12992D 7970 Magnetic Tape Loader
+       3     (none)  (empty socket)
+
+   If a given socket contains a ROM, the associated device name, HP part number,
+   and description of the loader ROM are printed.  Loader ROMs may be displayed
+   only if the current CPU model is a 1000-series machine; if it is not, the
+   command will be rejected.
+
+   This routine services an extended modifier entry, so it must add the trailing
+   newline to the output before returning.
+
+
+   Implementation notes:
+
+    1. SCP does not honor the status return from display routines, so we must
+       explicitly print the rejection error message if the routine is called for
+       a non-1000 CPU.
+
+    2. sim_dname is called instead of using dptr->name directly to ensure that
+       we pick up assigned logical device names.
+*/
+
+static t_stat show_roms (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+{
+const char *cname, *dname;
+DIB    *dibptr;
+uint32 socket;
+
+if (!(cpu_configuration & CPU_1000)) {                  /* if the CPU is not a 1000-series unit */
+    fputs (sim_error_text (SCPE_NOFNC), st);            /*   then print the rejection message */
+    fputc ('\n', st);                                   /*     and add a line feed */
+
+    return SCPE_NOFNC;                                  /* reject the command */
+    }
+
+fputc ('\n', st);                                           /* skip a line */
+fputs ("Socket  Device  ROM Description\n", st);            /*   and print */
+fputs ("------  ------  "                                   /*     the table header */
+       "-----------------------------------------\n", st);
+
+for (socket = 0; socket < 4; socket++)                      /* loop through the sockets */
+    if (loader_rom [socket] == NULL)                        /* if the socket is empty */
+        fprintf (st, "  %u     (none)  (empty socket)\n",   /*   then report it as such */
+                 socket);
+
+    else {                                              /* otherwise the socket is occupied */
+        dname = sim_dname (loader_rom [socket]);        /*   so get the device name */
+        dibptr = (DIB *) loader_rom [socket]->ctxt;     /*     and a pointer to that device's DIB */
+        cname = dibptr->rom_description;                /*       to get the ROM description */
+
+        if (cname == NULL)                              /* if there is no description */
+            cname = "";                                 /*   then use a null string */
+
+        fprintf (st, "  %u      %-4s   %s\n",           /* print the ROM information */
+                 socket, dname, cname);
+        }
+
+return SCPE_OK;                                         /* return success status */
+}
+
+
+/* Show the currently configured I/O card cage.
+
+   This display routine is called to show the set of interfaces installed in the
+   I/O card cage.  On entry, the "st" parameter is the open output stream.  The
+   other parameters are not used.
+
+   The routine prints the installed I/O cards in this format:
+
+     SC  Device  Interface Description
+     --  ------  ---------------------------------------------------------------
+     10   PTR    12597A-002 Tape Reader Interface
+     11   TTY    12531C Buffered Teleprinter Interface
+     12   PTP    12597A-005 Tape Punch Interface
+     13   TBG    12539C Time Base Generator Interface
+     14  (none)  12777A Priority Jumper Card
+     15   LPT    12845B Line Printer Interface
+     [...]
+
+   If a given I/O slot contains an interface card, the associated device name,
+   HP part number, and description of the interface are printed.  If the slot is
+   empty, it is displayed as though a 12777A Priority Jumper Card is installed.
+   The list terminates with the last occupied I/O slot.
+
+   If select code conflicts exist, the invalid assignments are printed before
+   the interface list, and the corresponding entries in the list are flagged.
+   For example:
+
+     Select code 13 conflict (TBG and LPS)
+
+     SC  Device  Interface Description
+     --  ------  ------------------------------------------------------------------
+     10   PTR    12597A-002 Tape Reader Interface
+     11   TTY    12531C Buffered Teleprinter Interface
+     12   PTP    12597A-005 Tape Punch Interface
+     13   ---    (multiple assignments)
+     14  (none)  12777A Priority Jumper Card
+     15   LPT    12845B Line Printer Interface
+     [...]
+
+   This routine services an extended modifier entry, so it must add the trailing
+   newline to the output before returning.
+*/
+
+static t_stat show_cage (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+{
+const char *cname, *dname;
+uint32 sc, last_sc;
+
+fputc ('\n', st);                                       /* skip a line */
+
+if (initialize_io (FALSE) == FALSE)                     /* set up the I/O tables; if a conflict was reported */
+    fputc ('\n', st);                                   /*   then separate it from the interface list */
+
+fputs ("SC  Device  Interface Description\n", st);      /* print */
+fputs ("--  ------  "                                   /*   the table header */
+       "------------------------------------------------------------------\n", st);
+
+for (last_sc = SC_MAX; last_sc > SC_VAR; last_sc--)     /* find the last occupied I/O slot */
+    if (iot [last_sc].devptr != NULL                    /*   with an assigned device */
+      && !(iot [last_sc].devptr->flags & DEV_DIS))      /*     that is currently enabled */
+        break;
+
+for (sc = SC_VAR; sc <= last_sc; sc++)                                      /* loop through the select codes */
+    if (iot [sc].devptr == NULL || iot [sc].devptr->flags & DEV_DIS)        /* if the slot is unassigned or disabled */
+        fprintf (st, "%02o  (none)  12777A Priority Jumper Card\n", sc);    /*   then report a jumper card */
+
+    else if (iot [sc].references > 1)                               /* otherwise if a conflict exists */
+        fprintf (st, "%02o   ---    (multiple assignments)\n", sc); /*   then report the multiple assignment */
+
+    else {                                              /* otherwise the slot is valid */
+        dname = sim_dname (iot [sc].devptr);            /*   so get the device name */
+        cname = iot [sc].dibptr->card_description;      /*     and interface card description */
+
+        if (cname == NULL)                              /* if there is no description */
+            cname = "";                                 /*   then use a null string */
+
+        fprintf (st, "%02o   %-4s   %s\n", sc, dname, cname);   /* report the interface in the slot */
+        }
+
+return SCPE_OK;                                         /* return success status */
+}
+
+
+/* Show the instruction execution trace criteria.
+
+   This display routine is called to show the criteria that select instruction
+   execution tracing.  The "st" parameter is the open output stream.  The other
+   parameters are not used.
+
+   This routine services an extended modifier entry, so it must add the trailing
+   newline to the output before returning.
+*/
+
+static t_stat show_exec (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+{
+uint32 radix;
+
+if (exec_mask == 0)                                     /* if the instruction is entirely masked */
+    fputs ("Execution trace disabled\n", st);           /*   then report that matching is disabled */
+
+else {                                                  /* otherwise */
+    if (sim_switches & SWMASK ('O'))                    /*   if an octal override is present */
+        radix = 8;                                      /*     then print the value in base 8 */
+    else if (sim_switches & SWMASK ('D'))               /*   otherwise if a decimal override is present */
+        radix = 10;                                     /*     then print the value in base 10 */
+    else if (sim_switches & SWMASK ('H'))               /*   otherwise if a hex override is present */
+        radix = 16;                                     /*     then print the value in base 16 */
+    else                                                /*   otherwise */
+        radix = cpu_dev.dradix;                         /*     use the current CPU data radix */
+
+    fputs ("Execution trace match = ", st);                         /* print the label */
+    fprint_val (st, exec_match, radix, cpu_dev.dwidth, PV_RZRO);    /*   and the match value */
+
+    fputs (", mask = ", st);                                        /* print a separator */
+    fprint_val (st, exec_mask, radix, cpu_dev.dwidth, PV_RZRO);     /*   and the mask value */
+
+    fputc ('\n', st);                                               /* tie off the line */
+    }
+
+return SCPE_OK;                                         /* report the success of the display */
+}
+
+
+/* Show the current CPU simulation speed.
+
+   This display routine is called to show the current simulation speed.  The
+   "st" parameter is the open output stream.  The other parameters are not used.
+
+   The CPU speed, expressed as a multiple of the hardware speed, is calculated
+   by the console poll service routine.  It is only representative when the CPU
+   is not idling.
+*/
+
+static t_stat show_speed (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
+{
+fprintf (st, "Simulation speed = %ux\n", cpu_speed);    /* display the current CPU speed */
+return SCPE_OK;                                         /*   and report success */
+}
+
+
+
+/* CPU local utility routine declarations */
+
+
+/* Execute one machine instruction.
+
+   This routine executes the CPU instruction present in the IR.  The CPU state
+   (registers, memory, interrupt status) is modified as necessary, and the
+   routine return SCPE_OK if the instruction executed successfully.  Any other
+   status indicates that execution should cease, and control should return to
+   the simulator console.  For example, a programmed HALT instruction returns
+   STOP_HALT status.
+
+   This routine implements the main instruction dispatcher.  Instructions
+   corresponding to the MRG, SRG, and ASG are executed inline.  IOG, EAG, and
+   UIG instructions are executed by external handlers.
+
+   The JMP instruction executor handles CPU idling.  The 21xx/1000 CPUs have no
+   "wait for interrupt" instruction.  Idling in HP operating systems consists of
+   sitting in "idle loops" that end with JMP instructions.  We test for certain
+   known patterns when a JMP instruction is executed to decide if the simulator
+   should idle.
+
+   Idling must not occur if an interrupt is pending.  As mentioned before, the
+   CPU will defer pending interrupts when certain instructions are executed.  OS
+   interrupt handlers exit via such deferring instructions.  If there is a
+   pending interrupt when the OS is otherwise idle, the idle loop will execute
+   one instruction before reentering the interrupt handler.  If we call
+   sim_idle() in this case, we will lose interrupts.
+
+   Consider the situation in RTE.  Under simulation, the TTY and TBG events are
+   co-scheduled, so their event routines are called sequentially during a single
+   "sim_process_event" call.  If the TTY has received an input character from
+   the console poll, then both devices are ready to interrupt.  Assume that the
+   TTY has priority.  When the TTY interrupts, $CIC in RTE is entered.  The TBG
+   interrupt is held off through the JSB $CIC,I / JMP $CIC0,I / SFS 0,C
+   instruction entry sequence, which defers interrupts until the interrupt
+   system is turned off.  When $CIC returns via $IRT, one instruction of the
+   idle loop is executed, even though the TBG interrupt is still pending,
+   because the UJP instruction used to return also defers interrupts.
+
+   If "sim_idle" is called at this point, the simulator will sleep when it
+   should be handling the pending TBG interrupt.  When it awakes, TTY expiration
+   will be moved forward to the next instruction.  The still-pending TBG
+   interrupt will then be recognized, and $CIC will be entered.  But the TTY and
+   TBG will then expire and attempt to interrupt again, although they are
+   deferred by the $CIC entry sequence.  This causes the second TBG interrupt to
+   be missed, as processing of the first one is just now being started.
+
+   Similarly, at the end of the TBG handling, the TTY interrupt is still
+   pending.  When $IRT returns to the idle loop, "sim_idle" would be called
+   again, so the TTY and then TBG interrupt a third time.  Because the second
+   TTY interrupt is still pending, $CIC is entered, but the third TTY interrupt
+   is lost.
+
+   We solve this problem by testing for a pending interrupt before calling
+   "sim_idle".  The system isn't really quiescent if it is just about to handle
+   an interrupt.
+
+
+   Implementation notes:
+
+    1. Instruction decoding is based on the HP 1000, which does a 256-way branch
+       on the upper eight bits of the instruction, as follows:
+
+         15 14 13 12 11 10  9  8  Instruction Group
+         -- -- -- -- -- -- -- --  -------------------------------------------
+          x  n  n  n  x  x  x  x  Memory Reference (n n n not equal to 0 0 0)
+          0  0  0  0  x  0  x  x  Shift-Rotate
+          0  0  0  0  x  1  x  x  Alter-Skip
+          1  0  0  0  x  1  x  x  I/O
+          1  0  0  0  0  0  x  0  Extended Arithmetic
+          1  0  0  0  0  0  0  1  divide (decoded as 100400)
+          1  0  0  0  1  0  0  0  double load (decoded as 104000)
+          1  0  0  0  1  0  0  1  double store (decoded as 104400)
+          1  0  0  0  1  0  1  0  Extended Instruction 0 (A/B is set)
+          1  0  0  0  x  0  1  1  Extended Instruction 1 (A/B is ignored)
+
+    2. JSB is tricky.  It is possible to generate both an MP and a DM violation
+       simultaneously, as the MP and MEM cards validate in parallel.  Consider a
+       JSB to a location under the MP fence and on a write-protected page.  This
+       situation must be reported as a DM violation, because it has priority
+       (SFS 5 and SFC 5 check only the MEVFF, which sets independently of the MP
+       fence violation).  Under simulation, this means that DM violations must
+       be checked, and the MEVFF must be set, before an MP abort is taken.  This
+       is done by the "mp_check_jmp" routine.
+
+    3. Although MR (and TR) will be changed by reads of an indirect chain, the
+       idle loop JMP will be direct, and so MR will contain the correct value
+       for the "idle loop omitted" trace message.
+
+    4. The Alter-Skip Group RSS micro-op reverses the skip sense of the SEZ,
+       SSA/SSB, SLA/SLB, and SZA/SZB micro-op tests.  Normally, the instruction
+       skips if any test is true.  However, the specific combination of SSA/SSB,
+       SLA/SLB, and RSS micro-ops causes a skip if BOTH of the skip cases are
+       true, i.e., if both the MSB and LSB of the register value are ones.  We
+       handle this as a special case, because without RSS, the instruction skips
+       if EITHER the MSB or LSB is zero.  The other reversed skip cases (SEZ,RSS
+       and SZA,RSS/SZB,RSS) are independent.
+*/
+
+static t_stat machine_instruction (t_bool int_ack, uint32 *idle_save)
+{
+uint32  ab_selector, result, skip;
+HP_WORD data;
+t_bool  rss;
+t_stat  status = SCPE_OK;
+
+switch (UPPER_BYTE (IR)) {                              /* dispatch on bits 15-8 of the instruction */
+
+/* Memory Reference Group */
+
+    case 0020: case 0021: case 0022: case 0023:         /* AND */
+    case 0024: case 0025: case 0026: case 0027:
+    case 0220: case 0221: case 0222: case 0223:         /* AND,I */
+    case 0224: case 0225: case 0226: case 0227:
+        status = mrg_address ();                        /* get the memory referemce address */
+
+        if (status == SCPE_OK)                          /* if the address resolved */
+            AR = AR & ReadW (MR);                       /*   then AND the accumulator and memory */
+        break;
+
+
+    case 0230: case 0231: case 0232: case 0233:         /* JSB,I */
+    case 0234: case 0235: case 0236: case 0237:
+        cpu_interrupt_enable = CLEAR;                   /* defer interrupts */
+
+    /* fall through into the JSB case */
+
+    case 0030: case 0031: case 0032: case 0033:         /* JSB */
+    case 0034: case 0035: case 0036: case 0037:
+        status = mrg_address ();                        /* get the memory referemce address */
+
+        if (status == SCPE_OK) {                        /* if the address resolved */
+            mp_check_jsb (MR);                          /*   then validate the jump address */
+
+            WriteW (MR, PR);                            /* store P into the target memory address */
+
+            PCQ_ENTRY;                                  /* save P in the queue */
+            PR = MR + 1 & LA_MASK;                      /*   and jump to the word after the target address */
+            }
+        break;
+
+
+    case 0040: case 0041: case 0042: case 0043:         /* XOR */
+    case 0044: case 0045: case 0046: case 0047:
+    case 0240: case 0241: case 0242: case 0243:         /* XOR,I */
+    case 0244: case 0245: case 0246: case 0247:
+        status = mrg_address ();                        /* get the memory referemce address */
+
+        if (status == SCPE_OK)                          /* if the address resolved */
+            AR = AR ^ ReadW (MR);                       /*   then XOR the accumulator and memory */
+        break;
+
+
+    case 0250: case 0251: case 0252: case 0253:         /* JMP,I */
+    case 0254: case 0255: case 0256: case 0257:
+        cpu_interrupt_enable = CLEAR;                   /* defer interrupts */
+
+    /* fall through into the JMP case */
+
+    case 0050: case 0051: case 0052: case 0053:         /* JMP */
+    case 0054: case 0055: case 0056: case 0057:
+        status = mrg_address ();                        /* get the memory referemce address */
+
+        if (status != SCPE_OK)                          /* if the address failed to resolve */
+            break;                                      /*   then abort execution */
+
+        mp_check_jmp (MR, 0);                           /* validate the jump address */
+
+        if (sim_idle_enab && interrupt_request == 0     /* if idle is enabled and no interrupt is pending */
+          && mem_is_idle_loop ()) {                     /*   and execution is in the DOS or RTE idle loop */
+            tprintf (cpu_dev, cpu_dev.dctrl,
+                     DMS_FORMAT "idle loop execution omitted\n",
+                     meu_indicator, meu_page, MR, IR);
+
+            if (cpu_dev.dctrl != 0) {                   /*     then if tracing is enabled */
+                *idle_save = cpu_dev.dctrl;             /*       then save the current trace flag set */
+                cpu_dev.dctrl = 0;                      /*         and turn off tracing for the idle loop */
+                }
+
+            sim_idle (TMR_POLL, FALSE);                 /* idle the simulator */
+            }
+
+        PCQ_ENTRY;                                      /* save P in the queue */
+        PR = MR;                                        /*   and jump to the target address */
+        break;
+
+
+    case 0060: case 0061: case 0062: case 0063:         /* IOR */
+    case 0064: case 0065: case 0066: case 0067:
+    case 0260: case 0261: case 0262: case 0263:         /* IOR,I */
+    case 0264: case 0265: case 0266: case 0267:
+        status = mrg_address ();                        /* get the memory referemce address */
+
+        if (status == SCPE_OK)                          /* if the address resolved */
+            AR = AR | ReadW (MR);                       /*   then OR the accumulator and memory */
+        break;
+
+
+    case 0070: case 0071: case 0072: case 0073:         /* ISZ */
+    case 0074: case 0075: case 0076: case 0077:
+    case 0270: case 0271: case 0272: case 0273:         /* ISZ,I */
+    case 0274: case 0275: case 0276: case 0277:
+        status = mrg_address ();                        /* get the memory referemce address */
+
+        if (status == SCPE_OK) {                        /* if the address resolved */
+            data = ReadW (MR) + 1 & D16_MASK;           /*   then increment the memory word */
+            WriteW (MR, data);                          /*     and write it back */
+
+            if (data == 0)                              /* if the value rolled over to zero */
+                PR = PR + 1 & LA_MASK;                  /*   then increment P */
+            }
+        break;
+
+
+    case 0100: case 0101: case 0102: case 0103:         /* ADA */
+    case 0104: case 0105: case 0106: case 0107:
+    case 0300: case 0301: case 0302: case 0303:         /* ADA,I */
+    case 0304: case 0305: case 0306: case 0307:
+        status = mrg_address ();                        /* get the memory referemce address */
+
+        if (status == SCPE_OK) {                        /* if the address resolved */
+            data = ReadW (MR);                          /*   then get the target word */
+            result = AR + data;                         /*     and add the accumulator to memory */
+
+            if (result > D16_UMAX)                      /* if the result overflowed */
+                E = 1;                                  /*   then set the Extend register */
+
+            if (~(AR ^ data) & (AR ^ result) & D16_SIGN)    /* if the sign of the result differs from the signs */
+                O = 1;                                      /*   of the operands, then set the Overflow register */
+
+            AR = result & R_MASK;                       /* store the sum into the accumulator */
+            }
+        break;
+
+
+    case 0110: case 0111: case 0112: case 0113:         /* ADB */
+    case 0114: case 0115: case 0116: case 0117:
+    case 0310: case 0311: case 0312: case 0313:         /* ADB,I */
+    case 0314: case 0315: case 0316: case 0317:
+        status = mrg_address ();                        /* get the memory referemce address */
+
+        if (status == SCPE_OK) {                        /* if the address resolved */
+            data = ReadW (MR);                          /*   then get the target word */
+            result = BR + data;                         /*     and add the accumulator to memory */
+
+            if (result > D16_UMAX)                      /* if the result overflowed */
+                E = 1;                                  /*   then set the Extend register */
+
+            if (~(BR ^ data) & (BR ^ result) & D16_SIGN)    /* if the sign of the result differs from the signs */
+                O = 1;                                      /*   of the operands, then set the Overflow register */
+
+            BR = result & R_MASK;                       /* store the sum into the accumulator */
+            }
+        break;
+
+
+    case 0120: case 0121: case 0122: case 0123:         /* CPA */
+    case 0124: case 0125: case 0126: case 0127:
+    case 0320: case 0321: case 0322: case 0323:         /* CPA,I */
+    case 0324: case 0325: case 0326: case 0327:
+        status = mrg_address ();                        /* get the memory referemce address */
+
+        if (status == SCPE_OK)                          /* if the address resolved */
+            if (AR != ReadW (MR))                       /*   then if the accumulator and memory differ */
+                PR = PR + 1 & LA_MASK;                  /*     then increment P */
+        break;
+
+
+    case 0130: case 0131: case 0132: case 0133:         /* CPB */
+    case 0134: case 0135: case 0136: case 0137:
+    case 0330: case 0331: case 0332: case 0333:         /* CPB,I */
+    case 0334: case 0335: case 0336: case 0337:
+        status = mrg_address ();                        /* get the memory referemce address */
+
+        if (status == SCPE_OK)                          /* if the address resolved */
+            if (BR != ReadW (MR))                       /*   then if the accumulator and memory differ */
+                PR = PR + 1 & LA_MASK;                  /*     then increment P */
+        break;
+
+
+    case 0140: case 0141: case 0142: case 0143:         /* LDA */
+    case 0144: case 0145: case 0146: case 0147:
+    case 0340: case 0341: case 0342: case 0343:         /* LDA,I */
+    case 0344: case 0345: case 0346: case 0347:
+        status = mrg_address ();                        /* get the memory referemce address */
+
+        if (status == SCPE_OK)                          /* if the address resolved */
+            AR = ReadW (MR);                            /*   then load the accumulator from memory */
+        break;
+
+
+    case 0150: case 0151: case 0152: case 0153:         /* LDB */
+    case 0154: case 0155: case 0156: case 0157:
+    case 0350: case 0351: case 0352: case 0353:         /* LDB,I */
+    case 0354: case 0355: case 0356: case 0357:
+        status = mrg_address ();                        /* get the memory referemce address */
+
+        if (status == SCPE_OK)                          /* if the address resolved */
+            BR = ReadW (MR);                            /*   then load the accumulator from memory */
+        break;
+
+
+    case 0160: case 0161: case 0162: case 0163:         /* STA */
+    case 0164: case 0165: case 0166: case 0167:
+    case 0360: case 0361: case 0362: case 0363:         /* STA,I */
+    case 0364: case 0365: case 0366: case 0367:
+        status = mrg_address ();                        /* get the memory referemce address */
+
+        if (status == SCPE_OK)                          /* if the address resolved */
+            WriteW (MR, AR);                            /*   then write the accumulator to memory */
+        break;
+
+
+    case 0170: case 0171: case 0172: case 0173:         /* STB */
+    case 0174: case 0175: case 0176: case 0177:
+    case 0370: case 0371: case 0372: case 0373:         /* STB,I */
+    case 0374: case 0375: case 0376: case 0377:
+        status = mrg_address ();                        /* get the memory referemce address */
+
+        if (status == SCPE_OK)                          /* if the address resolved */
+            WriteW (MR, BR);                            /*   then write the accumulator to memory */
+        break;
+
+
+/* Alter/Skip Group */
+
+    case 0004: case 0005: case 0006: case 0007:         /* ASG */
+    case 0014: case 0015: case 0016: case 0017:
+        skip = 0;                                       /* assume that no skip is needed */
+
+        rss = (IR & IR_RSS) != 0;                       /* get the Reverse Skip Sense flag */
+
+        ab_selector = AB_SELECT (IR);                   /* get the A/B register selector */
+        data = ABREG [ab_selector];                     /*   and the register data */
+
+        if (IR & IR_CLx)                                /* if the CLA/CLB micro-op is enabled */
+            data = 0;                                   /*   then clear the value */
+
+        if (IR & IR_CMx)                                /* if the CMA/CMB micro-op is enabled */
+            data = data ^ D16_MASK;                     /*   then complement the value */
+
+        if (IR & IR_SEZ && (E == 0) ^ rss)              /* if SEZ[,RSS] is enabled and E is clear [set] */
+            skip = 1;                                   /*   then skip the next instruction */
+
+        if (IR & IR_CLE)                                /* if the CLE micro-op is enabled */
+            E = 0;                                      /*   then clear E */
+
+        if (IR & IR_CME)                                /* if the CME micro-op is enabled */
+            E = E ^ LSB;                                /*   then complement E */
+
+        if ((IR & IR_SSx_SLx_RSS) == IR_SSx_SLx_RSS) {  /* if the SSx, SLx, and RSS micro-ops are enabled together */
+            if ((data & D16_SIGN_LSB) == D16_SIGN_LSB)  /*   then if both sign and least-significant bits are set */
+                skip = 1;                               /*     then skip the next instruction */
+            }
+
+        else {                                              /* otherwise */
+            if (IR & IR_SSx && !(data & D16_SIGN) ^ rss)    /*   if SSx[,RSS] is enabled and the MSB is clear [set] */
+                skip = 1;                                   /*     then skip the next instruction */
+
+            if (IR & IR_SLx && !(data & LSB) ^ rss)     /*   if SLx[,RSS] is enabled and the LSB is clear [set] */
+                skip = 1;                               /*     then skip the next instruction */
+            }
+
+        if (IR & IR_INx) {                              /* if the INA/INB micro-op is enabled */
+            data = data + 1 & D16_MASK;                 /*   then increment the value */
+
+            if (data == 0)                              /* if the value wrapped around to zero */
+                E = 1;                                  /*   then set the Extend register */
+
+            else if (data == D16_SIGN)                  /* otherwise if the value overflowed into the sign bit */
+                O = 1;                                  /*   then set the Overflow register */
+            }
+
+        if (IR & IR_SZx && (data == 0) ^ rss)           /* if SZx[,RSS] is enabled and the value is zero [non-zero] */
+            skip = 1;                                   /*   then skip the next instruction */
+
+        if ((IR & IR_ALL_SKIPS) == IR_RSS)              /* if RSS is present without any other skip micro-ops */
+            skip = 1;                                   /*   then skip the next instruction unconditionally */
+
+        ABREG [ab_selector] = data;                     /* store the result in the selected register */
+        PR = PR + skip & LA_MASK;                       /*   and skip the next instruction if indicated */
+        break;
+
+
+/* Shift/Rotate Group */
+
+    case 0000: case 0001: case 0002: case 0003:         /* SRG */
+    case 0010: case 0011: case 0012: case 0013:
+        ab_selector = AB_SELECT (IR);                   /* get the A/B register selector */
+        data = ABREG [ab_selector];                     /*   and the register data */
+
+        data = srg_uop (data, SRG1 (IR));               /* do the first shift */
+
+        if (IR & SRG_CLE)                               /* if the CLE micro-op is enabled */
+            E = 0;                                      /*   then clear E */
+
+        if (IR & SRG_SLx && (data & LSB) == 0)          /* if SLx is enabled and the LSB is clear */
+            PR = PR + 1 & LA_MASK;                      /*   then skip the next instruction */
+
+        ABREG [ab_selector] = srg_uop (data, SRG2 (IR));    /* do the second shift and set the accumulator */
+        break;
+
+
+/* I/O Group */
+
+    case 0204: case 0205: case 0206: case 0207:         /* IOG */
+    case 0214: case 0215: case 0216: case 0217:
+        status = cpu_iog (IR);                          /* execute the I/O instruction */
+        break;
+
+
+/* Extended Arithmetic Group */
+
+    case 0200:                                          /* EAU group 0 */
+    case 0201:                                          /* DIV */
+    case 0202:                                          /* EAU group 2 */
+    case 0210:                                          /* DLD */
+    case 0211:                                          /* DST */
+        status = cpu_eau ();                            /* execute the extended arithmetic instruction */
+        break;
+
+
+/* User Instruction Group */
+
+    case 0212:                                              /* UIG 0 */
+        status = cpu_uig_0 (interrupt_request, int_ack);    /* execute the user instruction opcode */
+        break;
+
+
+    case 0203:
+    case 0213:                                          /* UIG 1 */
+        status = cpu_uig_1 (interrupt_request);         /* execute the user instruction opcode */
+        break;
+    }                                                   /* all cases are handled */
+
+
+return status;                                          /* return the execution status */
+}
+
+
+/* Get the effective address from an MRG instruction.
+
+   Memory references are contained in bits 15, 10, and 9-0 of instructions in
+   the Memory Reference Group.  Bits 9-0 specify one of 1024 locations within
+   either the base page (if bit 10 is 0) or the current page (if bit 10 is 1).
+   If bit 15 is 0, the address is direct.  If bit 15 is 1, then the address is
+   indirect and specifies the location containing the target address.  That
+   address itself may be direct or indirect as indicated by bit 15, with bits
+   14-0 specifying a location within the 32K logical address space.
+
+   On entry, the instruction register (IR) contains the MRG instruction to
+   resolve, and the memory address register (MR) contains the address of the
+   instruction.  This routine examines the instruction; if the address is
+   direct, then the full 15-bit address is returned in the MR register.
+   Otherwise, the indirect chain is followed until the address is direct, a
+   pending interrupt is recognized, or the length of the indirect address chain
+   exceeds the alllowable limit.  The resulting direct address is returned in
+   the MR register.
+*/
+
+static t_stat mrg_address (void)
+{
+if (IR & IR_CP)                                         /* if the instruction specifies the current page */
+    MR = IR & (IR_IND | IR_OFFSET) | MR & MR_PAGE;      /*   then merge the current page and the instruction offset */
+else                                                    /* otherwise */
+    MR = IR & (IR_IND | IR_OFFSET);                     /*   the offset is on the base page */
+
+if (MR & IR_IND)                                        /* if the address is indirect */
+    return cpu_resolve_indirects (TRUE);                /*   then resolve it to a direct address with interruptibility */
+else                                                    /* otherwise */
+    return SCPE_OK;                                     /*   the address in MR is already direct */
+}
+
+
+/* Execute a Shift-Rotate Group micro-operation.
+
+   SRG instructions consist of two shift/rotate micro-operations plus a CLE and
+   a SLA/SLB micro-op.  This routine implements the shift and rotate operation.
+
+   Each of the two shift-rotate operations has an enable bit that must be set to
+   enable the operation.  If the bit is not set, the operation is a NOP, with
+   the exception that an ELA/ELB or ERA/ERB operation alters the E register (but
+   not the A/B register).  We accommodate this by including the enable/disable
+   bit with the three-bit operation code and decode the disabled operations of
+   ELA/ELB and ERA/ERB separately from their enabled operations.
+
+   On entry, "value" is the value of the selected accumulator (A/B), and
+   "operation" is the micro-op and enable bit.  The routine returns the updated
+   accumulator value and modifies the E register as indicated.
+
+
+   Implementation notes:
+
+    1. The enable bit is located adjacent to the three-bit encoded operation for
+       the first shift-rotate micro-op, but it is spaced one bit away from the
+       encoded operation for the second micro-op.  It is faster to decode
+       separate values for each location rather than move the second enable bit
+       adjacent to its encoded operation.  The former imposes no time penalty;
+       the jump table for the "switch" statement is simply somewhat larger.
+*/
+
+static HP_WORD srg_uop (HP_WORD value, HP_WORD operation)
+{
+uint32 extend;
+
+switch (operation) {                                        /* dispatch on the micro operation */
+
+    case SRG1_EN | IR_xLS:
+    case SRG2_EN | IR_xLS:                                  /* ALS/BLS */
+        return value & D16_SIGN | value << 1 & D16_SMAX;    /* arithmetic left shift */
+
+
+    case SRG1_EN | IR_xRS:
+    case SRG2_EN | IR_xRS:                                  /* ARS/BRS */
+        return value & D16_SIGN | value >> 1;               /* arithmetic right shift */
+
+
+    case SRG1_EN | IR_RxL:
+    case SRG2_EN | IR_RxL:                                  /* RAL/RBL */
+        return (value << 1 | value >> 15) & D16_MASK;       /* rotate left */
+
+
+    case SRG1_EN | IR_RxR:
+    case SRG2_EN | IR_RxR:                                  /* RAR/RBR */
+        return (value >> 1 | value << 15) & D16_MASK;       /* rotate right */
+
+
+    case SRG1_EN | IR_xLR:
+    case SRG2_EN | IR_xLR:                                  /* ALR/BLR */
+        return value << 1 & D16_SMAX;                       /* arithmetic left shift, clear sign */
+
+
+    case SRG_DIS | IR_ERx:                                  /* disabled ERA/ERB */
+        E = value & LSB;                                    /* rotate the LSB right into E */
+        return value;                                       /*   and return the original value */
+
+
+    case SRG1_EN | IR_ERx:
+    case SRG2_EN | IR_ERx:                                  /* ERA/ERB */
+        extend = E;                                         /* save the original E value */
+        E = value & LSB;                                    /* rotate the LSB right into E */
+        return value >> 1 | (HP_WORD) extend << 15;         /*   and rotate right with E filling the MSB */
+
+
+    case SRG_DIS | IR_ELx:                                  /* disabled ELA/ELB */
+        E = value >> 15 & LSB;                              /* rotate the MSB left into E */
+        return value;                                       /*   and return the original value */
+
+
+    case SRG1_EN | IR_ELx:
+    case SRG2_EN | IR_ELx:                                  /* ELA/ELB */
+        extend = E;                                         /* save the original E value */
+        E = value >> 15 & LSB;                              /* rotate the MSB left into E */
+        return (value << 1 | (HP_WORD) extend) & D16_MASK;  /*   and rotate left with E filling the LSB */
+
+
+    case SRG1_EN | IR_xLF:
+    case SRG2_EN | IR_xLF:                                  /* ALF/BLF */
+        return (value << 4 | value >> 12) & D16_MASK;       /* rotate left four */
+
+
+    default:                                                /* all other (disabled) cases */
+        return value;                                       /*   return the original value */
+    }
+}
+
+
+/* Reenable interrupt recognition.
+
+   Certain instructions clear the "cpu_interrupt_enable" flag to defer
+   recognition of pending interrupts until the succeeding instruction completes.
+   However, the interrupt deferral rules differ for the 21xx vs. the 1000.
+
+   The 1000 always defers until the completion of the instruction following the
+   deferring instruction.  The 21xx defers unless the following instruction is
+   an MRG instruction other than JMP or JMP,I or JSB,I.  If it is, then the
+   deferral is inhibited, i.e., the pending interrupt will be recognized.
+
+   In either case, if the interrupting device is the memory protect card, or if
+   the INT jumper is out on the 12892B MP card, then a pending interrupt is
+   always recognized, regardless of the "cpu_interrupt_enable" flag setting.
+
+   See the "Set Phase Logic Flowchart" for the transition from phase 1A to phase
+   1B, and "Section III Theory of Operation," "Control Section Detailed Theory"
+   division, "Phase Control Logic" subsection, "Phase 1B" paragraph (3-241) in
+   the Model 2100A Computer Installation and Maintenance Manual for details.
+*/
+
+static t_bool reenable_interrupts (void)
+{
+HP_WORD next_instruction;
+
+if (!(cpu_configuration & CPU_1000)) {                  /* if the CPU is a 21xx model */
+    next_instruction = mem_fast_read (PR, Current_Map); /*   then prefetch the next instruction */
+
+    if (MRGOP (next_instruction)                        /* if it is an MRG instruction */
+      && (next_instruction & IR_MRG_I) != IR_JSB_I      /*   but not JSB,I */
+      && (next_instruction & IR_MRG)   != IR_JMP)       /*   and not JMP or JMP,I */
+        return TRUE;                                    /*     then reenable interrupts */
+    }
+
+if (interrupt_request == MPPE || mp_reenable_interrupts ()) /* if MP is interrupting or the INT jumper is out */
+    return TRUE;                                            /*   then reenable interrupts */
+else                                                        /* otherwise */
+    return FALSE;                                           /*   interrupts remain disabled */
+}
+
+
+
+/* I/O subsystem local utility routine declarations */
+
+
+/* Initialize the I/O system.
+
+   This routine is called in the instruction prelude to set up the I/O access
+   table prior to beginning execution.  The table is indexed by select code, and
+   each entry records pointers to the device and DIB structures assoicated with
+   that select code.  This allows fast access to the device trace flags and to
+   the device interface routine by the I/O instruction executors, respectively.
+
+   As part of the device scan, the sizes of the largest device name and active
+   trace flag name among the devices enabled for tracing are accumulated for use
+   in aligning the trace statements.
+
+   The "is_executing" parameter indicates whether or not initialization is being
+   performed from the instruction execution prelude.  If it is, the routine also
+   sets the priority holdoff and interrupt request bit vectors by asserting the
+   SIR signal to each enabled device interface routine.  Sending SIR to all
+   devices will set the "interrupt_request" variable if an interrupt is pending,
+   so no explicit poll is needed after initialization.
+
+   After initializing the I/O access table, a check is made for device
+   conflicts.  These occur if two or more devices are assigned to the same
+   select code.
+
+   Each select code must be unique among the enabled devices.  This requirement
+   is checked as part of the instruction execution prelude; this allows the user
+   to exchange two select codes simply by setting each device to the other's
+   select code.  If conflicts were enforced instead at the time the codes were
+   entered, the first device would have to be set to an unused select code
+   before the second could be set to the first device's code.
+
+   If any conflicts exist, the device table is scanned to find the DIBs whose
+   select codes match the conflicting values, and the device names associated
+   with the conflicts are printed.
+
+   This routine returns the success or failure of I/O initialization; failure
+   is reported if any select code conflicts exist.
+
+
+   Implementation notes:
+
+    1. If this routine is called from the instruction prelude, the console and
+       optional log file have already been put into "raw" output mode.
+       Therefore, newlines are not translated to the correct line ends on
+       systems that require it.  Before reporting a conflict, "sim_ttcmd" is
+       called to restore the console and log file translation.  This is OK
+       because a conflict will abort the run and return to the command line
+       anyway.
+
+    2. sim_dname is called instead of using dptr->name directly to ensure that
+       we pick up an assigned logical device name.
+
+    3. Only the names of active trace (debug) options are accumulated to produce
+       the most compact trace log.  However, if the CPU device's EXEC option is
+       enabled, then all of the CPU option names are accumulated, as EXEC
+       enables all trace options for a given instruction or instruction class.
+*/
+
+static t_bool initialize_io (t_bool is_executing)
+{
+DEVICE       *dptr;
+DIB          *dibptr;
+const DEBTAB *tptr;
+uint32       dev, sc, count;
+size_t       device_length, flag_length, device_size, flag_size;
+t_bool       is_conflict = FALSE;
+
+interrupt_request_set [0] = interrupt_request_set [1] = 0;  /* clear all interrupt requests */
+priority_holdoff_set  [0] = priority_holdoff_set  [1] = 0;  /* clear all priority inhibits */
+
+device_size = 0;                                        /* reset the device and flag name sizes */
+flag_size = 0;                                          /*   to those of the devices actively tracing */
+
+memset (&iot [2], 0, sizeof iot - 2 * sizeof iot [0]);  /* clear the I/O pointer table */
+
+for (dev = 0; sim_devices [dev] != NULL; dev++) {       /* loop through all of the devices */
+    dptr = sim_devices [dev];                           /* get a pointer to the device */
+    dibptr = (DIB *) dptr->ctxt;                        /*   and to that device's DIB */
+
+    if (dibptr != NULL && !(dptr->flags & DEV_DIS)) {   /* if the DIB exists and the device is enabled */
+        sc = dibptr->select_code;
+        iot [sc].devptr = dptr;                         /*   then set the device pointer into the device table */
+        iot [sc].dibptr = dibptr;                       /*     and set the DIB pointer into the dispatch table */
+
+        if (sc >= SC_VAR && ++iot [sc].references > 1)  /* increment the count of references; if more than one */
+            is_conflict = TRUE;                         /*   then a conflict occurs */
+
+        if (is_executing)                               /* if the CPU is executing instructions */
+            io_assert (dptr, ioa_SIR);                  /*   then set the interrupt request state */
+        }
+
+    if (sim_deb && dptr->dctrl) {                       /* if tracing is active for this device */
+        device_length = strlen (sim_dname (dptr));      /*   then get the length of the device name */
+
+        if (device_length > device_size)                /* if it's greater than the current maximum */
+            device_size = device_length;                /*   then reset the size */
+
+        if (dptr->debflags)                             /* if the device has a trace flags table */
+            for (tptr = dptr->debflags;                 /*   then scan the table */
+                 tptr->name != NULL; tptr++)
+                if (dev == 0 && dptr->dctrl & TRACE_EXEC    /* if the CPU device is tracing executions */
+                  || tptr->mask & dptr->dctrl) {            /*   or this trace option is active */
+                    flag_length = strlen (tptr->name);      /*     then get the flag name length */
+
+                    if (flag_length > flag_size)            /* if it's greater than the current maximum */
+                        flag_size = flag_length;            /*   then reset the size */
+                    }
         }
     }
 
-else if ((!is_enabled) && (enable == 1)) {              /* enable loader? */
-    for (i = 0; i < IBL_LNT; i++)                       /* copy loader */
-        M[fwanxm + i] = loader[i];                      /* to memory */
-    fwanxm = (uint32) MEMSIZE;                          /* increase available memory */
+
+if (is_conflict) {                                      /* if a conflict exists */
+    if (is_executing)                                   /*   then if execution has started */
+        sim_ttcmd ();                                   /*     then restore the console and log I/O mode */
+
+    for (sc = 0; sc <= SC_MAX; sc++)                    /* search the conflict table for the next conflict */
+        if (iot [sc].references > 1) {                  /* if a conflict is present for this value */
+            count = iot [sc].references;                /*   then get the number of conflicting devices */
+
+            cprintf ("Select code %o conflict (", sc);  /* report the multiply-assigned select code */
+
+            for (dev = 0; sim_devices [dev] != NULL; dev++) {   /* loop through all of the devices */
+                dptr = sim_devices [dev];                       /* get a pointer to the device */
+                dibptr = (DIB *) dptr->ctxt;                    /*   and to that device's DIB */
+
+                if (dibptr != NULL && !(dptr->flags & DEV_DIS)  /* if the DIB exists and the device is enabled */
+                  && dibptr->select_code == sc) {               /*   to find the conflicting entries */
+                    if (count < iot [sc].references)            /*     and report them to the console */
+                        cputs (" and ");
+
+                    cputs (sim_dname (dptr));           /* report the conflicting device name */
+                    count = count - 1;                  /*   and drop the count of remaining conflicts */
+
+                    if (count == 0)                     /* if all devices have been reported */
+                        break;                          /*   then there's no need to look farther */
+                    }
+                }                                       /* loop until all conflicting devices are reported */
+
+            cputs (")\n");                              /* tie off the line */
+            }                                           /*   and continue to look for other conflicting select codes */
+
+    return FALSE;                                       /* report that initialization has failed */
     }
 
-return SCPE_OK;
-}
+else {                                                  /* otherwise no conflicts were found */
+    iot [PWR].devptr = &cpu_dev;                        /* for now, powerfail is always present */
+    iot [PWR].dibptr = &pwrf_dib;                       /*   and is controlled by the CPU */
 
-
-/* Idle enable/disable */
-
-t_stat cpu_set_idle (UNIT *uptr, int32 option, char *cptr, void *desc)
-{
-    if (option)
-        return sim_set_idle (uptr, 10, NULL, NULL);
-    else
-        return sim_clr_idle (uptr, 0, NULL, NULL);
-}
-
-
-/* Idle display */
-
-t_stat cpu_show_idle (FILE *st, UNIT *uptr, int32 val, void *desc)
-{
-    return sim_show_idle (st, uptr, val, desc);
-}
-
-
-/* IBL routine (CPU boot) */
-
-t_stat cpu_boot (int32 unitno, DEVICE *dptr)
-{
-int32 dev = (SR >> IBL_V_DEV) & I_DEVMASK;
-int32 sel = (SR >> IBL_V_SEL) & IBL_M_SEL;
-
-if (dev < 010)
-    return SCPE_NOFNC;
-
-switch (sel) {
-
-    case 0:                                             /* PTR boot */
-        ibl_copy (ptr_rom, dev, IBL_S_NOCLR, IBL_S_NOSET);
-        break;
-
-    case 1:                                             /* DP/DQ boot */
-        ibl_copy (dq_rom, dev, IBL_S_NOCLR, IBL_S_NOSET);
-        break;
-
-    case 2:                                             /* MS boot */
-        ibl_copy (ms_rom, dev, IBL_S_NOCLR, IBL_S_NOSET);
-        break;
-
-    case 3:                                             /* DS boot */
-        ibl_copy (ds_rom, dev, IBL_S_NOCLR, IBL_S_NOSET);
-        break;
+    if (iot [DMA1].devptr) {                            /* if the first DMA channel is enabled */
+        iot [DMALT1] = iot [DMA1];                      /*   then set up  */
+        iot [DMALT1].dibptr++;                          /*     the secondary device handler */
         }
 
-return SCPE_OK;
-}
+    if (iot [DMA2].devptr) {                            /* if the second DMA channel is enabled */
+        iot [DMALT2] = iot [DMA2];                      /*   then set up  */
+        iot [DMALT2].dibptr++;                          /*     the secondary device handler */
+        }
 
-
-/* IBL boot ROM copy
-
-   - Use memory size to set the initial PC and base of the boot area
-   - Copy boot ROM to memory, updating I/O instructions
-   - Place 2s complement of boot base in last location
-   - Modify S register as indicated
-
-   Notes:
-   - Boot ROMs must be assembled with a device code of 10 (10 and 11 for
-     devices requiring two codes)
-*/
-
-t_stat ibl_copy (const BOOT_ROM rom, int32 dev, uint32 sr_clear, uint32 sr_set)
-{
-int32 i;
-uint16 wd;
-
-cpu_set_ldr (NULL, TRUE, NULL, NULL);                   /* enable loader (ignore errors) */
-
-if (dev < 010)                                          /* valid device? */
-    return SCPE_ARG;
-
-PC = ((MEMSIZE - 1) & ~IBL_MASK) & VAMASK;              /* start at mem top */
-
-for (i = 0; i < IBL_LNT; i++) {                         /* copy bootstrap */
-    wd = rom[i];                                        /* get word */
-
-    if (((wd & I_NMRMASK) == I_IO) &&                   /* IO instruction? */
-        ((wd & I_DEVMASK) >= 010) &&                    /* dev >= 10? */
-        (I_GETIOOP (wd) != soHLT))                      /* not a HALT? */
-        M[PC + i] = (wd + (dev - 010)) & DMASK;         /* change dev code */
-
-    else                                                /* leave unchanged */
-        M[PC + i] = wd;
+    hp_initialize_trace (device_size, flag_size);       /* initialize the trace routine */
+    return TRUE;                                        /*   and report that initialization has succeeded */
     }
-
-M[PC + IBL_DPC] = (M[PC + IBL_DPC] + (dev - 010)) & DMASK;  /* patch DMA ctrl */
-M[PC + IBL_END] = (~PC + 1) & DMASK;                        /* fill in start of boot */
-
-SR = (SR & sr_clear) | sr_set;                          /* modify the S register as indicated */
-
-return SCPE_OK;
 }

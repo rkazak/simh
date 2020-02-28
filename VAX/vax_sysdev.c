@@ -1,6 +1,6 @@
 /* vax_sysdev.c: VAX 3900 system-specific logic
 
-   Copyright (c) 1998-2013, Robert M Supnik
+   Copyright (c) 1998-2019, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -33,6 +33,7 @@
    cmctl        memory controller
    sysd         system devices (SSC miscellany)
 
+   05-May-19    RMS     Removed Qbus memory space from register space
    20-Dec-13    RMS     Added unaligned register space access routines
    23-Dec-10    RMS     Added power clear call to boot routine (Mark Pizzolato)
    25-Oct-05    RMS     Automated CMCTL extended memory
@@ -56,6 +57,8 @@
 
 #include "vax_defs.h"
 
+#include <math.h>
+
 #ifdef DONT_USE_INTERNAL_ROM
 #define BOOT_CODE_FILENAME "ka655x.bin"
 #else /* !DONT_USE_INTERNAL_ROM */
@@ -65,7 +68,7 @@
 #define UNIT_V_NODELAY  (UNIT_V_UF + 0)                 /* ROM access equal to RAM access */
 #define UNIT_NODELAY    (1u << UNIT_V_NODELAY)
 
-t_stat vax_boot (int32 flag, char *ptr);
+t_stat vax_boot (int32 flag, CONST char *ptr);
 int32 sys_model = 0;
 
 /* Special boot command, overrides regular boot */
@@ -153,6 +156,24 @@ CTAB vax_cmd[] = {
 #define SSCCNF_W1C      SSCCNF_BLO
 #define SSCCNF_RW       0x0BF7F777
 
+static BITFIELD ssc_cnf_bits[] = {
+    BITF(ADS1,3),                       /* addr strb-1 NI */
+    BITNC,                              /* unused */
+    BITF(ADS2,3),                       /* addr strb-2 NI */
+    BITNC,                              /* unused */
+    BITF(BAUD1,3),                      /* baud rate-1 NI */
+    BITNC,                              /* unused */
+    BITF(BAUD2,3),                      /* baud rate-2 NI */
+    BIT(CTLP),                          /* ctrl P enb */
+    BITF(ROM,8),                        /* ROM param NI */
+    BITF(IPL,2),                        /* int IPL NI */
+    BITNC,                              /* unused */
+    BIT(IVD),                           /* int dsbl NI */
+    BITNCF(3),                          /* unused */
+    BIT(BLO),                           /* batt low W1C */
+    ENDBITS
+};
+
 /* SSC timeout register */
 
 #define SSCBTO_BTO      0x80000000                      /* timeout W1C */
@@ -177,9 +198,24 @@ CTAB vax_cmd[] = {
 #define TMR_CSR_W1C     (TMR_CSR_ERR | TMR_CSR_DON)
 #define TMR_CSR_RW      (TMR_CSR_IE | TMR_CSR_STP | TMR_CSR_RUN)
 
+static BITFIELD tmr_csr_bits[] = {
+    BIT(RUN),                           /* run */
+    BITNC,                              /* unused */
+    BIT(STP),                           /* stop */
+    BITNC,                              /* unused */
+    BIT(XFR),                           /* xfer */
+    BIT(SGL),                           /* Single */
+    BIT(IE),                            /* Interrupt Enable */
+    BIT(DON),                           /* Xmit Ready */
+    BITNCF(23),                         /* unused */
+    BIT(ERR),                           /* Xmit Ready */
+    ENDBITS
+};
+
+
 /* SSC timer intervals */
 
-#define TMR_INC         10000                           /* usec/interval */
+#define TMR_INC         10000U                          /* usec/interval */
 
 /* SSC timer vector */
 
@@ -189,22 +225,7 @@ CTAB vax_cmd[] = {
 
 #define SSCADS_MASK     0x3FFFFFFC                      /* match or mask */
 
-extern int32 R[16];
-extern int32 STK[5];
-extern int32 PSL;
-extern int32 SISR;
-extern int32 mapen;
-extern int32 pcq[PCQ_SIZE];
-extern int32 pcq_p;
-extern int32 ibcnt, ppc;
-extern int32 in_ie;
-extern int32 mchk_va, mchk_ref;
-extern int32 fault_PC;
-extern int32 int_req[IPL_HLVL];
-extern UNIT cpu_unit;
 extern UNIT clk_unit;
-extern jmp_buf save_env;
-extern int32 p1;
 extern int32 MSER;
 extern int32 tmr_poll;
 extern DEVICE vc_dev, lk_dev, vs_dev;
@@ -228,12 +249,10 @@ int32 tmr_csr[2] = { 0 };                               /* SSC timers */
 uint32 tmr_tir[2] = { 0 };                              /* curr interval */
 uint32 tmr_tnir[2] = { 0 };                             /* next interval */
 int32 tmr_tivr[2] = { 0 };                              /* vector */
-uint32 tmr_inc[2] = { 0 };                              /* tir increment */
-uint32 tmr_sav[2] = { 0 };                              /* saved inst cnt */
+t_bool tmr_inst[2] = { 0 };                             /* wait instructions vs usecs */
 int32 ssc_adsm[2] = { 0 };                              /* addr strobes */
 int32 ssc_adsk[2] = { 0 };
 int32 cdg_dat[CDASIZE >> 2];                            /* cache data */
-static uint32 rom_delay = 0;
 
 t_stat rom_ex (t_value *vptr, t_addr exta, UNIT *uptr, int32 sw);
 t_stat rom_dep (t_value val, t_addr exta, UNIT *uptr, int32 sw);
@@ -243,7 +262,7 @@ const char *rom_description (DEVICE *dptr);
 t_stat nvr_ex (t_value *vptr, t_addr exta, UNIT *uptr, int32 sw);
 t_stat nvr_dep (t_value val, t_addr exta, UNIT *uptr, int32 sw);
 t_stat nvr_reset (DEVICE *dptr);
-t_stat nvr_attach (UNIT *uptr, char *cptr);
+t_stat nvr_attach (UNIT *uptr, CONST char *cptr);
 t_stat nvr_detach (UNIT *uptr);
 t_stat nvr_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
 const char *nvr_description (DEVICE *dptr);
@@ -274,8 +293,9 @@ int32 cdg_rd (int32 pa);
 void cdg_wr (int32 pa, int32 val, int32 lnt);
 int32 ssc_rd (int32 pa);
 void ssc_wr (int32 pa, int32 val, int32 lnt);
-int32 tmr_tir_rd (int32 tmr, t_bool interp);
+int32 tmr_tir_rd (int32 tmr);
 void tmr_csr_wr (int32 tmr, int32 val);
+int32 tmr_csr_rd (int32 tmr);
 void tmr_sched (int32 tmr);
 void tmr_incr (int32 tmr, uint32 inc);
 int32 tmr0_inta (void);
@@ -290,8 +310,6 @@ extern int32 cqipc_rd (int32 pa);
 extern void cqipc_wr (int32 pa, int32 val, int32 lnt);
 extern int32 cqbic_rd (int32 pa);
 extern void cqbic_wr (int32 pa, int32 val, int32 lnt);
-extern int32 cqmem_rd (int32 pa);
-extern void cqmem_wr (int32 pa, int32 val, int32 lnt);
 extern int32 iccs_rd (void);
 extern int32 todr_rd (void);
 extern int32 rxcs_rd (void);
@@ -319,6 +337,7 @@ REG rom_reg[] = {
     };
 
 MTAB rom_mod[] = {
+    { MTAB_XTD|MTAB_VDV, 0, "ADDRESS", NULL,     NULL, &show_mapped_addr, (void *)ROMBASE, "Display base address" },
     { UNIT_NODELAY, UNIT_NODELAY, "fast access", "NODELAY", NULL, NULL, NULL, "Disable calibrated delay - ROM runs like RAM" },
     { UNIT_NODELAY, 0, "1usec calibrated access", "DELAY",  NULL, NULL, NULL, "Enable calibrated ROM delay - ROM runs slowly" },
     { 0 }
@@ -347,8 +366,13 @@ REG nvr_reg[] = {
     { NULL }
     };
 
+MTAB nvr_mod[] = {
+    { MTAB_XTD|MTAB_VDV, 0, "ADDRESS", NULL,     NULL, &show_mapped_addr, (void *)NVRBASE, "Display base address" },
+    { 0 }
+    };
+
 DEVICE nvr_dev = {
-    "NVR", &nvr_unit, nvr_reg, NULL,
+    "NVR", &nvr_unit, nvr_reg, nvr_mod,
     1, 16, NVRAWIDTH, 4, 16, 32,
     &nvr_ex, &nvr_dep, &nvr_reset,
     NULL, &nvr_attach, &nvr_detach,
@@ -454,21 +478,19 @@ REG sysd_reg[] = {
     { HRDATAD (CACR,   ka_cacr,      8, "second-level cache control register") },
     { HRDATAD (BDR,    ka_bdr,       8, "front panel jumper register") },
     { HRDATAD (BASE,   ssc_base,    29, "SSC base address register") },
-    { HRDATAD (CNF,    ssc_cnf,     32, "SSC configuration register") },
+    { HRDATADF (CNF,   ssc_cnf,     32, "SSC configuration register", ssc_cnf_bits) },
     { HRDATAD (BTO,    ssc_bto,     32, "SSC bus timeout register") },
     { HRDATAD (OTP,    ssc_otp,      4, "SSC output port") },
-    { HRDATAD (TCSR0,  tmr_csr[0],  32, "SSC timer 0 control/status register") },
+    { HRDATADF (TCSR0, tmr_csr[0],  32, "SSC timer 0 control/status register", tmr_csr_bits) },
     { HRDATAD (TIR0,   tmr_tir[0],  32, "SSC timer 0 interval register") },
     { HRDATAD (TNIR0,  tmr_tnir[0], 32, "SSC timer 0 next interval register") },
     { HRDATAD (TIVEC0, tmr_tivr[0],  9, "SSC timer 0 interrupt vector register") },
-    { HRDATAD (TINC0,  tmr_inc[0],  32, "SSC timer 0 tir increment") },
-    { HRDATAD (TSAV0,  tmr_sav[0],  32, "SSC timer 0 saved inst cnt") },
-    { HRDATAD (TCSR1,  tmr_csr[1],  32, "SSC timer 1 control/status register") },
+    { FLDATAD (TINST0, tmr_inst[0],  0, "SSC timer 0 last wait instructions") },
+    { HRDATADF (TCSR1, tmr_csr[1],  32, "SSC timer 1 control/status register", tmr_csr_bits) },
     { HRDATAD (TIR1,   tmr_tir[1],  32, "SSC timer 1 interval register") },
     { HRDATAD (TNIR1,  tmr_tnir[1], 32, "SSC timer 1 next interval register") },
     { HRDATAD (TIVEC1, tmr_tivr[1],  9, "SSC timer 1 interrupt vector register") },
-    { HRDATAD (TINC1,  tmr_inc[1],  32, "SSC timer 1 tir increment") },
-    { HRDATAD (TSAV1,  tmr_sav[1],  32, "SSC timer 1  saved inst cnt") },
+    { FLDATAD (TINST1, tmr_inst[1],  0, "SSC timer 1 last wait instructions") },
     { HRDATAD (ADSM0,  ssc_adsm[0], 32, "SSC address match 0 address") },
     { HRDATAD (ADSK0,  ssc_adsk[0], 32, "SSC address match 0 mask") },
     { HRDATAD (ADSM1,  ssc_adsm[1], 32, "SSC address match 1 address") },
@@ -478,12 +500,29 @@ REG sysd_reg[] = {
     { NULL }
     };
 
+#define DBG_REGR 0x0001 /* Interval TMR register read access */
+#define DBG_REGW 0x0002 /* Interval TMR register write access */
+#define DBG_INT  0x0004 /* Interval TMR Interrupt */
+#define DBG_SCHD 0x0008 /* Interval TMR Scheduling */
+#define DBG_TODR 0x0010 /* TODR register access  */
+#define DBG_CNF  0x0020 /* CNF register access  */
+
+DEBTAB sysd_debug[] = {
+  {"REGR", DBG_REGR,  "Interval TMR register read access"},
+  {"REGW", DBG_REGW,  "Interval TMR register write access"},
+  {"INT",  DBG_INT,   "Interval TMR Interrupt"},
+  {"SCHD", DBG_SCHD,  "Interval TMR Scheduling"},
+  {"TODR", DBG_TODR,  "TODR register access"},
+  {"CNF",  DBG_CNF,   "CNF register access"},
+  {0}
+};
+
 DEVICE sysd_dev = {
     "SYSD", sysd_unit, sysd_reg, NULL,
     2, 16, 16, 1, 16, 8,
     NULL, NULL, &sysd_reset,
     NULL, NULL, NULL,
-    &sysd_dib, 0, 0, NULL, NULL, NULL, &sysd_help, NULL, NULL, 
+    &sysd_dib, DEV_DEBUG, 0, sysd_debug, NULL, NULL, &sysd_help, NULL, NULL, 
     &sysd_description
     };
 
@@ -504,62 +543,15 @@ DEVICE sysd_dev = {
    issues with the embedded timing loops.  
 */
 
-int32 rom_swapb(int32 val)
+int32 rom_rd (int32 pa)
 {
-return ((val << 24) & 0xff000000) | (( val << 8) & 0xff0000) |
-    ((val >> 8) & 0xff00) | ((val >> 24) & 0xff);
-}
-
-volatile int32 rom_loopval = 0;
-
-int32 rom_read_delay (int32 val)
-{
-uint32 i, l = rom_delay;
+int32 rg = ((pa - ROMBASE) & ROMAMASK) >> 2;
+int32 val = rom[rg];
 
 if (rom_unit.flags & UNIT_NODELAY)
     return val;
 
-/* Calibrate the loop delay factor when first used.
-   Do this 4 times and use the largest value computed. */
-
-if (rom_delay == 0) {
-    uint32 ts, te, c = 10000, samples = 0;
-    while (1) {
-        c = c * 2;
-        te = sim_os_msec();
-        while (te == (ts = sim_os_msec ()));            /* align on ms tick */
-
-/* This is merely a busy wait with some "work" that won't get optimized
-   away by a good compiler. loopval always is zero.  To avoid smart compilers,
-   the loopval variable is referenced in the function arguments so that the
-   function expression is not loop invariant.  It also must be referenced
-   by subsequent code to avoid the whole computation being eliminated. */
-
-        for (i = 0; i < c; i++)
-            rom_loopval |= (rom_loopval + ts) ^ rom_swapb (rom_swapb (rom_loopval + ts));
-        te = sim_os_msec (); 
-        if ((te - ts) < 50)                         /* sample big enough? */
-            continue;
-        if (rom_delay < (rom_loopval + (c / (te - ts) / 1000) + 1))
-            rom_delay = rom_loopval + (c / (te - ts) / 1000) + 1;
-        if (++samples >= 4)
-            break;
-        c = c / 2;
-        }
-    if (rom_delay < 5)
-        rom_delay = 5;
-    }
-
-for (i = 0; i < l; i++)
-    rom_loopval |= (rom_loopval + val) ^ rom_swapb (rom_swapb (rom_loopval + val));
-return val + rom_loopval;
-}
-
-int32 rom_rd (int32 pa)
-{
-int32 rg = ((pa - ROMBASE) & ROMAMASK) >> 2;
-
-return rom_read_delay (rom[rg]);
+return sim_rom_read_with_delay (val);
 }
 
 void rom_wr_B (int32 pa, int32 val)
@@ -568,7 +560,6 @@ int32 rg = ((pa - ROMBASE) & ROMAMASK) >> 2;
 int32 sc = (pa & 3) << 3;
 
 rom[rg] = ((val & 0xFF) << sc) | (rom[rg] & ~(0xFF << sc));
-return;
 }
 
 /* ROM examine */
@@ -605,6 +596,7 @@ t_stat rom_reset (DEVICE *dptr)
 {
 if (rom == NULL)
     rom = (uint32 *) calloc (ROMSIZE >> 2, sizeof (uint32));
+
 if (rom == NULL)
     return SCPE_MEM;
 return SCPE_OK;
@@ -652,8 +644,8 @@ if (lnt < L_LONG) {                                     /* byte or word? */
     int32 mask = (lnt == L_WORD)? 0xFFFF: 0xFF;
     nvr[rg] = ((val & mask) << sc) | (nvr[rg] & ~(mask << sc));
     }
-else nvr[rg] = val;
-return;
+else
+    nvr[rg] = val;
 }
 
 /* NVR examine */
@@ -700,7 +692,7 @@ return SCPE_OK;
 
 /* NVR attach */
 
-t_stat nvr_attach (UNIT *uptr, char *cptr)
+t_stat nvr_attach (UNIT *uptr, CONST char *cptr)
 {
 t_stat r;
 
@@ -766,7 +758,6 @@ if ((data & CSR_IE) == 0)
 else if ((csi_csr & (CSR_DONE + CSR_IE)) == CSR_DONE)
     SET_INT (CSI);
 csi_csr = (csi_csr & ~CSICSR_RW) | (data & CSICSR_RW);
-return;
 }
 
 t_stat csi_reset (DEVICE *dptr)
@@ -793,10 +784,10 @@ void csts_wr (int32 data)
 {
 if ((data & CSR_IE) == 0)
     CLR_INT (CSO);
-else if ((cso_csr & (CSR_DONE + CSR_IE)) == CSR_DONE)
-    SET_INT (CSO);
+else
+    if ((cso_csr & (CSR_DONE + CSR_IE)) == CSR_DONE)
+        SET_INT (CSO);
 cso_csr = (cso_csr & ~CSOCSR_RW) | (data & CSOCSR_RW);
-return;
 }
 
 void cstd_wr (int32 data)
@@ -805,7 +796,6 @@ cso_unit.buf = data & 0377;
 cso_csr = cso_csr & ~CSR_DONE;
 CLR_INT (CSO);
 sim_activate (&cso_unit, cso_unit.wait);
-return;
 }
 
 t_stat cso_svc (UNIT *uptr)
@@ -898,6 +888,7 @@ switch (rg) {
 
     case MT_TODR:                                       /* TODR */
         val = todr_rd ();
+        sim_debug (DBG_TODR, &sysd_dev, "ReadIPR() = 0x%X\n", val);
         break;
 
     case MT_CADR:                                       /* CADR */
@@ -938,6 +929,7 @@ switch (rg) {
         break;
 
     case MT_TODR:                                       /* TODR */
+        sim_debug (DBG_TODR, &sysd_dev, "WriteIPR(val=0x%X)\n", val);
         todr_wr (val);
         break;
 
@@ -986,14 +978,12 @@ switch (rg) {
     case MT_SID:
     case MT_CONPC:
     case MT_CONPSL:                                     /* halt reg */
-        RSVD_OPND_FAULT;
+        RSVD_OPND_FAULT(WriteIPR);
 
     default:
         ssc_bto = ssc_bto | SSCBTO_BTO;                 /* set BTO */
         break;
         }
-
-return;
 }
 
 /* Read/write I/O register space
@@ -1019,7 +1009,6 @@ struct reglink regtable[] = {
     { KABASE, KABASE+KASIZE, &ka_rd, &ka_wr },
     { CQBICBASE, CQBICBASE+CQBICSIZE, &cqbic_rd, &cqbic_wr },
     { CQIPCBASE, CQIPCBASE+CQIPCSIZE, &cqipc_rd, &cqipc_wr },
-    { CQMBASE, CQMBASE+CQMSIZE, &cqmem_rd, &cqmem_wr },
     { CDGBASE, CDGBASE+CDGSIZE, &cdg_rd, &cdg_wr },
     { 0, 0, NULL, NULL }
     };
@@ -1082,7 +1071,6 @@ for (p = &regtable[0]; p->low != 0; p++) {
     }
 ssc_bto = ssc_bto | SSCBTO_BTO | SSCBTO_RWT;
 MACH_CHECK (MCHK_WRITE);
-return;
 }
 
 /* WriteRegU - write register space, unaligned
@@ -1102,7 +1090,6 @@ int32 dat = ReadReg (pa & ~03, L_LONG);
 
 dat = (dat & ~(insert[lnt] << sc)) | ((val & insert[lnt]) << sc);
 WriteReg (pa & ~03, dat, L_LONG);
-return;
 }
 
 /* CMCTL registers
@@ -1175,17 +1162,15 @@ switch (rg) {
     case 18:
         MACH_CHECK (MCHK_WRITE);
         }
-
-return;
 }
 
-t_stat cpu_show_memory (FILE* st, UNIT* uptr, int32 val, void* desc)
+t_stat cpu_show_memory (FILE* st, UNIT* uptr, int32 val, CONST void* desc)
 {
 uint32 memsize = (uint32)(MEMSIZE>>20);
 uint32 baseaddr = 0;
 struct {
     uint32 capacity;
-    char *option;
+    const char *option;
     } boards[] = {
         { 16, "MS650-BA"},
         {  0, NULL}};
@@ -1231,7 +1216,6 @@ if ((rg == 0) && ((pa & 3) == 0)) {                     /* lo byte only */
     ka_cacr = (ka_cacr & ~(val & CACR_W1C)) | CACR_FIXED;
     ka_cacr = (ka_cacr & ~CACR_RW) | (val & CACR_RW);
     }
-return;
 }
 
 int32 sysd_hlt_enb (void)
@@ -1266,7 +1250,6 @@ if (lnt < L_LONG) {                                     /* byte or word? */
     val = ((val & mask) << sc) | (t & ~(mask << sc));
     }
 cdg_dat[row] = val;                                     /* store data */
-return;
 }
 
 int32 parity (int32 val, int32 odd)
@@ -1278,11 +1261,12 @@ for ( ; val != 0; val = val >> 1) {
 return odd;
 }
 
-/* SSC registers - byte/word merges done in WriteReg */
+/* SSC registers - byte/word merges done in ssc_wr */
 
 int32 ssc_rd (int32 pa)
 {
 int32 rg = (pa - SSCBASE) >> 2;
+int32 val;
 
 switch (rg) {
 
@@ -1290,6 +1274,8 @@ switch (rg) {
         return ssc_base;
 
     case 0x04:                                          /* conf reg */
+        sim_debug (DBG_CNF, &sysd_dev, "ssc_rd() = 0x%X", ssc_cnf);
+        sim_debug_bits_hdr (DBG_CNF, &sysd_dev, " ", ssc_cnf_bits, ssc_cnf, ssc_cnf, 1);
         return ssc_cnf;
 
     case 0x08:                                          /* bus timeout */
@@ -1299,7 +1285,9 @@ switch (rg) {
         return ssc_otp & SSCOTP_MASK;
 
     case 0x1B:                                          /* TODR */
-        return todr_rd ();
+        val = todr_rd ();
+        sim_debug (DBG_TODR, &sysd_dev, "ssc_rd() = 0x%X\n", val);
+        return val;
 
     case 0x1C:                                          /* CSRS */
         return csrs_rd ();
@@ -1320,27 +1308,31 @@ switch (rg) {
         return txcs_rd ();
 
     case 0x40:                                          /* T0CSR */
-        return tmr_csr[0];
+        return tmr_csr_rd (0);
 
     case 0x41:                                          /* T0INT */
-        return tmr_tir_rd (0, FALSE);
+        return tmr_tir_rd (0);
 
     case 0x42:                                          /* T0NI */
+        sim_debug (DBG_REGR, &sysd_dev, "tmr_tnir_rd(tmr=%d) - 0x%X\n", 0, tmr_tnir[0]);
         return tmr_tnir[0];
 
     case 0x43:                                          /* T0VEC */
+        sim_debug (DBG_REGR, &sysd_dev, "tmr_tivr_rd(tmr=%d) - 0x%X\n", 0, tmr_tivr[0]);
         return tmr_tivr[0];
 
     case 0x44:                                          /* T1CSR */
-        return tmr_csr[1];
+        return tmr_csr_rd (1);
 
     case 0x45:                                          /* T1INT */
-        return tmr_tir_rd (1, FALSE);
+        return tmr_tir_rd (1);
 
     case 0x46:                                          /* T1NI */
+        sim_debug (DBG_REGR, &sysd_dev, "tmr_tnir_rd(tmr=%d) - 0x%X\n", 1, tmr_tnir[1]);
         return tmr_tnir[1];
 
     case 0x47:                                          /* T1VEC */
+        sim_debug (DBG_REGR, &sysd_dev, "tmr_tivr_rd(tmr=%d) - 0x%X\n", 1, tmr_tivr[1]);
         return tmr_tivr[1];
 
     case 0x4C:                                          /* ADS0M */
@@ -1377,6 +1369,8 @@ switch (rg) {
         break;
 
     case 0x04:                                          /* conf reg */
+        sim_debug (DBG_CNF, &sysd_dev, "ssc_wr() = 0x%X", ssc_cnf);
+        sim_debug_bits_hdr (DBG_CNF, &sysd_dev, " ", ssc_cnf_bits, ssc_cnf, ssc_cnf, 1);
         ssc_cnf = ssc_cnf & ~(val & SSCCNF_W1C);
         ssc_cnf = (ssc_cnf & ~SSCCNF_RW) | (val & SSCCNF_RW);
         break;
@@ -1391,6 +1385,7 @@ switch (rg) {
         break;
 
     case 0x1B:                                          /* TODR */
+        sim_debug (DBG_TODR, &sysd_dev, "ssc_wr(val=0x%X)\n", val);
         todr_wr (val);
         break;
 
@@ -1424,10 +1419,12 @@ switch (rg) {
 
     case 0x42:                                          /* T0NI */
         tmr_tnir[0] = val;
+        sim_debug (DBG_REGW, &sysd_dev, "tmr_tnir_wr(tmr=%d) - 0x%X\n", 0, tmr_tnir[0]);
         break;
 
     case 0x43:                                          /* T0VEC */
         tmr_tivr[0] = val & TMR_VEC_MASK;
+        sim_debug (DBG_REGW, &sysd_dev, "tmr_tivr_wr(tmr=%d) - 0x%X\n", 0, tmr_tivr[0]);
         break;
 
     case 0x44:                                          /* T1CSR */
@@ -1436,10 +1433,12 @@ switch (rg) {
 
     case 0x46:                                          /* T1NI */
         tmr_tnir[1] = val;
+        sim_debug (DBG_REGW, &sysd_dev, "tmr_tnir_wr(tmr=%d) - 0x%X\n", 1, tmr_tnir[1]);
         break;
 
     case 0x47:                                          /* T1VEC */
         tmr_tivr[1] = val & TMR_VEC_MASK;
+        sim_debug (DBG_REGW, &sysd_dev, "tmr_tivr_wr(tmr=%d) - 0x%X\n", 1, tmr_tivr[1]);
         break;
 
     case 0x4C:                                          /* ADS0M */
@@ -1458,34 +1457,15 @@ switch (rg) {
         ssc_adsk[1] = val & SSCADS_MASK;
         break;
         }
-
-return;
 }
 
 /* Programmable timers
 
-   The SSC timers, which increment at 1Mhz, cannot be accurately
-   simulated due to the overhead that would be required for 1M
-   clock events per second.  Instead, a gross hack is used.  When
-   a timer is started, the clock interval is inspected.
+   The SSC timers, which increment at 1Mhz, cannot be simulated 
+   with ticks due to the overhead that would be required for 1M
+   clock events per second.  
 
-   if (int < 0 and small) then testing timer, count instructions.
-        Small is determined by when the requested interval is less
-        than the size of a 100hz system clock tick.
-   if (int >= 0 or large) then counting a real interval, schedule
-        clock events at 100Hz using calibrated line clock delay
-        and when the remaining time value gets small enough, behave
-        like the small case above.
-
-   If the interval register is read, then its value between events
-   is interpolated using the current instruction count versus the
-   count when the most recent event started, the result is scaled
-   to the calibrated system clock, unless the interval being timed
-   is less than a calibrated system clock tick (or the calibrated 
-   clock is running very slowly) at which time the result will be 
-   the elapsed instruction count.
-
-   The powerup TOY Test sometimes fails its tolerance test.  This was
+   The powerup TOY Test sometimes failed its tolerance test.  This was
    due to varying system load causing varying calibration values to be
    used at different times while referencing the TIR.  While timing long
    intervals, we now synchronize the stepping (and calibration) of the
@@ -1494,56 +1474,91 @@ return;
    to measure the system clock), regardless of other load issues on the
    host system which might cause varying values of the system clock's
    calibration factor.
+
+   Various ROM activities, including testing the Interval Timers, presume
+   that ROM based code execute instructions at 1 instruction per usec.
+   To accommodate this, we not only throttle memory accesses to ROM space,
+   but we also use instruction based delays when the interval timers are
+   programmed from the ROM for short duration delays.
 */
 
-int32 tmr_tir_rd (int32 tmr, t_bool interp)
+int32 tmr_tir_rd (int32 tmr)
 {
-uint32 delta;
+if (tmr_csr[tmr] & TMR_CSR_RUN) {           /* running? then interpolate */
+    uint32 usecs_remaining, cur_tir;
+    const char *tmr_units = NULL;
 
-if (interp || (tmr_csr[tmr] & TMR_CSR_RUN)) {           /* interp, running? */
-    delta = sim_grtime () - tmr_sav[tmr];               /* delta inst */
-    if ((tmr_inc[tmr] == TMR_INC) &&                    /* scale large int */
-        (tmr_poll > TMR_INC))
-        delta = (uint32) ((((double) delta) * TMR_INC) / tmr_poll);
-    if (delta >= tmr_inc[tmr])
-        delta = tmr_inc[tmr] - 1;
-    return tmr_tir[tmr] + delta;
+    if ((ADDR_IS_ROM(fault_PC)) &&                  /* running from ROM and */
+        (tmr_inst[tmr])) {                          /* waiting instructions? */
+        usecs_remaining = sim_activate_time (&sysd_dev.units[tmr]) - 1;
+        tmr_units = "Instructions";
+        }
+    else {
+        usecs_remaining = (uint32)(0xFFFFFFFFLL & (t_uint64)sim_activate_time_usecs (&sysd_dev.units[tmr]));
+        tmr_units = "Microseconds";
+        }
+    cur_tir = ~usecs_remaining + 1;
+    sim_debug (DBG_REGR, &sysd_dev, "tmr_tir_rd(tmr=%d) - 0x%X %s - %u usecs, Interpolated while running\n", tmr, cur_tir, tmr_units, usecs_remaining);
+    return cur_tir;
     }
+
+sim_debug (DBG_REGR, &sysd_dev, "tmr_tir_rd(tmr=%d) - 0x%X\n", tmr, tmr_tir[tmr]);
+
 return tmr_tir[tmr];
+}
+
+int32 tmr_csr_rd (int32 tmr)
+{
+sim_debug (DBG_REGR, &sysd_dev, "tmr_csr_rd(tmr=%d) - 0x%X", tmr, tmr_csr[tmr]);
+sim_debug_bits_hdr (DBG_REGR, &sysd_dev, " ", tmr_csr_bits, tmr_csr[tmr], tmr_csr[tmr], 1);
+return tmr_csr[tmr];
 }
 
 void tmr_csr_wr (int32 tmr, int32 val)
 {
+int32 before_tmr_csr;
+
 if ((tmr < 0) || (tmr > 1))
     return;
+
+before_tmr_csr = tmr_csr[tmr];
+sim_debug (DBG_REGW, &sysd_dev, "tmr_csr_wr(tmr=%d) - Writing 0x%X", tmr, val);
+sim_debug_bits_hdr (DBG_REGW, &sysd_dev, " ", tmr_csr_bits, val, val, 1);
+
 if ((val & TMR_CSR_RUN) == 0) {                         /* clearing run? */
-    sim_cancel (&sysd_unit[tmr]);                       /* cancel timer */
     if (tmr_csr[tmr] & TMR_CSR_RUN)                     /* run 1 -> 0? */
-        tmr_tir[tmr] = tmr_tir_rd (tmr, TRUE);          /* update itr */
+        tmr_tir[tmr] = tmr_tir_rd (tmr);                /* update itr */
+    sim_cancel (&sysd_unit[tmr]);                       /* cancel timer */
     }
 tmr_csr[tmr] = tmr_csr[tmr] & ~(val & TMR_CSR_W1C);     /* W1C csr */
 tmr_csr[tmr] = (tmr_csr[tmr] & ~TMR_CSR_RW) |           /* new r/w */
     (val & TMR_CSR_RW);
-if (val & TMR_CSR_XFR)                                  /* xfr set? */
+sim_debug (DBG_REGW, &sysd_dev, "tmr_csr_wr(tmr=%d) - ", tmr);
+sim_debug_bits_hdr (DBG_REGW, &sysd_dev, "Result", tmr_csr_bits, before_tmr_csr, tmr_csr[tmr], 1);
+if (val & TMR_CSR_XFR) {                                /* xfr set? */
     tmr_tir[tmr] = tmr_tnir[tmr];
+    sim_debug (DBG_REGW, &sysd_dev, "tmr_csr_wr(tmr=%d) - XFR set TIR=0x%X\n", tmr, tmr_tir[tmr]);
+    }
 if (val & TMR_CSR_RUN)  {                               /* run? */
     if (val & TMR_CSR_XFR)                              /* new tir? */
         sim_cancel (&sysd_unit[tmr]);                   /* stop prev */
     if (!sim_is_active (&sysd_unit[tmr]))               /* not running? */
         tmr_sched (tmr);                                /* activate */
     }
-else if (val & TMR_CSR_SGL) {                           /* single step? */
-    tmr_incr (tmr, 1);                                  /* incr tmr */
-    if (tmr_tir[tmr] == 0)                              /* if ovflo, */
-        tmr_tir[tmr] = tmr_tnir[tmr];                   /* reload tir */
-    }
-if ((tmr_csr[tmr] & (TMR_CSR_DON | TMR_CSR_IE)) !=      /* update int */
-    (TMR_CSR_DON | TMR_CSR_IE)) {
-        if (tmr)
-            CLR_INT (TMR1);
-        else CLR_INT (TMR0);
+else
+    if (val & TMR_CSR_SGL) {                            /* single step? */
+        tmr_incr (tmr, 1);                              /* incr tmr */
+        if (tmr_tir[tmr] == 0)                          /* if ovflo, */
+            tmr_tir[tmr] = tmr_tnir[tmr];               /* reload tir */
         }
-return;
+if ((before_tmr_csr & (TMR_CSR_DON | TMR_CSR_IE)) &&
+    ((tmr_csr[tmr] & (TMR_CSR_DON | TMR_CSR_IE)) == 0)) {/* update int */
+    sim_debug (DBG_INT, &sysd_dev, "tmr_csr_wr(tmr=%d) - CLR_INT\n", tmr);
+    if (tmr)
+        CLR_INT (TMR1);
+    else
+        CLR_INT (TMR0);
+    }
 }
 
 /* Unit service */
@@ -1551,8 +1566,9 @@ return;
 t_stat tmr_svc (UNIT *uptr)
 {
 int32 tmr = uptr - sysd_dev.units;                      /* get timer # */
+uint32 delta_usecs = ~tmr_tir[tmr] + 1;
 
-tmr_incr (tmr, tmr_inc[tmr]);                           /* incr timer */
+tmr_incr (tmr, delta_usecs);                            /* incr timer */
 return SCPE_OK;
 }
 
@@ -1564,19 +1580,22 @@ uint32 new_tir = tmr_tir[tmr] + inc;                    /* add incr */
 
 if (new_tir < tmr_tir[tmr]) {                           /* ovflo? */
     tmr_tir[tmr] = 0;                                   /* now 0 */
-    if (tmr_csr[tmr] & TMR_CSR_DON)                     /* done? set err */
-        tmr_csr[tmr] = tmr_csr[tmr] | TMR_CSR_ERR;
-    else tmr_csr[tmr] = tmr_csr[tmr] | TMR_CSR_DON;     /* set done */
+    if (tmr_csr[tmr] & TMR_CSR_DON)                     /* done aready set? */
+        tmr_csr[tmr] = tmr_csr[tmr] | TMR_CSR_ERR;      /*  set err */
+    else
+        tmr_csr[tmr] = tmr_csr[tmr] | TMR_CSR_DON;      /*  set done */
     if (tmr_csr[tmr] & TMR_CSR_STP)                     /* stop? */
-        tmr_csr[tmr] = tmr_csr[tmr] & ~TMR_CSR_RUN;     /* clr run */
+        tmr_csr[tmr] = tmr_csr[tmr] & ~TMR_CSR_RUN;     /*  clr run */
     if (tmr_csr[tmr] & TMR_CSR_RUN) {                   /* run? */
-        tmr_tir[tmr] = tmr_tnir[tmr];                   /* reload */
-        tmr_sched (tmr);                                /* reactivate */
+        tmr_tir[tmr] = tmr_tnir[tmr];                   /*  reload */
+        tmr_sched (tmr);                                /*  reactivate */
         }
     if (tmr_csr[tmr] & TMR_CSR_IE) {                    /* set int req */
+        sim_debug (DBG_INT, &sysd_dev, "tmr_incr(tmr=%d) - SET_INT\n", tmr);
         if (tmr)
             SET_INT (TMR1);
-        else SET_INT (TMR0);
+        else 
+            SET_INT (TMR0);
         }
     }
 else {
@@ -1584,57 +1603,39 @@ else {
     if (tmr_csr[tmr] & TMR_CSR_RUN)                     /* still running? */
         tmr_sched (tmr);                                /* reactivate */
     }
-return;
 }
 
 /* Timer scheduling */
 
 void tmr_sched (int32 tmr)
 {
-int32 clk_time = sim_activate_time (&clk_unit) - 1;
-int32 tmr_time;
+uint32 usecs_sched = tmr_tir[tmr] ? (~tmr_tir[tmr] + 1) : 0xFFFFFFFF;
+double usecs_sched_d = tmr_tir[tmr] ? (double)(~tmr_tir[tmr] + 1) : (1.0 + (double)0xFFFFFFFFu);
 
-tmr_sav[tmr] = sim_grtime ();                           /* save intvl base */
-if (tmr_tir[tmr] > (0xFFFFFFFFu - TMR_INC)) {           /* short interval? */
-    tmr_inc[tmr] = (~tmr_tir[tmr] + 1);                 /* inc = interval */
-    tmr_time = tmr_inc[tmr];
+sim_cancel (&sysd_unit[tmr]);                       /* Make sure not active */
+if ((ADDR_IS_ROM(fault_PC)) &&                      /* running from ROM and */
+    (usecs_sched < TMR_INC)) {                      /* short delay? */
+    tmr_inst[tmr] = TRUE;                           /* wait for instructions */
+    sim_activate (&sysd_unit[tmr], usecs_sched);
+    sim_debug (DBG_SCHD, &sysd_dev, "tmr_sched(tmr=%d) - after %u instructions - activate after: %.0f usecs\n", tmr, usecs_sched, sim_activate_time_usecs (&sysd_unit[tmr]));
     }
 else {
-    tmr_inc[tmr] = TMR_INC;                             /* usec/interval */
-    tmr_time = tmr_poll;
+    tmr_inst[tmr] = FALSE;
+    sim_activate_after_d (&sysd_unit[tmr], usecs_sched_d);
+    sim_debug (DBG_SCHD, &sysd_dev, "tmr_sched(tmr=%d) - after %.0f usecs - activate after: %.0f usecs\n", tmr, usecs_sched_d, sim_activate_time_usecs (&sysd_unit[tmr]));
     }
-if (tmr_time == 0)
-    tmr_time = 1;
-if ((tmr_inc[tmr] == TMR_INC) && (tmr_time > clk_time)) {
-
-/* Align scheduled event to be identical to the event for the next clock
-   tick.  This lets us always see a consistent calibrated value, both for
-   this scheduling, AND for any query of the current timer register that
-   may happen in tmr_tir_rd ().  This presumes that sim_activate will
-   queue the interval timer behind the event for the clock tick. */
-
-    tmr_inc[tmr] = (uint32) (((double) clk_time * TMR_INC) / tmr_poll);
-    tmr_time = clk_time;
-    sim_clock_coschedule (&sysd_unit[tmr], tmr_time);
-    }
-else
-    sim_activate (&sysd_unit[tmr], tmr_time);
-return;
 }
 
 int32 tmr0_inta (void)
 {
+sim_debug (DBG_INT, &sysd_dev, "tmr0_inta() - Int Ack - Vector=0x%X\n", tmr_tivr[0]);
 return tmr_tivr[0];
 }
 
 int32 tmr1_inta (void)
 {
+sim_debug (DBG_INT, &sysd_dev, "tmr1_inta() - Int Ack - Vector=0x%X\n", tmr_tivr[1]);
 return tmr_tivr[1];
-}
-
-char *tmr_description (DEVICE *dptr)
-{
-return "non-volatile memory";
 }
 
 /* Machine check */
@@ -1697,10 +1698,12 @@ return 0;                                               /* new cc = 0 */
 
 */
 
-t_stat vax_boot (int32 flag, char *ptr)
+t_stat vax_boot (int32 flag, CONST char *ptr)
 {
 char gbuf[CBUFSIZE];
 
+if ((ptr = get_sim_sw (ptr)) == NULL)               /* get switches */
+    return SCPE_INVSW;
 get_glyph (ptr, gbuf, 0);                           /* get glyph */
 if (gbuf[0] && strcmp (gbuf, "CPU"))
     return SCPE_ARG;                                /* Only can specify CPU device */
@@ -1724,13 +1727,13 @@ if (*rom == 0) {                                        /* no boot? */
     r = cpu_load_bootcode (BOOT_CODE_FILENAME, BOOT_CODE_ARRAY, BOOT_CODE_SIZE, TRUE, 0);
     if (r != SCPE_OK)
         return r;
-    rom_wr_B (ROMBASE+4, sys_model ? 1 : 2);            /* Set Magic Byte to determine system type */
     }
+rom_wr_B (ROMBASE+4, sys_model ? 1 : 2);                /* Set Magic Byte to determine system type */
 sysd_powerup ();
 return SCPE_OK;
 }
 
-t_stat sysd_set_halt (UNIT *uptr, int32 val, char *cptr, void *desc)
+t_stat sysd_set_halt (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 ka_hltenab = val;
 if (ka_hltenab)
@@ -1740,7 +1743,7 @@ else
 return SCPE_OK;
 }
 
-t_stat sysd_show_halt (FILE *st, UNIT *uptr, int32 val, void *desc)
+t_stat sysd_show_halt (FILE *st, UNIT *uptr, int32 val, CONST void *desc)
 {
 fprintf(st, "%s", ka_hltenab ? "NOAUTOBOOT" : "AUTOBOOT");
 return SCPE_OK;
@@ -1755,7 +1758,7 @@ int32 i;
 if (sim_switches & SWMASK ('P')) sysd_powerup ();       /* powerup? */
 for (i = 0; i < 2; i++) {
     tmr_csr[i] = tmr_tnir[i] = tmr_tir[i] = 0;
-    tmr_inc[i] = tmr_sav[i] = 0;
+    tmr_inst[i] = FALSE;
     sim_cancel (&sysd_unit[i]);
     }
 csi_csr = 0;
@@ -1815,16 +1818,16 @@ const char *sysd_description (DEVICE *dptr)
 return "system devices";
 }
 
-t_stat cpu_set_model (UNIT *uptr, int32 val, char *cptr, void *desc)
+t_stat cpu_set_model (UNIT *uptr, int32 val, CONST char *cptr, void *desc)
 {
 char gbuf[CBUFSIZE];
 
 if ((cptr == NULL) || (!*cptr))
     return SCPE_ARG;
 cptr = get_glyph (cptr, gbuf, 0);
-if (MATCH_CMD(cptr, "VAXSERVER") == 0) {
+if (MATCH_CMD(gbuf, "VAXSERVER") == 0) {
     sys_model = 0;
-    strcpy (sim_name, "VAXServer 3900 (KA655)");
+    strcpy (sim_name, "VAXserver 3900 (KA655)");
     }
 else if (MATCH_CMD(gbuf, "MICROVAX") == 0) {
     sys_model = 1;
@@ -1838,14 +1841,14 @@ else if (MATCH_CMD(gbuf, "MICROVAX") == 0) {
     }
 else if (MATCH_CMD(gbuf, "VAXSTATION") == 0) {
 #if defined(USE_SIM_VIDEO) && defined(HAVE_LIBSDL)
-    strcpy (sim_name, "VAXStation 3900 (KA655)");
+    strcpy (sim_name, "VAXstation 3900 (KA655)");
     sys_model = 1;
     vc_dev.flags = vc_dev.flags & ~DEV_DIS;              /* enable QVSS */
     lk_dev.flags = lk_dev.flags & ~DEV_DIS;              /* enable keyboard */
     vs_dev.flags = vs_dev.flags & ~DEV_DIS;              /* enable mouse */
     reset_all (0);                                       /* reset everything */
 #else
-    return SCPE_ARG;
+    return sim_messagef(SCPE_ARG, "Simulator built without Graphic Device Support\n");
 #endif
     }
 else
@@ -1855,7 +1858,7 @@ return SCPE_OK;
 
 t_stat cpu_print_model (FILE *st)
 {
-fprintf (st, "%s 3900 (KA655)", (sys_model ? "MicroVAX" : "VAXServer"));
+fprintf (st, "%s 3900 (KA655)", (sys_model ? "MicroVAX" : "VAXserver"));
 return SCPE_OK;
 }
 

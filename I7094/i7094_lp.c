@@ -1,6 +1,6 @@
 /* i7094_lp.c: IBM 716 line printer simulator
 
-   Copyright (c) 2003-2012, Robert M. Supnik
+   Copyright (c) 2003-2017, Robert M. Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,7 @@
 
    lpt          716 line printer
 
+   13-Mar-17    RMS     Fixed GET_PCHAIN macro (COVERITY)
    19-Jan-07    RMS     Added UNIT_TEXT flag
 
    Internally, the 7094 works only with column binary and is limited to
@@ -55,7 +56,7 @@
 #define UNIT_V_48               (UNIT_V_UF + 2)
 #define UNIT_BZ                 (1 << UNIT_V_BZ)
 #define UNIT_48                 (1 << UNIT_V_48)
-#define GET_PCHAIN(x)           (((x) >> UNIT_V_BZ) & (UNIT_BZ|UNIT_48))
+#define GET_PCHAIN(x)           (((x) >> UNIT_V_BZ) & 03)
 
 #define LPT_BINLNT              24                      /* bin buffer length */
 #define LPT_ECHLNT              22                      /* echo buffer length */
@@ -95,7 +96,6 @@ uint32 lpt_chob_v = 0;
 t_uint64 lpt_bbuf[LPT_BINLNT];                          /* binary buffer */
 t_uint64 lpt_ebuf[LPT_ECHLNT];                          /* echo buffer */
 
-
 /* Echo ordering map */
 
 static const uint8 echo_map[LPT_BINLNT + LPT_ECHLNT] = {
@@ -114,15 +114,7 @@ static const uint8 echo_map[LPT_BINLNT + LPT_ECHLNT] = {
  18+ECHO_F, 19+ECHO_F, 20+ECHO_F, 21+ECHO_F
  };
 
-extern uint32 ind_ioc;
-extern t_uint64 bit_masks[36];
-extern uint32 col_masks[12];
-extern char bcd_to_ascii_a[64];
-extern char bcd_to_ascii_h[64];
-extern char bcd_to_pca[64];
-extern char bcd_to_pch[64];
-
-char *pch_table[4] = {
+const char *pch_table[4] = {
     bcd_to_ascii_h, bcd_to_ascii_a, bcd_to_pch, bcd_to_pca,
     };
 
@@ -315,7 +307,8 @@ return SCPE_OK;
 t_stat lpt_end_line (UNIT *uptr)
 {
 uint32 i, col, row, bufw, colbin;
-char *pch, bcd, lpt_cbuf[LPT_CHRLNT + 1];
+const char *pch;
+char bcd, lpt_cbuf[LPT_CHRLNT + 1];
 t_uint64 dat;
 
 pch = pch_table[GET_PCHAIN (lpt_unit.flags)];           /* get print chain */

@@ -1,6 +1,6 @@
 /* gri_sys.c: GRI-909 simulator interface
 
-   Copyright (c) 2001-2015, Robert M Supnik
+   Copyright (c) 2001-2017, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -23,6 +23,7 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
+   13-Mar-17    RMS     Annotated fall through in switch
    14-Jan-08    RMS     Added GRI-99 support
    18-Oct-02    RMS     Fixed bug in symbolic decode (Hans Pufal)
 */
@@ -82,7 +83,7 @@ const char *sim_stop_messages[] = {
    continue and load all blocks until end of tape.
 */
 
-t_stat sim_load (FILE *fileref, char *cptr, char *fnam, int flag)
+t_stat sim_load (FILE *fileref, CONST char *cptr, CONST char *fnam, int flag)
 {
 int32 c;
 uint32 org;
@@ -289,11 +290,6 @@ static const struct fnc_op fop[] = {
 
 /* Print opcode field for FO, SF */
 
-/* Use scp.c provided fprintf function */
-#define fprintf Fprintf
-#define fputs(_s,f) Fprintf(f,"%s",_s)
-#define fputc(_c,f) Fprintf(f,"%c",_c)
-
 void fprint_op (FILE *of, uint32 inst, uint32 op)
 {
 int32 i, nfirst;
@@ -472,7 +468,7 @@ return SCPE_ARG;
         get_op          get optional bus operator
 */
 
-char *get_fnc (char *cptr, t_value *val)
+CONST char *get_fnc (CONST char *cptr, t_value *val)
 {
 char gbuf[CBUFSIZE];
 int32 i;
@@ -509,7 +505,7 @@ val[0] = val[0] | (fncv << I_V_OP);                     /* store fnc */
 return cptr;
 }
 
-char *get_ma (char *cptr, t_value *val, char term)
+CONST char *get_ma (CONST char *cptr, t_value *val, char term)
 {
 char gbuf[CBUFSIZE];
 t_value d;
@@ -525,7 +521,7 @@ val[1] = d;                                             /* second wd */
 return cptr;
 }
 
-char *get_sd (char *cptr, t_value *val, char term, t_bool src)
+CONST char *get_sd (CONST char *cptr, t_value *val, char term, t_bool src)
 {
 char gbuf[CBUFSIZE];
 int32 d;
@@ -546,9 +542,10 @@ val[0] = val[0] | (d << (src? I_V_SRC: I_V_DST));       /* or to inst */
 return cptr;
 }
 
-char *get_op (char *cptr, t_value *val, char term)
+CONST char *get_op (CONST char *cptr, t_value *val, char term)
 {
-char gbuf[CBUFSIZE], *tptr;
+char gbuf[CBUFSIZE];
+CONST char *tptr;
 int32 i;
 
 tptr = get_glyph (cptr, gbuf, term);                    /* get glyph */
@@ -573,10 +570,10 @@ return cptr;                                            /* original ptr */
         status  =       error status
 */
 
-t_stat parse_sym (char *cptr, t_addr addr, UNIT *uptr, t_value *val, int32 sw)
+t_stat parse_sym (CONST char *cptr, t_addr addr, UNIT *uptr, t_value *val, int32 sw)
 {
 int32 i, j, k;
-char *tptr, gbuf[CBUFSIZE];
+char gbuf[CBUFSIZE];
 
 while (isspace (*cptr)) cptr++;                         /* absorb spaces */
 if ((sw & SWMASK ('A')) || ((*cptr == '\'') && cptr++)) { /* ASCII char? */
@@ -604,14 +601,11 @@ j = (opc_val[i] >> F_V_FL) & F_M_FL;                    /* get class */
 switch (j) {                                            /* case on class */
 
     case F_V_FO:                                        /* func out */
-        tptr = strchr (cptr, ',');                      /* find dst */
-        if (!tptr)                                      /* none? */
+        cptr = get_glyph (cptr, gbuf, ',');             /* fo # */
+        if ((!cptr) || (!*cptr))                        /* none? */
             return SCPE_ARG;
-        *tptr = 0;                                      /* split fields */
-        cptr = get_fnc (cptr, val);                     /* fo # */
-        if (!cptr)
-            return SCPE_ARG;
-        cptr = get_sd (tptr + 1, val, 0, FALSE);        /* dst */
+        get_fnc (gbuf, val);                            /* fo # */
+        cptr = get_sd (cptr, val, 0, FALSE);            /* dst */
         break;
 
     case F_V_FOI:                                       /* func out impl */
@@ -622,7 +616,7 @@ switch (j) {                                            /* case on class */
         cptr = get_sd (cptr, val, ',', TRUE);           /* src */
         if (!cptr)
             return SCPE_ARG;
-
+        /* fall through */
     case F_V_SFI:                                       /* skip func impl */
         cptr = get_fnc (cptr, val);                     /* fo # */
         break;

@@ -35,17 +35,14 @@
 #if defined (VM_PDP10)                                  /* PDP10 version */
 #include "pdp10_defs.h"
 #define PT_DIS          DEV_DIS
-extern int32 int_req;
 
 #elif defined (VM_VAX)                                  /* VAX version */
 #include "vax_defs.h"
 #define PT_DIS          DEV_DIS
-extern int32 int_req[IPL_HLVL];
 
 #else                                                   /* PDP-11 version */
 #include "pdp11_defs.h"
 #define PT_DIS          0
-extern int32 int_req[IPL_HLVL];
 #endif
 
 #define PTRCSR_IMP      (CSR_ERR+CSR_BUSY+CSR_DONE+CSR_IE) /* paper tape reader */
@@ -64,7 +61,7 @@ t_stat ptr_svc (UNIT *uptr);
 t_stat ptr_reset (DEVICE *dptr);
 t_stat ptr_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
 const char *ptr_description (DEVICE *dptr);
-t_stat ptr_attach (UNIT *uptr, char *ptr);
+t_stat ptr_attach (UNIT *uptr, CONST char *ptr);
 t_stat ptr_detach (UNIT *uptr);
 t_stat ptp_rd (int32 *data, int32 PA, int32 access);
 t_stat ptp_wr (int32 data, int32 PA, int32 access);
@@ -72,7 +69,7 @@ t_stat ptp_svc (UNIT *uptr);
 t_stat ptp_reset (DEVICE *dptr);
 t_stat ptp_help (FILE *st, DEVICE *dptr, UNIT *uptr, int32 flag, const char *cptr);
 const char *ptp_description (DEVICE *dptr);
-t_stat ptp_attach (UNIT *uptr, char *ptr);
+t_stat ptp_attach (UNIT *uptr, CONST char *ptr);
 t_stat ptp_detach (UNIT *uptr);
 
 /* PTR data structures
@@ -268,7 +265,7 @@ sim_cancel (&ptr_unit);
 return auto_config (dptr->name, 1);
 }
 
-t_stat ptr_attach (UNIT *uptr, char *cptr)
+t_stat ptr_attach (UNIT *uptr, CONST char *cptr)
 {
 t_stat reason;
 
@@ -363,7 +360,7 @@ sim_cancel (&ptp_unit);                                 /* deactivate unit */
 return auto_config (dptr->name, 1);
 }
 
-t_stat ptp_attach (UNIT *uptr, char *cptr)
+t_stat ptp_attach (UNIT *uptr, CONST char *cptr)
 {
 t_stat reason;
 

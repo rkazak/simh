@@ -1,6 +1,6 @@
 /* pdp18b_dt.c: 18b DECtape simulator
 
-   Copyright (c) 1993-2008, Robert M Supnik
+   Copyright (c) 1993-2017, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -27,6 +27,12 @@
                 (PDP-9) TC02/TU55 DECtape
                 (PDP-15) TC15/TU56 DECtape
 
+   15-Mar-17    RMS     Fixed dt_seterr to clear successor states
+   09-Mar-17    RMS     Fixed dt_seterr to handle nx unit select (COVERITY)
+   10-Mar-16    RMS     Added 3-cycle databreak set/show entries
+   07-Mar-16    RMS     Revised for dynamically allocated memory
+   13-Mar-15    RMS     Added APIVEC register
+   28-Mar-15    RMS     Revised to use sim_printf
    23-Jun-06    RMS     Fixed switch conflict in ATTACH
                         Revised Type 550 header based on DECTOG formatter
    13-Jun-06    RMS     Fixed checksum calculation bug in Type 550
@@ -325,8 +331,9 @@
 
 #define ABS(x)          (((x) < 0)? (-(x)): (x))
 
-extern int32 M[];
+extern int32 *M;
 extern int32 int_hwre[API_HLVL+1];
+extern int32 api_vec[API_HLVL][32];
 extern UNIT cpu_unit;
 
 int32 dtsa = 0;                                         /* status A */
@@ -342,13 +349,12 @@ static const int32 map_unit[16] = {                     /* Type 550 unit map */
     0, -1, -1, -1, -1, -1, -1, -1
     };
 
-DEVICE dt_dev;
 int32 dt75 (int32 dev, int32 pulse, int32 dat);
 int32 dt76 (int32 dev, int32 pulse, int32 dat);
 int32 dt_iors (void);
 t_stat dt_svc (UNIT *uptr);
 t_stat dt_reset (DEVICE *dptr);
-t_stat dt_attach (UNIT *uptr, char *cptr);
+t_stat dt_attach (UNIT *uptr, CONST char *cptr);
 void dt_flush (UNIT *uptr);
 t_stat dt_detach (UNIT *uptr);
 void dt_deselect (int32 oldf);
@@ -391,34 +397,33 @@ UNIT dt_unit[] = {
     };
 
 REG dt_reg[] = {
-    { ORDATA (DTSA, dtsa, 18) },
-    { ORDATA (DTSB, dtsb, 18) },
-    { ORDATA (DTDB, dtdb, 18) },
-    { FLDATA (INT, int_hwre[API_DTA], INT_V_DTA) },
+    { ORDATAD (DTSA, dtsa, 18, "status register A") },
+    { ORDATAD (DTSB, dtsb, 18, "status register B") },
+    { ORDATAD (DTDB, dtdb, 18, "data buffer") },
+    { FLDATAD (INT, int_hwre[API_DTA], INT_V_DTA, "interrupt pending flag") },
 #if defined (DTA_V_ENB)
-    { FLDATA (ENB, dtsa, DTA_V_ENB) },
+    { FLDATAD (ENB, dtsa, DTA_V_ENB, "interrupt enable flag") },
 #endif
-    { FLDATA (DTF, dtsb, DTB_V_DTF) },
+    { FLDATAD (DTF, dtsb, DTB_V_DTF, "DECtape flag") },
 #if defined (DTB_V_BEF)
-    { FLDATA (BEF, dtsb, DTB_V_BEF) },
+    { FLDATAD (BEF, dtsb, DTB_V_BEF, "block and flag") },
 #endif
-    { FLDATA (ERF, dtsb, DTB_V_ERF) },
-#if defined (TC02)                                      /* TC02/TC15 */
-    { ORDATA (WC, M[DT_WC], 18) },
-    { ORDATA (CA, M[DT_CA], 18) },
-#endif
-    { DRDATA (LTIME, dt_ltime, 31), REG_NZ },
-    { DRDATA (DCTIME, dt_dctime, 31), REG_NZ },
-    { ORDATA (SUBSTATE, dt_substate, 2) },
+    { FLDATAD (ERF, dtsb, DTB_V_ERF, "error flag") },
+    { DRDATAD (LTIME, dt_ltime, 31, "time between lines"), REG_NZ },
+    { DRDATAD (DCTIME, dt_dctime, 31, "time to declarate to a full stop"), REG_NZ },
+    { ORDATAD (SUBSTATE, dt_substate, 2, "read/write command substate") },
     { DRDATA (LBLK, dt_logblk, 12), REG_HIDDEN },
-    { URDATA (POS, dt_unit[0].pos, 10, T_ADDR_W, 0,
-              DT_NUMDR, PV_LEFT | REG_RO) },
-    { URDATA (STATT, dt_unit[0].STATE, 8, 18, 0,
-              DT_NUMDR, REG_RO) },
+    { URDATAD (POS, dt_unit[0].pos, 10, T_ADDR_W, 0,
+              DT_NUMDR, PV_LEFT | REG_RO, "positions in lines, units 0 to 7") },
+    { URDATAD (STATT, dt_unit[0].STATE, 8, 18, 0,
+              DT_NUMDR, REG_RO, "unit state, units 0 to 7") },
     { URDATA (LASTT, dt_unit[0].LASTT, 10, T_ADDR_W, 0,
               DT_NUMDR, REG_HRO) },
     { ORDATA (DEVNO, dt_dib.dev, 6), REG_HRO },
-    { FLDATA (STOP_OFFR, dt_stopoffr, 0) },
+    { FLDATAD (STOP_OFFR, dt_stopoffr, 0, "stop on off-reel error") },
+#if defined (TC02)
+    { ORDATA (APIVEC, api_vec[API_DTA][INT_V_DTA], 6), REG_HRO },
+#endif
     { NULL }
     };
 
@@ -428,6 +433,10 @@ MTAB dt_mod[] = {
     { UNIT_8FMT + UNIT_11FMT, 0, "18b", NULL, NULL },
     { UNIT_8FMT + UNIT_11FMT, UNIT_8FMT, "12b", NULL, NULL },
     { UNIT_8FMT + UNIT_11FMT, UNIT_11FMT, "16b", NULL, NULL },
+#if defined (TC02)
+    { MTAB_XTD|MTAB_VDV|MTAB_NMO, DT_WC, "WC", "WC", &set_3cyc_reg, &show_3cyc_reg, (void *)"WC" },
+    { MTAB_XTD|MTAB_VDV|MTAB_NMO, DT_CA, "CA", "CA", &set_3cyc_reg, &show_3cyc_reg, (void *)"CA" },
+#endif
     { MTAB_XTD|MTAB_VDV, 0, "DEVNO", "DEVNO", &set_devno, &show_devno },
     { 0 }
     };
@@ -823,7 +832,7 @@ t_bool dt_setpos (UNIT *uptr)
 {
 uint32 new_time, ut, ulin, udelt;
 int32 mot = DTS_GETMOT (uptr->STATE);
-int32 unum, delta;
+int32 unum, delta = 0;
 
 new_time = sim_grtime ();                               /* current time */
 ut = new_time - uptr->LASTT;                            /* elapsed time */
@@ -986,7 +995,8 @@ switch (fnc) {                                          /* at speed, check fnc *
                 fprintf (sim_deb, ">>DT%d: reading block %d %s%s\n",
                          unum, blk, (dir? "backward": "forward"),
                          ((dtsa & DTA_MODE)? " continuous": " "));
-            dt_substate = 0;                            /* fall through */
+            dt_substate = 0;
+            /* fall through */
         case 0:                                         /* normal read */
             M[DT_WC] = (M[DT_WC] + 1) & DMASK;          /* incr WC, CA */
             M[DT_CA] = (M[DT_CA] + 1) & DMASK;
@@ -999,6 +1009,7 @@ switch (fnc) {                                          /* at speed, check fnc *
                 M[ma] = dtdb;
             if (M[DT_WC] == 0)                          /* wc ovf? */
                 dt_substate = DTO_WCO;
+            /* fall through */
         case DTO_WCO:                                   /* wc ovf, not sob */
             if (wrd != (dir? 0: DTU_BSIZE (uptr) - 1))  /* not last? */
                 sim_activate (uptr, DT_WSIZE * dt_ltime);
@@ -1044,10 +1055,12 @@ switch (fnc) {                                          /* at speed, check fnc *
                 fprintf (sim_deb, ">>DT%d: writing block %d %s%s\n", unum, blk,
                          (dir? "backward": "forward"),
                          ((dtsa & DTA_MODE)? " continuous": " "));
-            dt_substate = 0;                            /* fall through */
+            dt_substate = 0;
+            /* fall through */
         case 0:                                         /* normal write */
             M[DT_WC] = (M[DT_WC] + 1) & DMASK;          /* incr WC, CA */
             M[DT_CA] = (M[DT_CA] + 1) & DMASK;
+            /* fall through */
         case DTO_WCO:                                   /* wc ovflo */
             ma = M[DT_CA] & AMASK;                      /* mem addr */
             ba = (blk * DTU_BSIZE (uptr)) + wrd;        /* buffer ptr */
@@ -1264,16 +1277,18 @@ return SCPE_OK;
 
 void dt_seterr (UNIT *uptr, int32 e)
 {
-int32 mot = DTS_GETMOT (uptr->STATE);
-
 dtsa = dtsa & ~DTA_STSTP;                               /* clear go */
 dtsb = dtsb | DTB_ERF | e;                              /* set error flag */
-if (mot >= DTS_ACCF) {                                  /* ~stopped or stopping? */
-    sim_cancel (uptr);                                  /* cancel activity */
-    if (dt_setpos (uptr))                               /* update position */
-        return;
-    sim_activate (uptr, dt_dctime);                     /* sched decel */
-    DTS_SETSTA (DTS_DECF | (mot & DTS_DIR), 0);         /* state = decel */
+if (uptr != NULL) {                                     /* valid select? */
+    int32 mot = DTS_GETMOT (uptr->STATE);               /* get motion */
+    if (mot >= DTS_ACCF) {                              /* ~stopped or stopping? */
+        sim_cancel (uptr);                              /* cancel activity */
+        if (dt_setpos (uptr))                           /* update position */
+            return;
+        sim_activate (uptr, dt_dctime);                 /* sched decel */
+        DTS_SETSTA (DTS_DECF | (mot & DTS_DIR), 0);     /* state = decel */
+        }
+    else DTS_SETSTA (mot, 0);                           /* clear 2nd, 3rd */
     }
 DT_UPDINT;
 return;
@@ -1404,7 +1419,7 @@ return 0;
    If 18b/36b, read data into buffer
 */
 
-t_stat dt_attach (UNIT *uptr, char *cptr)
+t_stat dt_attach (UNIT *uptr, CONST char *cptr)
 {
 uint16 pdp8b[D8_NBSIZE];
 uint16 pdp11b[D18_BSIZE];
@@ -1508,7 +1523,7 @@ if (uptr->WRITTEN && uptr->hwmark && ((uptr->flags & UNIT_RO)== 0)) {    /* any 
                     ((fbuf[ba + 1] >> 12) & 077);
                 pdp8b[k + 2] = fbuf[ba + 1] & 07777;
                 ba = ba + 2;
-                }                                    /* end loop blk */
+                }                                       /* end loop blk */
             fxwrite (pdp8b, sizeof (uint16), D8_NBSIZE, uptr->fileref);
             if (ferror (uptr->fileref))
                 break;

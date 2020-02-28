@@ -108,8 +108,6 @@
 #define UST_REV         (OP_REV)                        /* last op was rev */
 #define UST_GAP         01                              /* last op hit gap */
 
-extern int32 int_req[IPL_HLVL];
-
 uint32 ta_cs = 0;                                       /* control/status */
 uint32 ta_idb = 0;                                      /* input data buf */
 uint32 ta_odb = 0;                                      /* output data buf */
@@ -129,7 +127,7 @@ t_stat ta_rd (int32 *data, int32 PA, int32 access);
 t_stat ta_wr (int32 data, int32 PA, int32 access);
 t_stat ta_svc (UNIT *uptr);
 t_stat ta_reset (DEVICE *dptr);
-t_stat ta_attach (UNIT *uptr, char *cptr);
+t_stat ta_attach (UNIT *uptr, CONST char *cptr);
 t_stat ta_detach (UNIT *uptr);
 t_stat ta_boot (int32 unitno, DEVICE *dptr);
 void ta_go (void);
@@ -188,8 +186,6 @@ MTAB ta_mod[] = {
         NULL, NULL, NULL, "Write enable tape drive" },
     { MTUF_WLK, MTUF_WLK, "write locked",  "LOCKED", 
         NULL, NULL, NULL, "Write lock tape drive"  },
-//    { MTAB_XTD|MTAB_VUN, 0, "FORMAT", "FORMAT",
-//      &sim_tape_set_fmt, &sim_tape_show_fmt, NULL },
     { MTAB_XTD|MTAB_VUN, 0, "CAPACITY", NULL,
       NULL, &sim_tape_show_capac, NULL, "Display tape capacity" },
     { MTAB_XTD|MTAB_VDV|MTAB_VALR, 020, "ADDRESS", "ADDRESS",
@@ -305,8 +301,9 @@ if ((fnc != TACS_REW) && !(flg & OP_WRI)) {             /* spc/read cmd? */
         }
     if ((old_ust ^ uptr->UST) == (UST_REV|UST_GAP)) {   /* reverse in gap? */
         if (uptr->UST)                                  /* skip file gap */
-            sim_tape_rdrecr (uptr, ta_xb, &t, TA_MAXFR);
-        else sim_tape_rdrecf (uptr, ta_xb, &t, TA_MAXFR);
+            (void)sim_tape_rdrecr (uptr, ta_xb, &t, TA_MAXFR);
+        else 
+            (void)sim_tape_rdrecf (uptr, ta_xb, &t, TA_MAXFR);
         if (DEBUG_PRS (ta_dev))
             fprintf (sim_deb, ">>TA skip gap: op=%o, old_sta = %o, pos=%d\n",
                      fnc, uptr->UST, uptr->pos);
@@ -594,7 +591,7 @@ return auto_config (0, 0);
 
 /* Attach routine */
 
-t_stat ta_attach (UNIT *uptr, char *cptr)
+t_stat ta_attach (UNIT *uptr, CONST char *cptr)
 {
 t_stat r;
 
@@ -661,11 +658,10 @@ static const uint16 boot_rom[] = {
 t_stat ta_boot (int32 unitno, DEVICE *dptr)
 {
 size_t i;
-extern uint16 *M;
 
 for (i = 0; i < BOOT_LEN; i++)
-    M[(BOOT_START >> 1) + i] = boot_rom[i];
-M[BOOT_CSR >> 1] = ta_dib.ba & DMASK;
+    WrMemW (BOOT_START + (2 * i), boot_rom[i]);
+WrMemW (BOOT_CSR, ta_dib.ba & DMASK);
 cpu_set_boot (BOOT_ENTRY);
 return SCPE_OK;
 }
